@@ -15,10 +15,11 @@ use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopClosed, EventLoopProxy};
-use winit::window::WindowId;
+use winit::window::{Window, WindowId};
 
 use winc_config::State;
 use winc_editor::Editor;
+use winc_render::Renderer;
 
 use crate::app::{App, UserEvent};
 use crate::bench::Bench;
@@ -84,13 +85,45 @@ impl WindowProxy {
 /// 由 [`Winc`] 在处理完当前事件后执行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    /// 新建一个窗口；带目录时在里面打开它，目录已经开在某个窗口里时切到那个窗口。
+    /// 新建一个项目；带目录时在里面打开它，目录已经开在某个项目里时切到那个项目。
     NewWindow(Option<PathBuf>),
-    /// 把这个窗口切到前台（它开着要打开的目录）。
+    /// 打开目录：已经开着的切到那个项目，否则新开一个项目；文件所在的项目见 [`Winc::open_targets`]。
+    OpenFolder(PathBuf),
+    /// 切换到项目 `key`：窗口和渲染器交给它，其他项目的状态留在内存里。
     Focus(WindowKey),
-    /// 文件或目录从 `.0` 移到了 `.1`（在一个窗口剪切、到另一个窗口粘贴）：各窗口里打开的
+    /// 关掉项目 `key`：先切过去，让它的保存确认、终端确认显示在窗口里。
+    CloseProject(WindowKey),
+    /// 文件或目录从 `.0` 移到了 `.1`（在一个项目里剪切、到另一个项目里粘贴）：各项目里打开的
     /// 文件、最近的文件、文件树跟着更新。
     Moved(PathBuf, PathBuf),
+}
+
+/// 侧栏项目列表中的一项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    /// 项目编号（[`WindowKey`]）。
+    pub key: WindowKey,
+    /// 项目名：打开的目录名；停在开始页上的项目为 `None`。
+    pub name: Option<String>,
+    /// 终端中还有程序在运行。
+    pub busy: bool,
+}
+
+/// 原生窗口和它的渲染资源：同一时间只交给一个项目，切换项目时整体移交。
+///
+/// 窗口在每个项目里都表现为 [`App::window`] 和 [`App::renderer`]；切换时从旧项目取出、
+/// 交给新项目，因此渲染器、字形缓存、显示链接和红绿灯都不重新创建。
+pub(crate) struct Shell {
+    pub window: Arc<Window>,
+    pub renderer: Renderer,
+    #[cfg(target_os = "macos")]
+    pub traffic_lights: Option<crate::macos::TrafficLights>,
+    #[cfg(target_os = "macos")]
+    pub display_link: Option<crate::macos::DisplayLink>,
+    #[cfg(windows)]
+    pub display_link: Option<crate::windows::DisplayLink>,
+    /// 窗口完全看不见（被挡住、最小化、在别的桌面上）。
+    pub occluded: bool,
 }
 
 /// 应用内更新的状态，设置的「关于」页显示。
@@ -135,6 +168,8 @@ pub struct Shared {
     roots: RefCell<Vec<(WindowKey, PathBuf)>>,
     /// 窗口的个数（含关着、等着从程序坞叫回来的窗口）。
     count: Cell<usize>,
+    /// 侧栏中的项目列表，顺序与项目在应用里的顺序一致；每处理完一个事件刷新一次。
+    projects: RefCell<Vec<Project>>,
     requests: RefCell<Vec<Request>>,
     /// 文件树里剪切的各项：剪贴板里还是这些文件时，粘贴到文件树是把它们移过去（之后清掉）。
     ///
@@ -176,6 +211,11 @@ impl Shared {
         });
         let deepest = inside.max_by_key(|(_, root)| root.components().count());
         deepest.map(|(key, _)| *key)
+    }
+
+    /// 侧栏中的项目列表。
+    pub fn projects(&self) -> std::cell::Ref<'_, Vec<Project>> {
+        self.projects.borrow()
     }
 
     /// 是否还有别的窗口。
@@ -295,21 +335,27 @@ impl Winc {
         };
         let first = slot.key;
         let root = slot.app.editor.root().map(Path::to_path_buf);
-        let mut folders = folders
-            .iter()
+        let rest: Vec<PathBuf> = (folders.iter())
             .filter(|f| f.is_dir() && Some(*f) != root.as_ref())
-            .peekable();
-        if root.is_none()
-            && let Some(folder) = folders.next()
-        {
+            .cloned()
+            .collect();
+        // 第一个窗口停在开始页上时，第一个目录就开在它里面，不多留一个空项目。
+        let (reuse, rest) = match root {
+            None => match rest.split_first() {
+                Some((folder, tail)) => (Some(folder), tail),
+                None => (None, &rest[..]),
+            },
+            Some(_) => (None, &rest[..]),
+        };
+        if let Some(folder) = reuse {
             slot.app.open_folder_now(folder);
         }
-        if folders.peek().is_none() {
+        if rest.is_empty() {
             return;
         }
-        for folder in folders {
-            self.shared
-                .request(Request::NewWindow(Some(folder.clone())));
+        // 其余目录各开一个项目，仍然只有这一个系统窗口；最后回到第一个项目。
+        for folder in rest {
+            self.shared.request(Request::OpenFolder(folder.clone()));
         }
         self.shared.request(Request::Focus(first));
     }
@@ -380,7 +426,7 @@ impl Winc {
     /// 返回窗口要本层做的事，和是否该结束事件循环。
     fn settle(&mut self) -> (Vec<Request>, bool) {
         self.sync_config();
-        self.drop_closed();
+        self.settle_projects();
         for slot in &mut self.windows {
             slot.app.finish_waiting();
         }
@@ -421,15 +467,75 @@ impl Winc {
         }
     }
 
-    /// 关掉（隐藏）的窗口在还有别的窗口时去掉：macOS 上只有最后一个窗口关掉时留着，点程序坞
-    /// 时带着开始页回来。
+    /// 关掉一个项目之后：把窗口交给相邻的项目，再从列表中去掉。
     ///
-    /// 关掉之前目录的现场、未保存内容的备份都已记下。
-    fn drop_closed(&mut self) {
-        if self.windows.iter().all(|slot| slot.app.window_hidden) {
+    /// 关掉之前目录的现场、未保存内容的备份都已记下。最后一个项目不会走到这里：它留在开始页上
+    /// （见 `App::close_project_now`）。
+    fn settle_projects(&mut self) {
+        let closing: Vec<WindowKey> = (self.windows.iter())
+            .filter(|slot| slot.app.project_closed)
+            .map(|slot| slot.key)
+            .collect();
+        let Some(&key) = closing.first() else {
+            return;
+        };
+        // 先取出窗口，再丢掉项目：渲染器和窗口跟着交给下一个项目。
+        let shell = self.by_key(key).and_then(App::take_shell);
+        self.windows.retain(|slot| !closing.contains(&slot.key));
+        if self.active.is_none_or(|active| closing.contains(&active)) {
+            self.active = self.windows.last().map(|slot| slot.key);
+        }
+        if let Some(shell) = shell
+            && let Some(app) = self.active_key().and_then(|key| self.by_key(key))
+        {
+            app.put_shell(shell);
+        }
+        self.refresh_shared();
+    }
+
+    /// 把窗口交给项目 `key`，并让它成为当前项目；已经是当前项目时什么也不做。
+    ///
+    /// 窗口和渲染器从原来的项目取回，不新建系统窗口；原来的项目保留编辑器、终端和后台任务，
+    /// 只是不再绘制、不再收到窗口事件。
+    fn activate(&mut self, key: WindowKey) {
+        if self.active == Some(key)
+            && self.windows.iter().any(|slot| slot.key == key)
+            && let Some(app) = self.by_key(key)
+            && app.has_shell()
+        {
             return;
         }
-        self.windows.retain(|slot| !slot.app.window_hidden);
+        let current = self.active_key().filter(|current| *current != key);
+        let shell = current
+            .and_then(|current| self.by_key(current))
+            .and_then(App::take_shell);
+        self.active = Some(key);
+        let Some(app) = self.by_key(key) else {
+            return;
+        };
+        match shell {
+            Some(shell) => app.put_shell(shell),
+            // 没有窗口（第一个项目，或者窗口已经随项目一起丢掉）：由 `resumed` 建立。
+            None => app.wake_shell(),
+        }
+        self.refresh_shared();
+    }
+
+    /// 打开目录 `folder`：已经开着就切到那个项目，否则新开一个项目。
+    fn open_folder(&mut self, event_loop: &ActiveEventLoop, folder: &Path) {
+        let folder =
+            winc_config::files::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+        if self.open_folder_target(&folder).is_some() {
+            return;
+        }
+        self.new_window(event_loop, Some(folder), None);
+    }
+
+    /// 打开目录 `folder` 对应的项目：已经在某个项目里开着时切过去，返回是否找到。
+    fn open_folder_target(&mut self, folder: &Path) -> Option<WindowKey> {
+        let key = self.shared.window_with(folder, None)?;
+        self.activate(key);
+        Some(key)
     }
 
     /// 推进退出流程：有窗口请求退出（⌘Q，`quit_requested`）时逐个请求其他窗口退出，
@@ -532,6 +638,26 @@ impl Winc {
             let fresh = roots().map(|(key, root)| (key, root.to_path_buf()));
             *self.shared.roots.borrow_mut() = fresh.collect();
         }
+
+        // 侧栏的项目列表：名字和终端状态按窗口里的项目重建。
+        let projects: Vec<Project> = (self.windows.iter())
+            .map(|slot| Project {
+                key: slot.key,
+                name: slot.app.project_name(),
+                busy: slot.app.terminal_busy(),
+            })
+            .collect();
+        let changed = {
+            let known = self.shared.projects.borrow();
+            *known != projects
+        };
+        if changed {
+            *self.shared.projects.borrow_mut() = projects;
+            // 列表变了：让当前项目重画侧栏。
+            if let Some(app) = self.active_key().and_then(|key| self.by_key(key)) {
+                app.request_redraw();
+            }
+        }
     }
 
     /// 在处理完事件后执行窗口记录的请求；返回 `true` 时结束事件循环。
@@ -550,11 +676,13 @@ impl Winc {
             for request in requests {
                 match request {
                     Request::NewWindow(folder) => self.new_window(event_loop, folder, None),
-                    Request::Focus(key) => {
+                    Request::OpenFolder(folder) => self.open_folder(event_loop, &folder),
+                    Request::Focus(key) => self.activate(key),
+                    Request::CloseProject(key) => {
+                        self.activate(key);
                         if let Some(app) = self.by_key(key) {
-                            app.raise();
+                            app.request_close_project();
                         }
-                        self.active = Some(key);
                     }
                     // 已在 `settle` 里处理。
                     Request::Moved(..) => {}
@@ -615,7 +743,7 @@ impl Winc {
                 key
             }
         };
-        self.active = Some(key);
+        self.activate(key);
         if let Some(app) = self.by_key(key) {
             app.set_activation(token);
             app.open_files(targets);
@@ -666,9 +794,9 @@ impl Winc {
             .map(|slot| slot.key)
     }
 
-    /// 新建一个窗口；带 `folder` 时在里面打开它。
+    /// 新建一个项目；带 `folder` 时在里面打开它。
     ///
-    /// 目录已经开在某个窗口里时切到那个窗口；关着的窗口（macOS 上关掉了最后一个窗口）先拿来用。
+    /// 窗口沿用现有的那个，不新建系统窗口。目录已经开在某个项目里时切到那个项目。
     /// `token` 同 [`Self::open_targets`]。
     fn new_window(
         &mut self,
@@ -677,13 +805,11 @@ impl Winc {
         token: Option<String>,
     ) {
         let folder = folder.map(|f| winc_config::files::canonicalize(&f).unwrap_or(f));
-        if let Some(key) = folder
-            .as_ref()
-            .and_then(|f| self.shared.window_with(f, None))
+        if let Some(folder) = &folder
+            && self.open_folder_target(folder).is_some()
         {
-            if let Some(app) = self.by_key(key) {
+            if let Some(app) = self.active_key().and_then(|key| self.by_key(key)) {
                 app.set_activation(token);
-                app.raise();
             }
             return;
         }
@@ -693,24 +819,6 @@ impl Winc {
             }
             return;
         };
-        // 关着的窗口在开始页上，拿来用，不再建一个。
-        let hidden = self
-            .windows
-            .iter()
-            .find(|s| s.app.window_hidden)
-            .map(|s| s.key);
-        if let Some(key) = hidden {
-            if let Some(app) = self.by_key(key) {
-                if let Some(folder) = &folder {
-                    app.open_folder_now(folder);
-                }
-                app.set_activation(token);
-                app.raise();
-            }
-            self.active = Some(key);
-            self.refresh_shared();
-            return;
-        }
 
         // 配置用当前窗口的（和配置文件一样，各窗口之间已同步），最近列表重新读。
         let from = self.active_key().and_then(|key| {
@@ -736,7 +844,8 @@ impl Winc {
         app.cascade = cascade;
         app.glyphs_from = glyphs;
         self.add(key, app);
-        self.active = Some(key);
+        // 窗口交给新项目。没有窗口可交接时（进程里的第一个项目）由 `Winc::resumed` 建立。
+        self.activate(key);
         let Some(app) = self.by_key(key) else {
             return;
         };
@@ -744,11 +853,11 @@ impl Winc {
             app.open_folder_now(folder);
         }
         app.set_activation(token);
-        app.resumed(event_loop);
         self.refresh_shared();
+        let _ = event_loop;
     }
 
-    /// 退出时记下其他窗口开着的目录（`State::others`），下次启动时各开一个窗口；当前窗口的是
+    /// 退出时记下其他项目开着的目录（`State::others`），下次启动时各开一个项目；当前项目的是
     /// `State::last`，由它自己记。
     ///
     /// 设置里关掉了「启动时打开上次的目录」时不记。
@@ -779,7 +888,13 @@ impl Winc {
 
 impl ApplicationHandler<Envelope> for Winc {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        for slot in &mut self.windows {
+        // 系统窗口只有一个，由当前项目建立；其他项目等切换过去时接上这个窗口。
+        let active = self.active_key();
+        if let Some(slot) = self
+            .windows
+            .iter_mut()
+            .find(|slot| Some(slot.key) == active)
+        {
             slot.app.resumed(event_loop);
         }
         self.after_event(event_loop);
@@ -827,8 +942,10 @@ impl ApplicationHandler<Envelope> for Winc {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let Some(key) = self.key_of(id) else {
-            return;
+        // 只有一个系统窗口：它属于当前项目。当前项目还没有窗口时（建立中）没有收件人。
+        let key = match self.key_of(id) {
+            Some(key) => key,
+            None => return,
         };
         // 右键菜单可以在没有焦点的窗口上弹出，菜单项选中的结果交给当前窗口：按下鼠标的窗口
         // 也算当前窗口，菜单的结果才回到弹出它的那个窗口。

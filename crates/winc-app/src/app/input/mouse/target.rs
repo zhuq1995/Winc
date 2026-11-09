@@ -21,6 +21,11 @@ impl App {
             _ => {}
         }
 
+        // 项目列表在最左侧，压在其余部件之上：先判断它。
+        if let Some(target) = self.project_at(x, y) {
+            return target;
+        }
+
         match self.target_at(x, y) {
             Target::WindowControl(control) => Hover::WindowControl(control),
             Target::ResizeEdge(direction) => Hover::ResizeEdge(direction),

@@ -3,6 +3,18 @@
 use super::*;
 
 impl App {
+    /// 返回项目列表中的悬停目标：条目本身，或鼠标停在条目上时右端的关闭按钮。
+    pub(super) fn project_at(&self, x: f32, y: f32) -> Option<Hover> {
+        if let Some(&(_, key)) = self
+            .projects_close
+            .iter()
+            .find(|(rect, _)| rect.contains(x, y))
+        {
+            return Some(Hover::ProjectClose(key));
+        }
+        hit(&self.projects_hits, x, y).map(Hover::Project)
+    }
+
     /// 返回侧栏顶部切换按钮和搜索面板中的悬停目标；不在这些位置时返回 `None`。
     pub(super) fn panel_hover_at(&self, x: f32, y: f32) -> Option<Hover> {
         let sidebar = self.layout.sidebar;

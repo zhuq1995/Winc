@@ -651,6 +651,8 @@ pub const SIDEBAR_FIRST: f32 = SIDEBAR_GAP - (SIDEBAR_HEADER - BUTTON_SMALL) / 2
 pub const SIDEBAR_LIST_GAP: f32 = SIDEBAR_GAP / 2.0;
 /// 侧栏的默认宽度。
 pub const DEFAULT_PANEL_WIDTH: f32 = 300.0;
+/// 最左侧项目列表的宽度（逻辑像素）：开着多个项目时显示。
+pub const PROJECTS_WIDTH: f32 = 190.0;
 /// 侧栏的最小宽度。
 ///
 /// macOS 上要恰好放下顶部的红绿灯（右端 80）、侧栏开关和靠右的视图切换（文件、搜索、提交三段

@@ -163,7 +163,7 @@ fn main() {
         app::restore_at_launch(&mut editor, session, backup_root.as_deref())
     };
     let silent = bench.silent();
-    // 上次退出时其他窗口开着的目录：没有命令行目标时与恢复上次的现场一样全部打开，各占一个窗口。
+    // 上次退出时其他项目开着的目录：没有命令行目标时与恢复上次的现场一样全部打开，各占一个项目。
     let others = if args.targets.is_empty() && !args.one_off() {
         state.others.clone()
     } else {

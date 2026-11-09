@@ -25,9 +25,19 @@ impl Winc {
         self.windows.iter().map(|slot| slot.key).collect()
     }
 
-    /// 测试用：把当前窗口设为 `key`。
+    /// 测试用：把当前窗口设为 `key`，不经过窗口交接（测试里没有系统窗口）。
     pub(crate) fn set_active(&mut self, key: WindowKey) {
         self.active = Some(key);
+    }
+
+    /// 测试用：当前项目。
+    pub(crate) fn active_for_test(&self) -> Option<WindowKey> {
+        self.active_key()
+    }
+
+    /// 测试用：把窗口交给项目 `key`，与点击侧栏条目走同一条路。
+    pub(crate) fn activate_for_test(&mut self, key: WindowKey) {
+        self.activate(key);
     }
 
     /// 测试用：跑一遍处理完事件后的那一步，返回窗口的请求和是否该结束事件循环。

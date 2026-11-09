@@ -86,11 +86,90 @@ impl App {
         self.renderer.as_ref().map(Renderer::shared_glyphs)
     }
 
+    /// 是否已经接上系统窗口和渲染资源（[`App::put_shell`]）。
+    pub(crate) fn has_shell(&self) -> bool {
+        self.window.is_some() && self.renderer.is_some()
+    }
+
+    /// 取出系统窗口和渲染资源，交给另一个项目（[`App::put_shell`]）。
+    ///
+    /// 编辑器、终端和后台任务都留在本项目里继续运行，只是不再绘制、不再收到窗口事件。
+    pub(crate) fn take_shell(&mut self) -> Option<crate::winc::Shell> {
+        let window = self.window.take()?;
+        let renderer = self.renderer.take()?;
+        window.set_ime_allowed(false);
+        self.hover = Hover::None;
+        self.drag = Drag::None;
+        self.tooltip_since = None;
+        self.tooltip_shown = false;
+        self.ime_cursor = None;
+        self.last_ime_area = None;
+        Some(crate::winc::Shell {
+            window,
+            renderer,
+            #[cfg(target_os = "macos")]
+            traffic_lights: self.traffic_lights.take(),
+            #[cfg(target_os = "macos")]
+            display_link: self.display_link.take(),
+            #[cfg(windows)]
+            display_link: self.display_link.take(),
+            occluded: self.occluded,
+        })
+    }
+
+    /// 接上 [`App::take_shell`] 取出的窗口和渲染资源：按本项目当前的状态重排、重画，并显示窗口。
+    pub(crate) fn put_shell(&mut self, shell: crate::winc::Shell) {
+        let window = shell.window.clone();
+        self.window = Some(shell.window);
+        self.renderer = Some(shell.renderer);
+        #[cfg(target_os = "macos")]
+        {
+            self.traffic_lights = shell.traffic_lights;
+            self.display_link = shell.display_link;
+        }
+        #[cfg(windows)]
+        {
+            self.display_link = shell.display_link;
+        }
+        self.occluded = shell.occluded;
+        self.window_hidden = false;
+        self.window_focused = window.has_focus();
+        window.set_ime_allowed(true);
+        self.measure_fonts();
+        self.sync_zoom();
+        self.update_window_title();
+        self.place_traffic_lights();
+        self.relayout();
+        self.ensure_caret_visible();
+        self.reset_blink();
+        // 先画好一帧再显示，切换时不会先露出上一个项目的画面。
+        self.request_redraw();
+        self.redraw();
+        window.set_minimized(false);
+        window.set_visible(true);
+        window.focus_window();
+    }
+
+    /// 没有可交接的窗口（进程里的第一个项目）：窗口由 [`crate::winc::Winc`] 调用 `resumed` 建立。
+    pub(crate) fn wake_shell(&mut self) {
+        if self.has_shell() {
+            self.request_redraw();
+        }
+    }
+
     /// 把窗口切到前台：关着的重新显示，最小化的还原。
+    ///
+    /// 项目还没有接上窗口时，请应用层把窗口交给它（切换项目，见 [`crate::winc::Request::Focus`]）。
     ///
     /// Wayland 上应用不能自行切到前台，有激活令牌（见 [`App::set_activation`]）时凭令牌请合成器
     /// 切换；其他情况请系统切换。
     pub(crate) fn raise(&mut self) {
+        if !self.has_shell() {
+            if let Some(key) = self.key {
+                self.shared.request(crate::winc::Request::Focus(key));
+            }
+            return;
+        }
         self.show_window();
         if let Some(window) = &self.window {
             window.set_minimized(false);
@@ -189,6 +268,17 @@ impl App {
         }
     }
 
+    /// 最左侧项目列表的宽度：开着多个项目时固定宽度，只有一个项目（或停在开始页上）时为 0。
+    ///
+    /// 只有一个项目时没有可切换的对象，列表不占位置，界面与没有项目列表时一样。
+    pub(crate) fn projects_width(&self) -> f32 {
+        if self.shared.projects().len() > 1 {
+            PROJECTS_WIDTH
+        } else {
+            0.0
+        }
+    }
+
     /// 重新计算各区域的矩形。
     ///
     /// 窗口尺寸、面板宽度、标签或预览状态变化后调用；面板跟着焦点关闭也在这一步完成。
@@ -239,9 +329,11 @@ impl App {
             0
         };
         let (panel, shown) = (self.panel_width, self.sidebar_shown());
+        let projects = self.projects_width();
         self.layout = Layout::compute(
             w,
             h,
+            projects,
             panel,
             shown,
             rows,

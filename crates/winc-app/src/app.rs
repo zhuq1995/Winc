@@ -167,7 +167,6 @@ pub enum UserEvent {
     /// 为 `true`。
     Move(Vec<PathBuf>, PathBuf, bool),
     /// 「要在哪里打开」提示框中做了选择：目录、是否在新窗口打开、是否勾选了「不再询问」。
-    OpenFolderIn(PathBuf, bool, bool),
     /// 后台格式化已有结果。
     Formatted,
     /// 提示框中回答了是否允许运行项目自带的格式化工具。
@@ -396,6 +395,10 @@ pub enum Hover {
     /// 选择面板里的一个按钮。
     PickerPart(PickerPart),
     ProjectName,
+    /// 侧栏最左侧项目列表中的条目。
+    Project(crate::winc::WindowKey),
+    /// 项目条目右端的关闭按钮。
+    ProjectClose(crate::winc::WindowKey),
     SidebarButton,
     NewTab,
     /// 标签栏无法容纳全部标签时显示在最右端的「⌄」，用于列出全部标签。
@@ -800,6 +803,10 @@ pub struct App {
     pub folded_hits: Vec<(Rect, usize)>,
     /// 侧栏标题行项目名的可点击区域，绘制时填入。
     pub project_hit: Rect,
+    /// 侧栏最左侧项目列表各条目的可点击区域和编号，绘制时填入。
+    pub projects_hits: Vec<(Rect, crate::winc::WindowKey)>,
+    /// 项目条目右端关闭按钮的可点击区域和编号。
+    pub projects_close: Vec<(Rect, crate::winc::WindowKey)>,
     /// 文件树工具栏各按钮的位置，绘制时填入，点击时使用。
     pub tree_tools: Vec<(Rect, TreeTool)>,
     /// 工具栏收起后「⋯」按钮的位置；所有按钮都放得下时为 `None`。
@@ -1062,6 +1069,10 @@ pub struct App {
     /// 窗口已关闭（隐藏），应用仍在运行：macOS 上关闭窗口不退出应用，点击程序坞中的图标时
     /// 重新显示窗口。
     pub window_hidden: bool,
+    /// 项目已经关掉（侧栏条目上的 ✕）：窗口和渲染器交给相邻的项目，本项目的状态随之释放。
+    ///
+    /// 最后一个项目不会置位：它留在开始页上，窗口仍然显示（见 `App::close_project_now`）。
+    pub(crate) project_closed: bool,
     /// 最近关闭的标签（路径和光标位置），⇧⌘T 按关闭的相反顺序重新打开。
     pub closed: Vec<(PathBuf, usize)>,
     /// 退出前是否需要询问用户（各窗口共用同一个值，见 [`crate::winc::Shared::ask_on_quit`]）。

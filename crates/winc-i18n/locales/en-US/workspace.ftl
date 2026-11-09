@@ -59,10 +59,6 @@ workspace-tree-drag-copy = Copy { $name }
 
 ## Open folder
 
-workspace-open-folder-where = Where do you want to open “{ $name }”?
-workspace-open-folder-where-detail = Opening it in this window closes “{ $current }” and its tabs and terminals.
-workspace-open-folder-this-window = This Window
-workspace-open-folder-new-window = New Window
 
 ## Start page
 
@@ -377,3 +373,4 @@ workspace-stdin-read-failed = Error reading standard input: { $error }
 workspace-stdin-truncated = Only the first { $size } MB of standard input was read
 workspace-backup-locked = This folder is open in another Winc window; unsaved changes in this window won’t be backed up automatically
 workspace-backup-failed = Couldn’t back up unsaved changes: { $error }
+workspace-projects-start-page = Start Page

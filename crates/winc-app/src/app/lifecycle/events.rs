@@ -457,9 +457,6 @@ impl App {
             | UserEvent::UpdateTick
             | UserEvent::UpdateState(_) => {}
             UserEvent::Move(paths, dir, never_ask) => self.confirm_move(&paths, &dir, never_ask),
-            UserEvent::OpenFolderIn(path, new_window, never_ask) => {
-                self.open_folder_in(&path, new_window, never_ask);
-            }
             UserEvent::Pasted(result) => self.pasted_into_tree(result),
             UserEvent::Copied(copies, failures) => self.copied_into_tree(copies, failures),
             UserEvent::Reopen => self.show_window(),

@@ -44,6 +44,7 @@ use overlays::{
 };
 pub(crate) use overlays::{picker_parts, picker_span};
 use status::draw_status;
+use workspace::projects::draw_projects;
 use workspace::sidebar::{
     draw_sidebar, draw_sidebar_button, draw_tree_overflow, draw_tree_overflow_closing,
     tree_overflow,
@@ -79,6 +80,8 @@ pub fn draw(app: &mut App, frame: &mut Frame<'_>) {
     app.tree_more = None;
     app.project_hit = Rect::default();
     app.begin_scrollbars();
+
+    draw_projects(app, frame);
 
     if layout.sidebar.right() > 0.0 {
         draw_sidebar(app, frame);

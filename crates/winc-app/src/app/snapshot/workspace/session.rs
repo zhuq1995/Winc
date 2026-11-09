@@ -568,7 +568,7 @@ fn edits_made_after_agreeing_to_quit_are_backed_up_too() {
 }
 
 #[test]
-fn closing_the_window_closes_the_folder_but_keeps_its_tabs_and_changes() {
+fn closing_the_window_hides_it_and_keeps_the_folder_and_its_tabs() {
     let dir = search_folder("close-window");
     let root = backup_root("close-window");
     let mut app = app_with(&dir.join("src/main.rs"), false);
@@ -588,11 +588,10 @@ fn closing_the_window_closes_the_folder_but_keeps_its_tabs_and_changes() {
         return;
     }
 
-    // macOS：不退出应用。窗口隐藏，目录和标签关闭，回到开始页；目录的现场和备份都留着，
-    // 之后退出时没有打开的目录，下次启动是开始页。
+    // macOS：不退出应用，窗口只是隐藏。窗口里放着所有项目，目录、标签和运行中的终端都留着，
+    // 点程序坞图标回来时原样显示。
     assert!(!app.quit_requested && app.window_hidden);
-    assert!(app.editor.workspace.is_none() && app.editor.documents.is_empty());
-    assert!(app.state.last.is_none());
+    assert!(app.editor.workspace.is_some() && app.editor.documents.len() == 2);
     let session = app
         .state
         .session_for(&folder)
@@ -604,25 +603,6 @@ fn closing_the_window_closes_the_folder_but_keeps_its_tabs_and_changes() {
     // 标签已经关闭，但后续的备份不会删除该备份文件。
     back_up_now(&mut app);
     assert_eq!(backups.read_all().len(), 1);
-
-    // 在同一个进程里从最近列表重新打开该目录：标签和未保存的内容都回来。
-    app.open_folder_now(&folder);
-    let names: Vec<_> = app
-        .editor
-        .documents
-        .iter()
-        .map(|d| d.name().into_owned())
-        .collect();
-    assert_eq!(names, ["main.rs", "Cargo.toml"]);
-    let main = &app.editor.documents[0];
-    assert!(main.is_dirty());
-    assert!(
-        main.text()
-            .rope()
-            .unwrap()
-            .to_string()
-            .starts_with("// 还没存\n")
-    );
 
     // 这时用 ⌘Q 退出：下次启动打开该目录。
     app.request_quit();
@@ -767,11 +747,11 @@ fn with_hot_exit_off_quitting_asks_and_then_drops_the_backups() {
     assert!(app.save_prompt.is_some() && !app.quit_requested);
     app.answer_save_prompt(SaveChoice::Cancel);
     assert_eq!(backups.read_all().len(), 1);
-    // 关闭窗口时同样询问；取消则窗口、目录和标签都不动。
-    app.request_close_window();
+    // 关闭项目时同样询问；取消则项目、目录和标签都不动。
+    app.request_close_project();
     assert!(app.save_prompt.is_some());
     app.answer_save_prompt(SaveChoice::Cancel);
-    assert!(!app.window_hidden && !app.quit_requested);
+    assert!(!app.project_closed && !app.quit_requested);
     assert!(app.editor.workspace.is_some() && !app.editor.documents.is_empty());
 
     // 不保存：退出并删除备份，下次启动不恢复。

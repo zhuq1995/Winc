@@ -59,7 +59,7 @@ common-dialog-worktree-placeholder = New or existing branch name
 common-dialog-branch-placeholder = New branch name
 common-dialog-branch-name = branch-name
 common-dialog-copy-ignored = Copy Ignored Files
-common-dialog-open-in-new-window = Open in New Window
+common-dialog-open-in-new-window = Open in New Project
 common-dialog-checkout-after-create = Check Out After Creating
 common-dialog-creating = Creating…
 

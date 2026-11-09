@@ -20,74 +20,19 @@ pub enum StartAction {
 }
 
 impl App {
-    /// 打开目录 `path`（「打开」面板、最近列表、拖进窗口）。
+    /// 打开目录 `path`（「打开」面板、最近列表、拖进窗口、命令行）。
     ///
-    /// 窗口里已经开着另一个目录时，按 `editor.openFolderInNewWindow` 在新窗口或此窗口打开；
-    /// 没有设置时弹出提示框询问。其余情况同 [`Self::switch_folder`]。
+    /// 目录已经开在某个项目里时切到那个项目，否则新开一个项目。当前项目不受影响：它的标签、
+    /// 未保存的内容和终端都留着。
     pub(in crate::app) fn open_folder(&mut self, path: &Path) {
         let target = winc_config::files::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let other = self.editor.root().is_some_and(|root| root != target);
-        if !other || self.focus_window_with(&target) {
+        // 还没有接到应用层（离屏测试、测量）：就在这个项目里打开，没有别的项目可以切换。
+        if self.key.is_none() {
             self.switch_folder(&target);
             return;
         }
-        match self.config.open_folder_in_new_window {
-            Some(true) => self.new_window(Some(target)),
-            Some(false) => self.switch_folder(&target),
-            None => self.ask_open_folder(target),
-        }
-    }
-
-    /// 询问在新窗口还是此窗口打开目录 `target`。
-    ///
-    /// 按钮从右向左为「此窗口」（↩）、「新窗口」、「取消」（Esc），上方是「不再询问」勾选框。
-    /// 没有窗口（测试中）时直接在此窗口打开。
-    fn ask_open_folder(&mut self, target: PathBuf) {
-        if self.window.is_some() {
-            use crate::app::AlertButton;
-            use winc_i18n::t;
-
-            let name = winc_editor::display_name(&target);
-            let current = self.editor.root().map(winc_editor::display_name);
-            let message = t!("workspace-open-folder-where", name = name);
-            let detail = t!(
-                "workspace-open-folder-where-detail",
-                current = current.unwrap_or_default()
-            );
-            let buttons = vec![
-                AlertButton::new(t!("workspace-open-folder-this-window")),
-                AlertButton::new(t!("workspace-open-folder-new-window")),
-                AlertButton::cancel(t!("common-cancel")),
-            ];
-            let asked = Some((t!("workspace-tree-dont-ask"), false));
-            self.show_alert(&message, &detail, buttons, asked, move |index, never| {
-                (index < 2).then(|| UserEvent::OpenFolderIn(target.clone(), index == 1, never))
-            });
-            return;
-        }
-
-        self.switch_folder(&target);
-    }
-
-    /// 处理「要在哪里打开」提示框上的选择：`new_window` 为真时在新窗口打开 `path`，否则在此
-    /// 窗口打开。
-    ///
-    /// `never_ask` 为真（勾选了「不再询问」）时把这次的选择写入配置，之后不再询问。
-    pub(in crate::app) fn open_folder_in(
-        &mut self,
-        path: &Path,
-        new_window: bool,
-        never_ask: bool,
-    ) {
-        if never_ask {
-            self.config.open_folder_in_new_window = Some(new_window);
-            self.save_config();
-        }
-        if new_window {
-            self.new_window(Some(path.to_path_buf()));
-        } else {
-            self.switch_folder(path);
-        }
+        self.shared
+            .request(crate::winc::Request::OpenFolder(target));
     }
 
     /// 打开目录 `path`。

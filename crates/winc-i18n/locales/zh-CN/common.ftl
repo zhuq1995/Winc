@@ -53,7 +53,7 @@ common-dialog-worktree-placeholder = 新分支名称或现有分支
 common-dialog-branch-placeholder = 新分支名称
 common-dialog-branch-name = 分支名称
 common-dialog-copy-ignored = 复制被忽略的文件
-common-dialog-open-in-new-window = 在新窗口中打开
+common-dialog-open-in-new-window = 在新项目中打开
 common-dialog-checkout-after-create = 创建后签出
 common-dialog-creating = 正在创建…
 

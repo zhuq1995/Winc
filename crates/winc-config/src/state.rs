@@ -31,8 +31,8 @@ pub struct State {
     pub sessions: Vec<Session>,
     /// 上次退出时开着的目录；退出时没有打开目录则为 `None`，下次启动显示开始页。
     pub last: Option<PathBuf>,
-    /// 上次退出时其他窗口开着的目录（`last` 是当前窗口的），下次启动时各开一个窗口；没有
-    /// 打开目录的窗口不记录。
+    /// 上次退出时其他项目开着的目录（`last` 是当前项目的），下次启动时各开一个项目；没有
+    /// 打开目录的项目不记录。
     ///
     /// 只在退出时写入。
     pub others: Vec<PathBuf>,

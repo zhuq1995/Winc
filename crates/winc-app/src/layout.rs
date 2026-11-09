@@ -34,6 +34,8 @@ pub use wrap::wrap_text;
 pub struct Layout {
     /// 整个窗口。
     pub window: Rect,
+    /// 最左侧的项目列表卡片；没有项目时为 0。
+    pub projects: Rect,
     /// 侧栏卡片，从窗口顶部的留白之下到状态栏。
     ///
     /// 宽度不随展开比例变化：未完全展开时左侧伸到窗口外，
@@ -93,6 +95,7 @@ impl Layout {
     /// 根据窗口大小和界面状态计算各区域的位置。
     ///
     /// - `width`、`height`：窗口的逻辑大小。
+    /// - `projects_width`：最左侧项目列表的宽度，0 表示不显示。
     /// - `panel_width`：侧栏完全展开时的宽度。
     /// - `shown`：侧栏露出的比例，0 为隐藏，1 为完全展开，动画中介于两者之间。
     /// - `search_rows`：查找条的行数，0 为关闭，1 为只有查找，2 为查找加替换。
@@ -103,6 +106,7 @@ impl Layout {
     pub fn compute(
         width: f32,
         height: f32,
+        projects_width: f32,
         panel_width: f32,
         shown: f32,
         search_rows: usize,
@@ -116,16 +120,28 @@ impl Layout {
 
         // 取整：拖动分隔条时宽度来自鼠标位置，可能是小数。`visible_w` 已取整；若 `full_w` 不取整，
         // 两者的小数差会落到侧栏起点上，拖动时整个侧栏会随鼠标左右抖动。
+        let projects_w = projects_width.max(0.0).round();
         let full_w = panel_width
-            .min((width - 320.0).max(MIN_PANEL_WIDTH))
+            .min((width - projects_w - 320.0).max(MIN_PANEL_WIDTH))
             .round();
         let visible_w = (full_w * shown.clamp(0.0, 1.0)).round();
         let side_x = visible_w - full_w;
         // 侧栏占据的一列宽 `full_w`：左侧和上方留出 `ISLAND_MARGIN`，右侧留出卡片间距的一半，
         // 其余是侧栏卡片。
         let m = ISLAND_MARGIN;
+        // 项目列表占最左侧一列：侧栏、编辑区都从它右边开始；没有项目时不占位置。
+        let left = if projects_w > 0.0 {
+            projects_w + ISLAND_GAP
+        } else {
+            0.0
+        };
+        let projects = if projects_w > 0.0 {
+            Rect::new(m, TOP_BAR_END, projects_w, (body_h - TOP_BAR_END).max(0.0))
+        } else {
+            Rect::default()
+        };
         let sidebar = Rect::new(
-            side_x + m,
+            left + side_x + m,
             m,
             full_w - m - ISLAND_GAP / 2.0,
             (body_h - m).max(0.0),
@@ -140,10 +156,10 @@ impl Layout {
         // 侧栏动画进行中（`shown` 小于 1）不显示分隔条，因此不能拖动；显示时宽 6 像素
         // （`ISLAND_GAP`）。
         let splitter_w = if shown >= 1.0 { 6.0 } else { 0.0 };
-        let splitter = Rect::new(visible_w - 3.0, 0.0, splitter_w, body_h);
+        let splitter = Rect::new(left + visible_w - 3.0, 0.0, splitter_w, body_h);
 
         // 编辑区卡片从侧栏卡片右侧的间距之后开始；侧栏隐藏时与窗口左边缘相隔 `ISLAND_MARGIN`。
-        let main_x = (visible_w + ISLAND_GAP / 2.0).max(m);
+        let main_x = (left + visible_w + ISLAND_GAP / 2.0).max(left + m);
         let main_w = (width - m - main_x).max(0.0);
         let top_bar = Rect::new(main_x, m, main_w, TOP_BAR);
 
@@ -199,6 +215,7 @@ impl Layout {
 
         Layout {
             window,
+            projects,
             sidebar,
             sidebar_header,
             tree,

@@ -23,6 +23,21 @@ impl App {
             return;
         }
 
+        // 项目列表：点条目切过去，点右端的 ✕ 关掉那个项目（先切过去，让它的确认显示在窗口里）。
+        if button == MouseButton::Left
+            && let Some(target) = self.project_at(x, y)
+        {
+            match target {
+                Hover::Project(key) => self.shared.request(crate::winc::Request::Focus(key)),
+                Hover::ProjectClose(key) => {
+                    self.shared.request(crate::winc::Request::CloseProject(key));
+                }
+                _ => {}
+            }
+            self.set_hover(target);
+            return;
+        }
+
         // 鼠标侧面的两个键：后退、前进。
         if matches!(button, MouseButton::Back | MouseButton::Forward) {
             if !self.settings.open && self.form_dialog.is_none() {

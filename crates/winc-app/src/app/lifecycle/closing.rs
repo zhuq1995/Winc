@@ -13,8 +13,10 @@ pub enum CloseRequest {
     Tabs(Vec<DocumentId>),
     /// 退出：关闭所有标签。
     Quit,
-    /// 关闭窗口而不退出应用（macOS）：关闭所有标签和目录，隐藏窗口。
+    /// 关闭窗口而不退出应用（macOS）：隐藏窗口，项目和标签都留着。
     CloseWindow,
+    /// 关掉这个项目（侧栏条目上的 ✕）：关闭所有标签、目录和终端，窗口让给下一个项目。
+    CloseProject,
     /// 切换到另一个目录：关闭所有标签，再打开该目录。
     Switch(PathBuf),
     /// 关闭目录，回到开始页。
@@ -81,19 +83,23 @@ impl App {
 
     /// 处理关闭窗口：标题栏左侧的关闭按钮、`⇧⌘W`，以及没有标签时的 `⌘W`。
     ///
-    /// macOS 上关闭窗口不退出应用：关闭目录和所有标签，隐藏窗口，应用留在程序坞中，点击
-    /// 图标时窗口带着开始页回来，退出用 ⌘Q；其他平台上关闭窗口就是退出，还有别的窗口时只关闭
-    /// 当前窗口。开着目录的窗口与退出一样不逐个询问，未保存的内容写入备份；没开目录的窗口逐个
-    /// 询问。窗口关闭后其中的终端随之结束，有程序在运行时先确认；macOS 上终端继续运行，不确认。
+    /// 窗口里放着所有项目。macOS 上关闭窗口不退出应用：隐藏窗口，项目和标签都留着，点击程序坞
+    /// 图标原样回来，退出用 ⌘Q；其他平台上关闭窗口就是退出，各项目的未保存内容和终端按退出流程
+    /// 逐个确认。
     pub(in crate::app) fn request_close_window(&mut self) {
-        if self.shared.others() {
-            if !self.confirm_terminal_quit(CloseRequest::CloseWindow) {
-                self.request_close(CloseRequest::CloseWindow);
-            }
-        } else if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") {
             self.request_close(CloseRequest::CloseWindow);
         } else {
             self.request_quit();
+        }
+    }
+
+    /// 处理关闭项目（侧栏条目右端的 ✕）：先确认终端里运行中的程序，再关闭标签、目录和终端。
+    ///
+    /// 还有别的项目时，窗口交给相邻的项目；这是最后一个项目时留在开始页上。
+    pub(crate) fn request_close_project(&mut self) {
+        if !self.confirm_terminal_quit(CloseRequest::CloseProject) {
+            self.request_close(CloseRequest::CloseProject);
         }
     }
 
@@ -148,7 +154,11 @@ impl App {
         // 打开该目录时恢复。没开目录的窗口关闭后，这些备份没有恢复的时机，因此逐个询问。
         let backed_up = match request {
             CloseRequest::Quit => self.back_up_for_quit(),
-            CloseRequest::CloseWindow if self.editor.workspace.is_some() => self.back_up_for_quit(),
+            CloseRequest::CloseWindow | CloseRequest::CloseProject
+                if self.editor.workspace.is_some() =>
+            {
+                self.back_up_for_quit()
+            }
             _ => Default::default(),
         };
         let dirty: Vec<DocumentId> = self
@@ -160,6 +170,7 @@ impl App {
                 CloseRequest::Tabs(ids) => ids.contains(&d.id),
                 CloseRequest::Quit
                 | CloseRequest::CloseWindow
+                | CloseRequest::CloseProject
                 | CloseRequest::Switch(_)
                 | CloseRequest::CloseFolder => true,
             })
@@ -307,6 +318,7 @@ impl App {
                 self.quit_requested = true;
             }
             CloseRequest::CloseWindow => self.close_window_now(),
+            CloseRequest::CloseProject => self.close_project_now(),
             CloseRequest::Switch(folder) => {
                 self.remove_all_tabs();
                 self.close_all_terminal_tabs();
@@ -323,22 +335,36 @@ impl App {
         self.request_redraw();
     }
 
-    /// 关闭窗口而不退出应用（macOS）；询问过的文档都已保存或放弃。
+    /// 关闭窗口而不退出应用（macOS）。
     ///
-    /// 与退出时一样留下已备份的内容，并记下目录的现场；再把这些备份交给磁盘保管（不随标签
-    /// 关闭而删除），关闭所有标签和目录，隐藏窗口。以后从最近列表打开该目录时，标签和未保存的
-    /// 内容都恢复。
+    /// 窗口里放着所有项目，项目和运行中的终端都留着：只记下窗口大小和目录的现场，然后隐藏。
     fn close_window_now(&mut self) {
+        self.remember_window();
+        self.remember_session();
+        self.close_settings();
+        self.hide_window();
+    }
+
+    /// 关闭这个项目：标签、目录和终端都结束，窗口交给相邻的项目。
+    ///
+    /// 与退出时一样先记下目录的现场、把未保存的内容写进备份；这是最后一个项目时留在开始页上，
+    /// 不置 `project_closed`。
+    fn close_project_now(&mut self) {
         self.remember_window();
         self.quit_backups();
         self.remember_session();
         self.leave_backups_on_disk();
         self.remove_all_tabs();
+        self.close_all_terminal_tabs();
+        self.set_terminal_open(false);
         if self.editor.workspace.is_some() {
             self.close_folder_now();
         }
         self.close_settings();
-        self.hide_window();
+        self.project_closed = self.shared.others();
+        self.focus = Focus::Editor;
+        self.relayout();
+        self.request_redraw();
     }
 
     fn remove_all_tabs(&mut self) {
