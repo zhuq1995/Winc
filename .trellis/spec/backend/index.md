@@ -20,6 +20,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |
 | [Window and Projects](./window-projects.md) | One window, many projects: shell hand-off, event routing, layout and state | Filled |
+| [Git Staging](./git-staging.md) | Real index, group identity, diff baselines, save-before-stage and write exclusion | Filled |
 
 ---
 
