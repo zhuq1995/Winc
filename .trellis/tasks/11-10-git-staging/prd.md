@@ -76,6 +76,7 @@
 - [x] A8（R4、R7）：无首个提交、空文件、新增、删除、重命名、混合两侧变化、CRLF 与带特殊字符路径具有针对性覆盖；受限文件有整文件入口与说明。
 - [x] A9（R3、R7）：修改上次提交、撤销提交、提交并推送、冲突解决与变基继续使用一致的暂存语义；锁冲突和操作失败显示原因并允许刷新重试。
 - [x] A10（R2、R3）：树形／平铺、折叠、多选、键盘、亮暗主题和窄侧栏布局具有交互或截图覆盖；两种语言和可用平台构建检查记录在任务中。
+- [x] A11（R2）：行内 ＋／− 位于行右端：更改区的文件、目录、组标题分别暂存该文件、该目录在组内的文件、整组；暂存区最右是 −，没有回滚按钮，按下退回更改区且工作区不变。
 
 ## 验收记录
 
@@ -90,6 +91,7 @@
   - A8 `unstaging_before_the_first_commit_removes_the_entries`、`partial_staging_new_deleted_and_empty_files`、`staging_a_rename_covers_the_old_path_too`、`partial_staging_keeps_crlf_bom_and_missing_final_newline`、`partial_staging_does_not_touch_files_with_similar_names`、`partial_staging_rejects_binary_and_conflicted_content`
   - A9 `amending_an_empty_index_does_not_stage_everything`、`the_last_local_commit_can_be_undone`、`files_with_conflict_markers_are_not_committed`、`committing_while_a_rebase_stopped_continues_it`、`partial_staging_reports_a_locked_index`
   - A10 树形／平铺、折叠、多选、键盘由交互测试覆盖；`shoot_commit_view`、`shoot_commit_widths` 为手动截图测试
+  - A11 `the_rightmost_button_stages_or_unstages`、`the_commit_more_menu_greys_out_what_does_not_apply`
 
 ## 已知限制
 

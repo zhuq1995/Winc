@@ -30,6 +30,7 @@ pub fn commit(&self, root: &Path, message: &str, amend: bool) -> Result<String, 
 
 ## 3. 契约
 
+- **行内入口**：组标题、目录、文件行最右是 ＋／−（`GroupStage`／`DirStage`／`FileStage`），悬停时出现；暂存区没有回滚按钮（− 即撤回到更改区），整组回滚只在更改区。
 - **行身份**：`(仓库根目录, CommitGroup, 路径)`。同一路径可以同时出现在“已暂存的更改”和“更改”，禁止用 `Status::entries` 下标或单独路径区分。改名条目还带 `Entry::from`，整文件操作覆盖新旧两个路径。
 - **分组**：合并更改（有冲突时）／已暂存的更改（`staged.is_some()`）／更改（`unstaged.is_some()`）。未跟踪未忽略文件在“更改”。
 - **差异基准**：已暂存 = `HEAD` ↔ `index_content`，只读；更改 = `index_content` ↔ 当前文档或磁盘。`HEAD` 不变而 index 变化时也要刷新两侧。
