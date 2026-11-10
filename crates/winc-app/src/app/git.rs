@@ -427,7 +427,7 @@ fn prepare(
                     (
                         Some(text),
                         Some(encoding),
-                        t!("git-diff-side-staged"),
+                        t!("git-diff-side-index"),
                         language,
                     )
                 }
@@ -486,7 +486,10 @@ fn prepare(
         DiffSide::new(title, new.as_deref().unwrap_or(""), editable, language)
             .with_missing(new.is_none()),
     );
-    view.source = revision;
+    // 已暂存的一侧不跟着文档走：右侧取自暂存区，编辑文档不改变它的内容。
+    if compare != Compare::Staged {
+        view.source = revision;
+    }
     view.repo_path = Some(path.to_path_buf());
     Ok(view)
 }

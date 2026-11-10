@@ -37,7 +37,7 @@ pub(super) struct Staged {
     pub seq: u64,
     /// 是暂存；`false` 是取消暂存。
     pub stage: bool,
-    /// 这次请求涉及的文件数。
+    /// 这次请求涉及的文件数；整个仓库时为 0。
     pub files: usize,
     /// 结果；失败时是 Git 给出的原因。
     pub result: Result<(), String>,
@@ -68,14 +68,14 @@ fn busy() -> MutexGuard<'static, Option<HashSet<PathBuf>>> {
 }
 
 /// 占用工作树 `root`，返回是否成功；已被占用（本轮或另一个项目）时返回 `false`。
-fn claim(root: &Path) -> bool {
+pub(super) fn claim(root: &Path) -> bool {
     busy()
         .get_or_insert_with(HashSet::new)
         .insert(winc_editor::canonical_path(root))
 }
 
 /// 放开工作树 `root`。
-fn release(root: &Path) {
+pub(super) fn release(root: &Path) {
     if let Some(worktrees) = busy().as_mut() {
         worktrees.remove(&winc_editor::canonical_path(root));
     }
@@ -244,6 +244,14 @@ impl App {
         };
         let cancel = winc_editor::format::Cancel::default();
         let staged = file.group == CommitGroup::Staged;
+        let name = winc_editor::display_name(&file.path).into_owned();
+        // 符号链接的内容是链接目标，磁盘上读到的是目标文件：两侧对不上，只提供整文件操作。
+        if !staged
+            && std::fs::symlink_metadata(&file.path).is_ok_and(|m| m.file_type().is_symlink())
+        {
+            self.flash(t!("git-stage-partial-symlink", name = name));
+            return None;
+        }
         // 两侧的原始内容：暂存看 `HEAD` 和暂存区，取消暂存看 `HEAD` 和暂存区，更改看暂存区和磁盘。
         let read = |path: &Path| -> Result<Option<Vec<u8>>, String> {
             if staged {
@@ -271,7 +279,6 @@ impl App {
             match std::fs::read(&file.path) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    let name = winc_editor::display_name(&file.path).into_owned();
                     self.notify(t!(
                         "git-read-file-failed",
                         name = name,
@@ -282,7 +289,6 @@ impl App {
             }
         };
         // 部分暂存按 UTF-8 文本映射暂存区里的字节：带 BOM 或不是 UTF-8 时只提供整文件操作。
-        let name = winc_editor::display_name(&file.path).into_owned();
         let has_bom = |bytes: &[u8]| bytes.starts_with(&[0xef, 0xbb, 0xbf]);
         if has_bom(&old) || has_bom(&new) {
             self.flash(t!("git-stage-partial-bom", name = name));
@@ -394,6 +400,9 @@ impl App {
                     content,
                 } => git.unstage_partial(root, &path, &content),
             });
+            // 暂存区写完就放开工作树：发起它的项目随后关闭时结果会被丢弃，占用不能留给同一进程里
+            // 的其他项目。
+            release(root);
             let _ = sender.send(Staged {
                 root: root.to_path_buf(),
                 seq,
@@ -407,16 +416,16 @@ impl App {
     /// 收下后台交回来的暂存结果：成功与失败都重新读取真实状态，失败时显示 Git 的原因。
     pub(in crate::app) fn poll_stage(&mut self) {
         while let Ok(done) = self.commit.stage_results.1.try_recv() {
-            release(&done.root);
             if self.git.root.as_deref() != Some(done.root.as_path()) {
                 // 等结果的时候换了仓库：只说一声结果，不动现在这个仓库的状态。
                 let name = winc_editor::display_name(&done.root).into_owned();
-                let count = done.files;
                 match done.result {
                     Ok(()) if done.stage => {
-                        self.flash(t!("git-stage-done-in", name = name, count = count))
+                        self.flash(t!("git-stage-done-in", name = name, count = done.files))
                     }
-                    Ok(()) => self.flash(t!("git-unstage-done-in", name = name, count = count)),
+                    Ok(()) => {
+                        self.flash(t!("git-unstage-done-in", name = name, count = done.files))
+                    }
                     Err(error) => {
                         self.notify(t!("git-stage-failed-in", name = name, error = error))
                     }
@@ -427,10 +436,9 @@ impl App {
                 continue;
             }
             self.commit.staging = false;
-            let count = done.files;
             match done.result {
-                Ok(()) if done.stage => self.flash(t!("git-stage-done", count = count)),
-                Ok(()) => self.flash(t!("git-unstage-done", count = count)),
+                Ok(()) if done.stage => self.flash(t!("git-stage-done", count = done.files)),
+                Ok(()) => self.flash(t!("git-unstage-done", count = done.files)),
                 Err(error) => self.notify_with(
                     t!("git-stage-failed", error = error),
                     NoticeAction::GitOutput,

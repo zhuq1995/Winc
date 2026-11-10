@@ -241,11 +241,24 @@ git-undo-commit-done-in = 已在「{ $name }」中撤销提交 { $oid }
 git-undo-commit-failed = 无法撤销提交：{ $error }
 git-stage-partial-not-utf8 = 「{ $name }」不是 UTF-8 文本，无法仅暂存部分更改
 git-stage-partial-bom = 「{ $name }」带有字节顺序标记，只支持整文件暂存
+git-stage-partial-symlink = 「{ $name }」是符号链接，只支持整文件暂存
 git-stage-busy = 正在写暂存区，完成后再试
-git-stage-done = 已暂存 { $count } 个文件
-git-unstage-done = 已取消暂存 { $count } 个文件
-git-stage-done-in = 已暂存「{ $name }」里的 { $count } 个文件
-git-unstage-done-in = 已取消暂存「{ $name }」里的 { $count } 个文件
+git-stage-done = { $count ->
+    [0] 已暂存全部更改
+   *[other] 已暂存 { $count } 个文件
+}
+git-unstage-done = { $count ->
+    [0] 已取消暂存全部更改
+   *[other] 已取消暂存 { $count } 个文件
+}
+git-stage-done-in = { $count ->
+    [0] 已暂存「{ $name }」里的全部更改
+   *[other] 已暂存「{ $name }」里的 { $count } 个文件
+}
+git-unstage-done-in = { $count ->
+    [0] 已取消暂存「{ $name }」里的全部更改
+   *[other] 已取消暂存「{ $name }」里的 { $count } 个文件
+}
 git-stage-failed = 暂存失败：{ $error }
 git-stage-failed-in = 在「{ $name }」里暂存失败：{ $error }
 git-stage-save-pending = 「{ $name }」还在保存，暂存没有开始
@@ -254,7 +267,7 @@ git-stage-selection-stale = 选中的改动已经变化，请重新选择
 git-abort-confirm = 要中止{ $operation }吗？
 git-abort-confirm-detail = 工作区将恢复到操作开始前的状态，已解决的冲突将被丢弃。
 git-abort-confirm-button = 中止{ $operation }
-git-rollback-nothing-checked = 请先勾选要回滚的文件
+git-rollback-nothing-checked = 当前没有可以回滚的文件
 git-rollback-confirm-one = 要回滚「{ $name }」的更改吗？
 git-rollback-confirm-many = 要回滚 { $count } 个文件的更改吗？
 git-rollback-confirm-detail = 已跟踪的文件将恢复为上次提交时的内容，未跟踪的文件将移到{ common-trash }。
@@ -283,7 +296,6 @@ git-diff-side-worktree-deleted = 工作区 · 已删除
 git-diff-side-head-missing = HEAD · 文件不存在
 git-diff-side-index = 暂存区
 git-diff-side-index-missing = 暂存区 · 文件不存在
-git-diff-side-staged = 暂存区
 git-diff-index-unreadable = 读不出「{ $name }」在暂存区里的内容：{ $error }
 
 ## 信任仓库的配置
@@ -515,6 +527,7 @@ git-commit-group-staged = 已暂存的更改
 git-commit-nothing-to-commit = 没有可以提交的更改
 git-commit-stage-all-confirm = 暂存全部更改并提交？
 git-commit-stage-all-detail = 会暂存当前仓库「{ $name }」的全部更改，包括未跟踪且未被忽略的文件，然后提交。
+git-commit-stage-all-push = 提交完成后，新提交会推送到上游分支。
 git-commit-stage-all-button = 暂存全部并提交
 git-commit-open-deleted = 文件已删除，无法打开
 git-log-files-changed = 更改了 { $count } 个文件

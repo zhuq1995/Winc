@@ -99,6 +99,13 @@ impl App {
             let shown: HashSet<&CommitFile> = selection.iter().collect();
             let mut hidden: Vec<CommitFile> = (self.commit.marked.iter())
                 .filter(|f| !shown.contains(f))
+                // 刷新后已经不在这一组里的记录不再算选中：按它操作会落到变了的条目上。
+                .filter(|f| {
+                    status
+                        .entries
+                        .iter()
+                        .any(|e| e.path == f.path && f.group.holds(e))
+                })
                 .cloned()
                 .collect();
             hidden.sort_by_key(|f| {

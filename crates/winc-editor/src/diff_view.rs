@@ -267,12 +267,10 @@ pub struct DiffView {
     ///
     /// 没有时为 `None`。
     pub read_selection: Option<ReadSelection>,
-    /// 每段改动的 [`diff::hunk_key`]，下标同 `hunks`：按块提交时按它认出勾掉的改动。
+    /// 每段改动的 [`diff::hunk_key`]，下标同 `hunks`：按块暂存时按它认出选中的改动。
     pub keys: Vec<u64>,
     /// 这份差异对应仓库里的哪个文件（和仓库状态里的路径同一种写法）；不是 Git 的差异时为
     /// `None`。
-    ///
-    /// 按块提交时用它找到提交视图里的文件。
     pub repo_path: Option<PathBuf>,
 }
 

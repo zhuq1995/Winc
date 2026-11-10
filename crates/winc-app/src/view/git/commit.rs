@@ -1401,8 +1401,7 @@ fn draw_row(
                 Some(overflow) => overflow.actions,
                 None => hovered.then(|| file_actions(band)),
             };
-            // 文件没有箭头：勾选框和同一层目录的勾选框对齐；平铺时没有层级，和组标题的勾选框
-            // 对齐。
+            // 文件没有箭头：＋／− 和同一层目录的 ＋／− 对齐；平铺时没有层级，和组标题的对齐。
             let file_check = check_x(file_column(app, *depth));
             let name = entry
                 .path
@@ -1767,12 +1766,12 @@ fn draw_card(
     }
 
     // 「提交 ⌄」：强调色的拆分按钮，左边「✓ 提交」，右边一道细竖线隔开下拉箭头。
-    // 无法提交（见 `CommitState::blocker`：未勾选文件、未填写说明、仍有冲突标记）时按钮整体
-    // 变淡且悬停不变色，表示按下不会生效；变基暂停时无需勾选即可继续。正在提交时保持强调色，
-    // 只是不响应悬停，按钮不在提交前后闪成灰色。
+    // 无法提交（见 `CommitState::blocker`：暂存区为空、未填写说明、仍有冲突标记）时按钮整体
+    // 变淡且悬停不变色，表示按下不会生效；变基暂停时无需暂存即可继续。正在提交或写暂存区时
+    // 保持强调色，只是不响应悬停，按钮不在提交前后闪成灰色。
     let (main, menu) = (parts.commit, parts.commit_menu);
     let whole = Rect::new(main.x, main.y, menu.right() - main.x, main.h);
-    let busy = app.commit.busy;
+    let busy = app.commit.busy || app.commit.staging;
     let ready = !busy
         && app
             .git
@@ -1928,7 +1927,8 @@ fn row_text(app: &App, status: &Status, root: &Path, row: &CommitRow) -> Option<
                 .parent()
                 .and_then(|p| p.strip_prefix(root).ok())
                 .filter(|p| app.commit.flat() && !p.as_os_str().is_empty())
-                .map(|p| p.to_string_lossy().into_owned());
+                // 折叠目录链的代码按「/」分段：Windows 的路径分隔符在这里换成「/」。
+                .map(|p| p.to_string_lossy().replace('\\', "/"));
             let change = entry.shown();
             let selected = app.commit_is_selected(&CommitFile::new(*group, entry.path.clone()));
             Some(RowText {
@@ -1962,11 +1962,12 @@ pub(in crate::view) fn commit_overflow(app: &App, frame: &mut Frame<'_>) -> Opti
         ) => r,
         // 鼠标移到跟在全名后面的按钮上时，仍保持全名显示。
         Hover::Commit(
-            CommitTarget::File { index: f, .. }
-            | CommitTarget::FileStage { index: f, .. }
-            | CommitTarget::OpenFile(f)
-            | CommitTarget::RevertFile(f),
-        ) => rows
+            CommitTarget::File { group: g, index: f }
+            | CommitTarget::FileStage { group: g, index: f },
+        ) => rows.iter().position(
+            |r| matches!(r, CommitRow::File { group, index, .. } if *index == f && *group == g),
+        )?,
+        Hover::Commit(CommitTarget::OpenFile(f) | CommitTarget::RevertFile(f)) => rows
             .iter()
             .position(|r| matches!(r, CommitRow::File { index, .. } if *index == f))?,
         _ => return None,

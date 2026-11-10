@@ -632,7 +632,7 @@ fn draw_body(
         }
 
         // 行的 ＋／−：暂存或取消暂存这一行。改动行在鼠标移到这一格时显示。
-        if let (0, Some(sign), Some(h)) = (part, stage, hunk) {
+        if let (0, Some(sign), Some(_)) = (part, stage, hunk) {
             let cell = parts.line_checks[side];
             let rect = Rect::new(cell.x, y, cell.w, lh);
             let target = DiffTarget::StageLine(side, line);
@@ -652,7 +652,6 @@ fn draw_body(
                     body,
                 );
             }
-            let _ = h;
             hits.push((rect.intersect(body), target));
         }
 

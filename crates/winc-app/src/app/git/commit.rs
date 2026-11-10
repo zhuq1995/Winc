@@ -675,6 +675,11 @@ impl CommitState {
         self.marked.clear();
         self.anchor = None;
     }
+
+    /// 记下提交成功以后是否继续推送；确认框确认后恢复「提交并推送」的意图。
+    pub(in crate::app) fn push_after_commit(&mut self, push: bool) {
+        self.push_after = push;
+    }
 }
 
 impl Default for CommitState {
@@ -969,6 +974,7 @@ impl App {
     pub(crate) fn commit_pushes(&self) -> bool {
         self.modifiers.alt_key()
             && !self.commit.busy
+            && !self.commit.staging
             && !self.commit.amend
             && (self.git.status.as_ref()).is_some_and(|s| s.operation.is_none())
     }
@@ -1427,7 +1433,7 @@ impl App {
     /// 提交视图标题行「⋯」的菜单：Git 操作（继续和中止、储藏、远程仓库，见 [`branch_menu`]）；
     /// 以树形显示（排成树时打勾）、全部展开、全部折叠（已经是那样的灰显）；显示 Git 输出。
     ///
-    /// 刷新是标题行上的按钮，拉取、推送、获取在分支选择器里，回滚勾选的文件在组标题上，这里不重复。
+    /// 刷新是标题行上的按钮，拉取、推送、获取在分支选择器里，回滚在组标题上，这里不重复。
     pub(in crate::app) fn commit_more_menu(
         &self,
     ) -> Vec<crate::app::input::context_menu::MenuEntry> {
@@ -1499,13 +1505,12 @@ impl App {
 
     /// 提交暂存区的内容，成功以后继续推送。
     pub(in crate::app) fn git_commit_and_push(&mut self) {
-        let before = self.commit.push_after;
         self.commit.push_after = true;
         self.git_commit();
-        // 没有真的开始提交（没写信息、没有可提交的内容），就不留着「之后推送」；正在等用户确认
-        // 「暂存全部并提交」时留着，确认以后提交完成再推送。
-        if !self.commit.busy && self.alert.is_none() {
-            self.commit.push_after = before;
+        // 没有真的开始提交（没写信息、还有冲突），就不留着「之后推送」。确认「暂存全部并提交」时
+        // 推送意图已经交给确认框（见 `App::confirm_stage_all_commit`），这里清掉不影响它。
+        if !self.commit.busy {
+            self.commit.push_after = false;
         }
     }
 
@@ -1779,8 +1784,8 @@ impl App {
         });
     }
 
-    /// 撤销上一次提交：分支退回上一个提交，改动留在暂存区并保持勾选，提交信息填回输入框（输入框里
-    /// 已经写了别的时不覆盖）。
+    /// 撤销上一次提交：分支退回上一个提交，改动留在暂存区，提交信息填回输入框（输入框里已经写了
+    /// 别的时不覆盖）。
     pub(in crate::app) fn undo_last_commit(&mut self) {
         let Some(last) = self.commit_undoable().cloned() else {
             return;

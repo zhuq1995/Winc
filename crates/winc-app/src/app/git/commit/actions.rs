@@ -3,6 +3,7 @@
 use winc_editor::git::Synced;
 use winc_i18n::t;
 
+use super::stage::{claim, release};
 use super::*;
 use crate::app::git::branch::{Then, keep_changes};
 use crate::app::lifecycle::notice::NoticeAction;
@@ -103,9 +104,14 @@ impl App {
     }
 
     /// 提交并推送：可以提交时用提示框询问，写明提交多少文件、推到哪个分支；不能提交时由提交的入口
-    /// 说明原因。
+    /// 说明原因。暂存区为空时只问「暂存全部并提交」，那一个提示框也写明提交后会推送。
     pub(in crate::app) fn confirm_commit_and_push(&mut self) {
+        let staged = (self.git.status.as_ref()).is_some_and(|status| {
+            (status.entries.iter()).any(|e| !e.conflicted() && e.staged.is_some())
+        });
         let ready = !self.commit.busy
+            && !self.commit.staging
+            && (staged || self.commit.amend)
             && (self.git.status.as_ref())
                 .is_some_and(|status| self.commit.blocker(status).is_none());
         if !ready {
@@ -191,31 +197,33 @@ impl App {
             .filter(|e| !e.conflicted() && e.staged.is_some())
             .count();
         if staged == 0 && !self.commit.amend {
-            // 暂存区为空：由用户确认暂存全部并提交。列表截断时「全部」仍是当前仓库。
-            self.confirm_stage_all_commit();
+            // 暂存区为空：由用户确认暂存全部并提交。列表截断时「全部」仍是当前仓库。推送意图
+            // 先收起来，确认以后再恢复：取消确认不留着它。
+            let push = std::mem::take(&mut self.commit.push_after);
+            self.confirm_stage_all_commit(push);
             return;
         }
         self.commit_staged(message);
     }
 
-    /// 确认「暂存全部并提交」：文案写明范围是当前仓库，包含未跟踪且未被忽略的文件。
-    fn confirm_stage_all_commit(&mut self) {
+    /// 确认「暂存全部并提交」：文案写明范围是当前仓库，包含未跟踪且未被忽略的文件。`push` 为真时
+    /// 提交完成后继续推送。
+    fn confirm_stage_all_commit(&mut self, push: bool) {
         let Some(root) = self.git.root.clone() else {
             self.flash(t!("git-not-a-repository"));
             return;
         };
         let name = winc_editor::display_name(&root).into_owned();
         let message = t!("git-commit-stage-all-confirm");
-        let detail = t!("git-commit-stage-all-detail", name = name.as_str());
-        let button = t!("git-commit-stage-all-button");
-        if self.window.is_some() {
-            self.show_confirm(message, &detail, button, |ok| {
-                ok.then_some(UserEvent::GitStageAllCommit)
-            });
-            return;
+        let mut detail = t!("git-commit-stage-all-detail", name = name.as_str()).to_owned();
+        if push {
+            detail.push('\n');
+            detail.push_str(t!("git-commit-stage-all-push"));
         }
-        // 没有窗口（测试中）时直接执行。
-        self.git_stage_all_and_commit();
+        let button = t!("git-commit-stage-all-button");
+        self.show_confirm(message, &detail, button, move |ok| {
+            ok.then_some(UserEvent::GitStageAllCommit(push))
+        });
     }
 
     /// 确认之后：保存→暂存全部→提交，串行执行；哪一步失败就停在哪一步。
@@ -249,18 +257,24 @@ impl App {
     }
 
     /// 先暂存整个仓库再提交（空暂存区确认之后）。
-    ///
-    /// shortcut: 这条路径不占用 stage.rs 的工作树写锁，同应用另一项目并发写同一工作树时由 Git 的
-    /// 索引锁拒绝；需要跨项目排队时再统一占用。
     fn commit_staged_after_staging_all(&mut self, message: String) {
         let amend = self.commit.amend;
         let sender = self.commit.results.0.clone();
+        let Some(root) = self.git.root.clone() else {
+            return;
+        };
+        // 这一步先写暂存区：与其他项目写同一工作树时同样占用工作树。
+        if !claim(&root) {
+            self.flash(t!("git-stage-busy"));
+            return;
+        }
         self.commit.busy = true;
         self.run_git_job(move |git, root| {
             let result = git.and_then(|git| {
                 git.stage_all(root)?;
                 git.commit(root, &message, amend)
             });
+            release(root);
             let _ = sender.send(Outcome::Committed(result, message, root.to_path_buf()));
         });
     }

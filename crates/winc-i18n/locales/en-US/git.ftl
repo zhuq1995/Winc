@@ -297,17 +297,26 @@ git-undo-commit-done-in = Undid commit { $oid } in “{ $name }”
 git-undo-commit-failed = Couldn't undo the commit: { $error }
 git-stage-partial-not-utf8 = “{ $name }” isn't UTF-8 text, so its changes can't be partially staged
 git-stage-partial-bom = “{ $name }” starts with a byte order mark, so only the whole file can be staged
+git-stage-partial-symlink = “{ $name }” is a symbolic link, so only the whole file can be staged
 git-stage-busy = The staging area is being updated; try again when it finishes
 git-stage-done = { $count ->
+    [0] Staged all changes
     [one] Staged { $count } file
    *[other] Staged { $count } files
 }
 git-unstage-done = { $count ->
+    [0] Unstaged all changes
     [one] Unstaged { $count } file
    *[other] Unstaged { $count } files
 }
-git-stage-done-in = Staged { $count } files in “{ $name }”
-git-unstage-done-in = Unstaged { $count } files in “{ $name }”
+git-stage-done-in = { $count ->
+    [0] Staged all changes in “{ $name }”
+   *[other] Staged { $count } files in “{ $name }”
+}
+git-unstage-done-in = { $count ->
+    [0] Unstaged all changes in “{ $name }”
+   *[other] Unstaged { $count } files in “{ $name }”
+}
 git-stage-failed = Staging failed: { $error }
 git-stage-failed-in = Staging failed in “{ $name }”: { $error }
 git-stage-save-pending = “{ $name }” is still being saved; staging didn't start
@@ -319,7 +328,7 @@ git-stage-selection-stale = The selected changes have changed; select them again
 git-abort-confirm = Abort { $operation }?
 git-abort-confirm-detail = The working tree returns to its state before the operation began, and resolved conflicts are discarded.
 git-abort-confirm-button = Abort { $operation }
-git-rollback-nothing-checked = Select the files to roll back first
+git-rollback-nothing-checked = There are no files to roll back
 git-rollback-confirm-one = Roll back changes to “{ $name }”?
 git-rollback-confirm-many = Roll back changes to { $count } files?
 git-rollback-confirm-detail = Tracked files are restored to the last commit, and untracked files are moved to the { common-trash }.
@@ -354,7 +363,6 @@ git-diff-side-worktree-deleted = Working Tree · Deleted
 git-diff-side-head-missing = HEAD · File Doesn't Exist
 git-diff-side-index = Staging Area
 git-diff-side-index-missing = Staging Area · File Doesn't Exist
-git-diff-side-staged = Staging Area
 git-diff-index-unreadable = Couldn't read the staged version of “{ $name }”: { $error }
 
 ## Trusting repository configuration
@@ -664,6 +672,7 @@ git-commit-group-staged = Staged Changes
 git-commit-nothing-to-commit = There are no changes to commit
 git-commit-stage-all-confirm = Stage all changes and commit?
 git-commit-stage-all-detail = Stages every change in the current repository “{ $name }”, including untracked files that aren't ignored, then commits them.
+git-commit-stage-all-push = After committing, the new commit is pushed to the upstream branch.
 git-commit-stage-all-button = Stage All and Commit
 git-commit-open-deleted = The file was deleted and can't be opened
 git-log-files-changed = { $count ->

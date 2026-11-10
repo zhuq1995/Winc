@@ -761,6 +761,38 @@ fn staging_whole_files_keeps_other_paths() {
     let _ = std::fs::remove_dir_all(&repo.root);
 }
 
+/// 改名的文件：同时处理新旧两个路径，取消暂存后不会留下一个新增和一个未暂存的删除。
+#[test]
+fn staging_a_rename_covers_the_old_path_too() {
+    let Some(repo) = Repo::new("git-stage-rename", "false") else {
+        return;
+    };
+    repo.write("old.txt", "one\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+    repo.ok(&["mv", "old.txt", "new.txt"]);
+    let (old, new) = (repo.path("old.txt"), repo.path("new.txt"));
+    let entry = repo.entry("new.txt");
+    assert_eq!(entry.staged, Some(Change::Renamed));
+    assert_eq!(entry.from.as_deref(), Some(old.as_path()));
+
+    // 取消暂存：暂存区回到 `HEAD` 里的旧路径，工作区里是改名后的新路径。
+    repo.git
+        .unstage(&repo.root, &[new.clone(), old.clone()])
+        .unwrap();
+    assert_eq!(repo.index("old.txt").as_deref(), Some(&b"one\n"[..]));
+    assert_eq!(repo.index("new.txt"), None);
+    assert_eq!(repo.staged(), Vec::<String>::new());
+
+    // 再暂存两个路径：改名重新进入暂存区。
+    repo.git.stage(&repo.root, &[new, old]).unwrap();
+    assert_eq!(
+        repo.sh(&["diff", "--cached", "--name-status"]),
+        "R100\told.txt\tnew.txt"
+    );
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
 /// 还没有提交过时取消暂存：只从暂存区移除条目，工作区不变，文件回到未跟踪。
 #[test]
 fn unstaging_before_the_first_commit_removes_the_entries() {
@@ -786,6 +818,50 @@ fn unstaging_before_the_first_commit_removes_the_entries() {
     assert_eq!(repo.staged(), Vec::<String>::new());
     assert!(repo.git.commit(&repo.root, "first", false).is_err());
     assert_eq!(std::fs::read_to_string(&b).unwrap(), "two\n");
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 全部暂存与取消暂存作用于整个仓库：未跟踪且未被忽略的文件一并加入，忽略的文件不动；还没有
+/// 提交过时取消暂存清空暂存区。
+#[test]
+fn staging_all_touches_the_whole_repository() {
+    let Some(repo) = Repo::new("git-stage-all", "false") else {
+        return;
+    };
+    repo.write(".gitignore", "ignored.txt\n");
+    repo.write("a.txt", "one\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+    repo.write("a.txt", "two\n");
+    repo.write("dir/new.txt", "new\n");
+    repo.write("ignored.txt", "ignored\n");
+
+    repo.git.stage_all(&repo.root).unwrap();
+    assert_eq!(repo.index("a.txt").as_deref(), Some(&b"two\n"[..]));
+    assert_eq!(repo.index("dir/new.txt").as_deref(), Some(&b"new\n"[..]));
+    assert_eq!(repo.index("ignored.txt"), None);
+    assert_eq!(repo.staged(), ["a.txt", "dir/new.txt"]);
+
+    // 取消暂存全部：暂存区回到 `HEAD`，工作区不变。
+    repo.git.unstage_all(&repo.root).unwrap();
+    assert_eq!(repo.staged(), Vec::<String>::new());
+    assert_eq!(
+        std::fs::read_to_string(repo.path("a.txt")).unwrap(),
+        "two\n"
+    );
+    assert!(repo.path("dir/new.txt").exists());
+    let _ = std::fs::remove_dir_all(&repo.root);
+
+    // 还没有提交过：同样只清空暂存区。
+    let Some(repo) = Repo::new("git-stage-all-unborn", "false") else {
+        return;
+    };
+    let a = repo.write("a.txt", "one\n");
+    repo.ok(&["add", "-A"]);
+    repo.git.unstage_all(&repo.root).unwrap();
+    assert_eq!(repo.index("a.txt"), None);
+    assert!(repo.entry("a.txt").untracked());
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "one\n");
     let _ = std::fs::remove_dir_all(&repo.root);
 }
 

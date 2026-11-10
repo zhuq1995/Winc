@@ -416,7 +416,10 @@ impl App {
             UserEvent::GitSwitchBranch(branch, stash) => self.switch_branch(branch, stash),
             UserEvent::GitForcePush => self.run_git_sync(true),
             UserEvent::GitCommitAndPush => self.git_commit_and_push(),
-            UserEvent::GitStageAllCommit => self.git_stage_all_and_commit(),
+            UserEvent::GitStageAllCommit(push) => {
+                self.commit.push_after_commit(push);
+                self.git_stage_all_and_commit();
+            }
             UserEvent::GitUndoCommit => self.undo_last_commit(),
             UserEvent::ReplaceAllConfirmed(total) => self.replace_all_confirmed(total),
             UserEvent::RunApproved(config) => self.approved_run(*config),

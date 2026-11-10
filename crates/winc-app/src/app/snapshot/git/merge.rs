@@ -165,11 +165,13 @@ fn files_with_conflict_markers_are_not_committed() {
     );
 
     // 在编辑器中选定一侧但尚未保存时，按下按钮先保存；标记已移除，因此正常提交。
+    // 解决后的文件还没暂存：确认暂存全部并提交。
     use crate::app::git::merge::MergeTarget;
     use winc_editor::git::merge::Pick;
     paint(&mut app);
     app.press_merge(MergeTarget::Pick(0, Pick::Theirs));
     app.git_commit();
+    press_alert(&mut app, 0);
     // 提交在后台线程里完成，等它结束再读状态。
     wait_commit(&mut app);
     let status = app.git.status.clone().unwrap();

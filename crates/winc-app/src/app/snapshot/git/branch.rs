@@ -152,6 +152,8 @@ fn branch_menu_creates_switches_pushes_and_deletes() {
     app.run_action(Action::ShowCommit);
     app.edit_field(|f| f.insert("提交并推送"));
     app.run_commit_button_command(crate::app::input::context_menu::MenuCommand::CommitPush);
+    // 暂存区为空：只问一次「暂存全部并提交」，一并写明提交后会推送。
+    assert!(app.alert.as_ref().unwrap().detail.contains("推送"));
     press_alert(&mut app, 0);
     app.git_refresh();
     let status = app.git.status.as_ref().unwrap();
