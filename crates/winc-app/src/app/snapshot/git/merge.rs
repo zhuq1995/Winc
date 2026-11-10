@@ -170,7 +170,8 @@ fn files_with_conflict_markers_are_not_committed() {
     paint(&mut app);
     app.press_merge(MergeTarget::Pick(0, Pick::Theirs));
     app.git_commit();
-    app.git_refresh();
+    // 提交在后台线程里完成，等它结束再读状态。
+    wait_commit(&mut app);
     let status = app.git.status.clone().unwrap();
     assert_eq!(status.operation, None);
     assert!(status.unresolved.is_empty());
@@ -232,7 +233,9 @@ fn three_way_app_with(name: &str, base: &str, side: &str, main: &str) -> Option<
     let mut ready = run(&["init", "-q", "-b", "main"])
         && run(&["config", "user.name", "t"])
         && run(&["config", "user.email", "t@t"])
-        && run(&["config", "commit.gpgsign", "false"]);
+        && run(&["config", "commit.gpgsign", "false"])
+        // 本机全局 `core.autocrlf` 影响检出内容：仓库里固定为 false。
+        && run(&["config", "core.autocrlf", "false"]);
     std::fs::write(&file, base).unwrap();
     ready = ready && run(&["add", "--all"]) && run(&["commit", "-q", "-m", "base"]);
     ready = ready && run(&["switch", "-q", "-c", "side"]);

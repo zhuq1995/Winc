@@ -200,7 +200,8 @@ impl CommitState {
             out.rows.push(CommitRow::Dir {
                 group,
                 dir: full.clone(),
-                label: label.to_string_lossy().into_owned(),
+                // 显示和折叠目录链的代码都按「/」分段：Windows 的路径分隔符在这里换成「/」。
+                label: label.to_string_lossy().replace('\\', "/"),
                 depth,
             });
             if self.dir_collapsed(group, &full) {

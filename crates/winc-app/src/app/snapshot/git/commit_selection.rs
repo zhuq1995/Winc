@@ -48,6 +48,8 @@ fn command_and_shift_clicks_pick_several_files_in_one_group() {
             .unwrap()
             .0;
         app.modifiers = modifiers;
+        // 测试里点击间隔远小于双击时限：清掉计数，重按同一行不会被当成双击打开。
+        app.last_click = None;
         click(app, (row.x + row.w / 2.0, row.y + 4.0));
         app.modifiers = ModifiersState::empty();
         paint(app);
@@ -67,7 +69,7 @@ fn command_and_shift_clicks_pick_several_files_in_one_group() {
     click_file(&mut app, &files[3], ModifiersState::SHIFT);
     assert_eq!(app.commit_selection(), files[1..]);
 
-    // 右键点在选区里：菜单作用于三个文件；它们在「更改」里，只能暂存。
+    // 右键点在选区里：菜单作用于三个文件；它们在「更改」里，菜单只提供暂存。
     let row = |app: &App, file: &CommitFile| {
         let status = app.git.status.as_ref().unwrap();
         let index = status
@@ -94,7 +96,6 @@ fn command_and_shift_clicks_pick_several_files_in_one_group() {
         [
             (MenuCommand::GitOpenFile, true),
             (MenuCommand::CommitStage, true),
-            (MenuCommand::CommitUnstage, false),
             (MenuCommand::GitRollbackFile, true),
             (MenuCommand::CopyPath, true),
             (MenuCommand::CopyRelativePath, true),

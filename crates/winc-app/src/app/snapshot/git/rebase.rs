@@ -22,7 +22,9 @@ fn rebasing(name: &str) -> Option<(App, PathBuf)> {
     let mut ready = run(&["init", "-q", "-b", "main"])
         && run(&["config", "user.name", "t"])
         && run(&["config", "user.email", "t@t"])
-        && run(&["config", "commit.gpgsign", "false"]);
+        && run(&["config", "commit.gpgsign", "false"])
+        // 本机全局 `core.autocrlf` 影响检出内容：仓库里固定为 false。
+        && run(&["config", "core.autocrlf", "false"]);
     for name in ["a", "b", "c", "d"] {
         std::fs::write(dir.join(format!("{name}.txt")), name).unwrap();
         ready = ready && run(&["add", "--all"]) && run(&["commit", "-q", "-m", name]);

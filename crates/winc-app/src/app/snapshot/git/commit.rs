@@ -203,14 +203,27 @@ fn commit_list_groups_changes_by_directory() {
     let left = staged_paths(&app);
     assert!(under_pkg.iter().all(|p| !left.contains(p)));
     assert!(left.contains(&top));
-    // 再按一次：这一目录的文件重新进入暂存区。
-    app.press_commit(CommitTarget::DirStage(pkg));
+    // 再按一次：这一目录的文件重新进入暂存区。取消暂存后列表重排，「pkg」到了「更改」组里；
+    // 状态刷新过，先重画一帧让命中跟上，按钮的下标防护才放行。
+    paint(&mut app);
+    let again = app
+        .commit_rows()
+        .iter()
+        .position(|r| matches!(r, CommitRow::Dir { label, .. } if label == "pkg"))
+        .unwrap();
+    app.press_commit(CommitTarget::DirStage(again));
     wait_staging(&mut app);
     let left = staged_paths(&app);
     assert!(under_pkg.iter().all(|p| left.contains(p)));
     assert!(left.contains(&top));
 
-    // 点击目录行收起：其下的行不再出现；「全部展开」恢复。
+    // 点击目录行收起：其下的行不再出现；「全部展开」恢复。重新暂存后列表又重排过，同样先重画。
+    paint(&mut app);
+    let pkg = app
+        .commit_rows()
+        .iter()
+        .position(|r| matches!(r, CommitRow::Dir { label, .. } if label == "pkg"))
+        .unwrap();
     app.press_commit(CommitTarget::Dir(pkg));
     assert!(!app.commit_rows().contains(&file("pkg/z.rs", 1)));
     app.run_commit_more_command(crate::app::input::context_menu::MenuCommand::CommitExpandAll);
@@ -264,6 +277,7 @@ fn right_clicking_a_changed_file_offers_diff_open_and_rollback() {
         [
             MenuCommand::GitShowDiff,
             MenuCommand::GitOpenFile,
+            MenuCommand::CommitStage,
             MenuCommand::GitRollbackFile,
             MenuCommand::RevealInTree,
             MenuCommand::Reveal,
@@ -385,7 +399,7 @@ fn commit_view_stages_by_file_and_commits_the_index() {
     app.edit_field(|f| f.insert("加上 new.rs"));
     app.commit_message_key(&Key::Named(NamedKey::Enter), false, false);
     app.edit_field(|f| f.insert("正文"));
-    assert_eq!(app.commit.message.text(), "加上 new.rs\nz正文");
+    assert_eq!(app.commit.message.text(), "加上 new.rs\n正文");
     app.commit_message_key(&Key::Named(NamedKey::Enter), true, false);
     assert!(!app.commit.busy);
     assert_eq!(app.commit.message.text(), "");
@@ -395,7 +409,7 @@ fn commit_view_stages_by_file_and_commits_the_index() {
 
     // 修改上一次提交：只改信息时暂存区是空的也可以提交。
     app.run_commit_button_command(crate::app::input::context_menu::MenuCommand::CommitAmend);
-    assert_eq!(app.commit.message.text(), "加上 new.rs\nz正文");
+    assert_eq!(app.commit.message.text(), "加上 new.rs\n正文");
     app.commit.message.set_text("改过的说明");
     app.git_commit();
     for _ in 0..200 {
@@ -978,7 +992,8 @@ fn the_commit_button_menu_pushes_after_committing_or_amends() {
     assert!(app.commit_parts().amend.is_some());
     assert!(!menu.contains(&MenuEntry::Item(MenuCommand::CommitAmend, true)));
     let width = app.panel_width;
-    app.panel_width = crate::theme::MIN_PANEL_WIDTH;
+    // 比最窄更窄：字体度量随平台差 1、2 像素，只压到下限不够保证放不下。
+    app.panel_width = crate::theme::MIN_PANEL_WIDTH - 40.0;
     paint(&mut app);
     assert!(app.commit_parts().amend.is_none());
     let menu = app.commit_button_menu();
@@ -1027,8 +1042,8 @@ fn scrolled_changes_keep_their_group_and_folders_pinned_on_top() {
         return;
     }
     app.run_action(Action::ShowCommit);
-    app.press_commit(CommitTarget::Group(CommitGroup::Changes));
-    app.press_commit(CommitTarget::Group(CommitGroup::Changes));
+    app.press_commit(CommitTarget::Group(CommitGroup::Staged));
+    app.press_commit(CommitTarget::Group(CommitGroup::Staged));
     paint(&mut app);
     let rows = app.commit_rows();
     // 没滚动时什么也不固定。
@@ -1047,7 +1062,7 @@ fn scrolled_changes_keep_their_group_and_folders_pinned_on_top() {
     assert_eq!(pinned.len(), 3);
     assert!(matches!(
         rows[pinned[0]],
-        CommitRow::Group(CommitGroup::Changes)
+        CommitRow::Group(CommitGroup::Staged)
     ));
     assert_eq!(pinned[2], b);
     let list = app.commit_parts().list;
@@ -1487,7 +1502,7 @@ fn a_long_change_name_slides_out_and_back_like_the_file_tree() {
     let entry = (status.entries.iter())
         .find(|e| e.path.ends_with(&long))
         .unwrap();
-    let key = CommitName::File(CommitGroup::Changes, entry.path.clone());
+    let key = CommitName::File(CommitGroup::Staged, entry.path.clone());
     let rows = app.commit_rows();
     let i = (rows.iter())
         .position(|r| matches!(r, CommitRow::File { index, .. } if status.entries[*index].path == entry.path))
@@ -1580,7 +1595,7 @@ fn names_that_only_make_room_for_the_buttons_slide_the_buttons_out() {
         let path = (status.entries.iter())
             .find(|e| e.path.ends_with(name))
             .unwrap();
-        let key = CommitName::File(CommitGroup::Changes, path.path.clone());
+        let key = CommitName::File(CommitGroup::Staged, path.path.clone());
         let rest = app.commit.names.peek(&key).unwrap().width;
         let y = list.y + i as f32 * COMMIT_ROW - app.commit.scroll + COMMIT_ROW / 2.0;
         app.on_mouse_move(list.x + 120.0, y);
@@ -1881,6 +1896,8 @@ fn a_file_staged_in_the_terminal_appears_in_both_groups() {
         return;
     };
     let main = root.join("src/main.rs");
+    // `make_repo` 顺带新建的 `src/new.rs` 会混进列表：这里只看部分暂存的同一个文件。
+    let _ = std::fs::remove_file(root.join("src/new.rs"));
     std::fs::write(&main, "staged").unwrap();
     git_in(&root, &["add", "src/main.rs"]);
     std::fs::write(&main, "staged\nnot staged").unwrap();
@@ -1910,12 +1927,15 @@ fn a_file_staged_in_the_terminal_appears_in_both_groups() {
     assert_eq!(diff.old.text.to_string(), "staged");
     assert_eq!(diff.new.text.to_string(), "staged\nnot staged");
 
-    // 「已暂存的更改」一侧：`HEAD` ↔ 暂存区，只读。
+    // 「已暂存的更改」一侧：`HEAD` ↔ 暂存区，只读。`HEAD` 里是 [`search_folder`] 的模板。
     app.git_preview_changes(&commit_file(CommitGroup::Staged, &main));
     let id = app.editor.active().unwrap().id;
     let doc = app.editor.document(id).unwrap();
     let diff = doc.diff.as_deref().unwrap();
-    assert_eq!(diff.old.text.to_string(), "fn main() {}");
+    assert_eq!(
+        diff.old.text.to_string(),
+        "fn main() {\n    let config = load_config();\n    println!(\"{config:?}\");\n}\n"
+    );
     assert_eq!(diff.new.text.to_string(), "staged");
 
     // 提交暂存区：只有已暂存的那部分进提交，工作区里剩下的改动仍在「更改」里。
@@ -2776,10 +2796,19 @@ fn the_refresh_button_spins_for_at_least_one_turn() {
     paint(&mut app);
     assert!(!app.commit_refreshing());
     app.press_commit(CommitTarget::Refresh);
-    // 测试里读取就地完成，这时转的只是至少一圈的时长。
+    // 读取在后台进行：点下去后马上就在转。测试并行运行、机器繁忙时读取未必立刻结束，
+    // 先收下结果，再按「至少转满一圈」判断。
     assert!(app.commit_refreshing());
     assert!(app.animating());
     let turn = Duration::from_secs_f32(1.0 / crate::theme::SPIN_SPEED);
+    // 读取结束（收下结果）后，转满一圈就停。
+    for _ in 0..200 {
+        app.poll_git();
+        if app.git.running.is_none() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     app.commit.refreshed = Instant::now().checked_sub(turn);
     assert!(!app.commit_refreshing());
     let _ = std::fs::remove_dir_all(&root);
@@ -3051,7 +3080,8 @@ fn the_commit_button_widens_while_the_amend_toggle_fades_out() {
     let from = before.commit.w + before.commit_menu.w;
     assert!(before.amend.is_some());
 
-    app.panel_width = crate::theme::MIN_PANEL_WIDTH;
+    // 比最窄更窄：字体度量随平台差 1、2 像素，只压到下限不够保证放不下。
+    app.panel_width = crate::theme::MIN_PANEL_WIDTH - 40.0;
     paint(&mut app);
     let settled = app.commit_parts();
     let to = settled.commit.w + settled.commit_menu.w;

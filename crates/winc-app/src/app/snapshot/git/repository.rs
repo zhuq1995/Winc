@@ -33,6 +33,7 @@ fn repo_with_remote(dir: &Path) -> Option<PathBuf> {
     std::fs::create_dir_all(&work).unwrap();
     let ready = run(dir, &["init", "-q", "--bare", "-b", "main", "bare.git"])
         && run(&work, &["init", "-q", "-b", "main"])
+        && run(&work, &["config", "core.autocrlf", "false"])
         && run(&work, &["commit", "-q", "--allow-empty", "-m", "first"])
         && run(&work, &["remote", "add", "origin", bare.to_str().unwrap()])
         && run(&work, &["push", "-q", "-u", "origin", "main"]);

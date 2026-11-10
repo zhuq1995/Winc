@@ -74,11 +74,13 @@ fn make_repo_inner(dir: &Path) -> bool {
     if !git(&["init", "-q", "-b", "main"]) || !git(&["add", "."]) {
         return false;
     }
-    // 仓库自己的配置：winc 提交时不依赖本机的全局身份和签名设置。
+    // 仓库自己的配置：winc 提交时不依赖本机的全局身份和签名设置，检出内容不随全局
+    // `core.autocrlf` 变成 CRLF。
     for (key, value) in [
         ("user.name", "t"),
         ("user.email", "t@t"),
         ("commit.gpgsign", "false"),
+        ("core.autocrlf", "false"),
     ] {
         git(&["config", key, value]);
     }

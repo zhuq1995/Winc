@@ -346,6 +346,8 @@ fn merge_conflicts_resolve_and_commit() {
     };
     let sh = |args: &[&str]| assert!(git_in(args), "git {args:?}");
     sh(&["init", "-q", "-b", "main"]);
+    // 本机全局 `core.autocrlf` 影响检出内容：仓库里固定为 false，测试不随机器配置变化。
+    sh(&["config", "core.autocrlf", "false"]);
     sh(&["config", "user.name", "t"]);
     sh(&["config", "user.email", "t@t"]);
     sh(&["config", "commit.gpgsign", "false"]);
@@ -438,6 +440,8 @@ fn runs_the_real_git() {
         assert!(ok, "git {args:?}");
     };
     sh(&["init", "-q", "-b", "main"]);
+    // 本机全局 `core.autocrlf` 影响检出内容：仓库里固定为 false，测试不随机器配置变化。
+    sh(&["config", "core.autocrlf", "false"]);
     std::fs::write(dir.join("src/a.rs"), "one\n").unwrap();
     sh(&["add", "."]);
     sh(&["commit", "-q", "-m", "first"]);
@@ -1260,6 +1264,7 @@ fn untrusted_repository_commands_do_not_run() {
     sh(&["config", "user.name", "t"]);
     sh(&["config", "user.email", "t@t"]);
     sh(&["config", "commit.gpgsign", "false"]);
+    sh(&["config", "core.autocrlf", "false"]);
     std::fs::write(root.join(".gitattributes"), "*.t filter=x\n").unwrap();
     std::fs::write(root.join("a.t"), "hi\n").unwrap();
     sh(&["add", "."]);
@@ -1409,6 +1414,7 @@ fn push_skips_remotes_that_look_like_options() {
     sh(&["config", "user.name", "t"]);
     sh(&["config", "user.email", "t@t"]);
     sh(&["config", "commit.gpgsign", "false"]);
+    sh(&["config", "core.autocrlf", "false"]);
     sh(&["commit", "-q", "--allow-empty", "-m", "a"]);
     let marker = root.join("ran");
     let remote = format!("--receive-pack=touch '{}';", marker.display());

@@ -155,13 +155,22 @@ impl App {
             self.focus = Focus::CommitMessage;
             return;
         }
-        let Some(status) = self.git.status.as_ref() else {
+        // 保存冲突文件需要写状态，这里拿副本，避免长时借用。
+        let Some(status) = self.git.status.clone() else {
             return;
         };
         // 冲突优先：仍有冲突标记的文件先处理，否则 `git add` 会把标记和两侧内容一并放进提交。
-        // 这里读磁盘上的内容，使编辑器刚移除标记、状态尚未刷新时的结果也正确。
-        let unresolved = (status.entries.iter())
-            .filter(|e| e.conflicted() && winc_editor::git::merge::file_has_conflicts(&e.path))
+        // 先保存：编辑器里刚移除标记、磁盘上还是旧内容时，按磁盘上的结果判断。
+        let conflicts: Vec<PathBuf> = (status.entries.iter())
+            .filter(|e| e.conflicted())
+            .map(|e| e.path.clone())
+            .collect();
+        if !self.save_documents(&conflicts) {
+            return;
+        }
+        let unresolved = conflicts
+            .iter()
+            .filter(|path| winc_editor::git::merge::file_has_conflicts(path))
             .count();
         if unresolved > 0 {
             self.flash(t!("git-commit-unresolved-conflicts", count = unresolved));

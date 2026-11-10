@@ -160,7 +160,11 @@ fn worktrees_are_created_removed_and_pruned() {
     // 只有一个工作树：分支菜单中显示创建位置。
     assert_eq!(
         app.worktree_dir_hint("feat/x"),
-        format!("{}/feat-x", winc_editor::display_name(&trees))
+        format!(
+            "{}{}feat-x",
+            winc_editor::display_name(&trees),
+            std::path::MAIN_SEPARATOR_STR
+        )
     );
     create(&mut app, "feat/x");
     assert!(app.form_dialog.is_none());

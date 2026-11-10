@@ -1415,7 +1415,8 @@ fn draw_row(
                 .then(|| entry.path.parent().and_then(|p| p.strip_prefix(root).ok()))
                 .flatten()
                 .filter(|p| !p.as_os_str().is_empty())
-                .map(|p| p.to_string_lossy());
+                // 折叠目录链的代码按「/」分段：Windows 的路径分隔符在这里换成「/」。
+                .map(|p| p.to_string_lossy().replace('\\', "/"));
             // 名字用正文色（删除的文件用次要色），状态是右端一个上色的字母（M、U、D 等）；
             // 整行名字上色后颜色过多，不易分辨。
             let change = entry.shown();

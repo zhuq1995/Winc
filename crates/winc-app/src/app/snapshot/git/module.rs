@@ -759,7 +759,12 @@ fn nested_repositories_are_found_in_the_background_without_moving_earlier_ones()
     let names: Vec<String> = (0..app.git.repositories.len())
         .map(|i| app.git_repository_name(i))
         .collect();
-    assert_eq!(names, ["a", "group/b", "group/deep/c"]);
+    // 相对路径按平台分隔符显示。
+    let expected: Vec<String> = ["a", "group/b", "group/deep/c"]
+        .into_iter()
+        .map(|p| p.replace('/', std::path::MAIN_SEPARATOR_STR))
+        .collect();
+    assert_eq!(names, expected);
     assert_eq!(app.git.root.as_ref(), app.git.repositories.first());
 
     // 配置的层数生效：只找一层时找不到更深的。
