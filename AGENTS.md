@@ -31,7 +31,7 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 - `feat/*` 生命周期控制在一周内；长期不回流的私有分支等于第二条分叉，冲突成本随上游提交线性增加。
 - Trellis 工具文件（`.trellis/`、`.agents/`、`.pi/`）只在 `chore/trellis-tooling` 分支上做版本管理，永远不合入 `dev`。该分支检出在 `../Winc-trellis` worktree（稀疏检出，只含工具路径）；主线工作区的 `.trellis`、`.agents`、`.pi` 是指向它的 junction。
 - 工具配置、任务、journal 的改动在 `../Winc-trellis` 里 `git add` 并提交、推送到 `origin/chore/trellis-tooling`；不要在主线工作区提交这些路径。
-- 主线用 `.git/info/exclude` 忽略三个工具目录；提交代码用显式路径（`git add crates AGENTS.md`），不要用 `git add -A`。
+- 主线用 per-worktree 的排除文件忽略三个工具目录：`git config extensions.worktreeConfig true`，再把 `core.excludesFile` 指到 `.git/winc-excludes`（只在主线 worktree 生效）。`.git/info/exclude` 由所有 worktree 共用，写在那里会让工具 worktree 也无法跟踪 `.trellis/`。提交代码用显式路径（`git add crates AGENTS.md`），不要用 `git add -A`。
 - junction 只在 Windows 上有效。换机器或重新 clone 后按上面步骤重建 worktree 和目录联接，`git worktree list` 可确认现状。
 - 合并前先提交本地改动，保持工作区干净；冲突只在 `dev`（或功能分支）上解决一次。
 - fork 自有代码放在新文件、新模块里；上游文件优先加调用点，不改写函数体。禁止全仓格式化、批量改名、移动上游模块——这些会让之后每次合并都冲突。
