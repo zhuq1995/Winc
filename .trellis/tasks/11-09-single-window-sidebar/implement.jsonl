@@ -1,0 +1,3 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"窗口宿主、项目会话、后台事件和状态文件的边界约束。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用现有窗口管理、状态恢复及布局能力。"}
+{"file":".trellis/tasks/11-09-single-window-sidebar/research/window-architecture.md","reason":"窗口、终端、持久化和平台行为的代码入口。"}
