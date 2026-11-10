@@ -123,7 +123,15 @@ impl App {
             | Focus::GlobalExclude => self.on_key_panel_field(event, &base, cmd),
             Focus::Results => self.on_key_results(event),
             Focus::CommitMessage => self.on_key_commit_message(event, &base, cmd),
-            Focus::CommitList => self.on_key_commit_list(event),
+            // 历史提交的文件列表借用提交视图的列表，按键同样交给它处理。
+            Focus::CommitList => {
+                if self
+                    .with_log_list(|app| app.on_key_commit_list(event))
+                    .is_none()
+                {
+                    self.on_key_commit_list(event);
+                }
+            }
             Focus::Outline => self.outline_key(&event.logical_key),
             Focus::LogFilter => self.on_key_log_filter(event, &base, cmd),
             Focus::Terminal => self.on_key_terminal(event),
@@ -137,6 +145,7 @@ impl App {
     /// 返回当前焦点对应的键位上下文，键位表按它划分适用范围。
     pub(super) fn key_context(&self) -> Context {
         match self.focus {
+            Focus::Editor if self.markdown_live() => Context::Markdown,
             Focus::Editor => Context::Editor,
             Focus::Search => Context::Find,
             Focus::Replace => Context::Replace,
@@ -322,7 +331,14 @@ impl App {
             }
         };
 
+        let head = self.editor.active().map(|d| (d.selection.head, d.revision));
         self.run(command);
+        // 可编辑的 Markdown 预览：只移动了光标时，不停留在预览中不显示的块标记里。
+        if let Some((head, revision)) = head
+            && self.editor.active().is_some_and(|d| d.revision == revision)
+        {
+            self.live_settle_caret(head);
+        }
     }
 
     /// 处理查找条（查找、替换输入框）中的按键。

@@ -26,27 +26,6 @@ enum Direction {
 }
 
 impl Git {
-    /// 暂存 `paths` 的全部改动（`git add --all`）。
-    ///
-    /// 新增、修改、删除和改名一并处理；`paths` 里的目录包含其中的全部文件，未跟踪且未被忽略的文件
-    /// 一并加入。其他路径的暂存状态不变。
-    ///
-    /// # Errors
-    ///
-    /// 仓库不受信任、`git` 报错时返回它的说明。
-    pub fn stage(&self, root: &Path, paths: &[PathBuf]) -> Result<(), String> {
-        if paths.is_empty() {
-            return Ok(());
-        }
-        self.require_trust(root)?;
-        let mut command = self.command(root);
-        command
-            .args(["add", "--all", "--"])
-            .args(relative_all(root, paths));
-        self.run(&mut command, STATUS_TIMEOUT, &Cancel::default())?;
-        Ok(())
-    }
-
     /// 暂存整个仓库的改动（在仓库根目录运行 `git add --all`）。
     ///
     /// 范围是当前仓库，不受状态列表的数量上限影响；未跟踪且未被忽略的文件一并加入。
@@ -200,7 +179,7 @@ impl Git {
         if content.is_empty() {
             match direction {
                 Direction::Stage if !path.exists() => {
-                    return self.stage(root, &[path.to_path_buf()]);
+                    return self.stage(root, &[path.to_path_buf()]).map(|_| ());
                 }
                 Direction::Unstage if self.head_content(root, path, &cancel)?.is_none() => {
                     let mut command = self.command(root);
