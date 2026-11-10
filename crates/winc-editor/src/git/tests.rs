@@ -328,7 +328,7 @@ fn merge_conflicts_resolve_and_commit() {
     };
     let dir = crate::test_util::scratch("merge");
     let git_in = |args: &[&str]| {
-        Command::new("git")
+        crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(&dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -346,6 +346,8 @@ fn merge_conflicts_resolve_and_commit() {
     };
     let sh = |args: &[&str]| assert!(git_in(args), "git {args:?}");
     sh(&["init", "-q", "-b", "main"]);
+    // 本机全局 `core.autocrlf` 影响检出内容：仓库里固定为 false，测试不随机器配置变化。
+    sh(&["config", "core.autocrlf", "false"]);
     sh(&["config", "user.name", "t"]);
     sh(&["config", "user.email", "t@t"]);
     sh(&["config", "commit.gpgsign", "false"]);
@@ -380,24 +382,9 @@ fn merge_conflicts_resolve_and_commit() {
     assert_eq!(both, "ours\ntheirs\n");
     std::fs::write(&m, format!("top\n{both}bottom\n")).unwrap();
 
-    // 合并中不能只提交一部分；整个提交以后合并完成。
-    let part = Partial {
-        path: m.clone(),
-        content: b"x\n".to_vec(),
-    };
-    assert!(
-        git.commit(&root, "m", std::slice::from_ref(&m), &[], &[part], false)
-            .is_err()
-    );
-    git.commit(
-        &root,
-        "merge other",
-        std::slice::from_ref(&m),
-        &[],
-        &[],
-        false,
-    )
-    .unwrap();
+    // 合并提交读取整个暂存区：解决冲突的文件先暂存，再提交。
+    git.stage(&root, std::slice::from_ref(&m)).unwrap();
+    git.commit(&root, "merge other", false).unwrap();
     let status = git.status(&root, &cancel).unwrap();
     assert_eq!(status.operation, None);
     assert!(status.entries.is_empty());
@@ -434,7 +421,7 @@ fn runs_the_real_git() {
     let dir = crate::test_util::scratch("git");
     std::fs::create_dir_all(dir.join("src")).unwrap();
     let sh = |args: &[&str]| {
-        let ok = Command::new("git")
+        let ok = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(&dir)
             .args([
@@ -453,6 +440,8 @@ fn runs_the_real_git() {
         assert!(ok, "git {args:?}");
     };
     sh(&["init", "-q", "-b", "main"]);
+    // 本机全局 `core.autocrlf` 影响检出内容：仓库里固定为 false，测试不随机器配置变化。
+    sh(&["config", "core.autocrlf", "false"]);
     std::fs::write(dir.join("src/a.rs"), "one\n").unwrap();
     sh(&["add", "."]);
     sh(&["commit", "-q", "-m", "first"]);
@@ -473,51 +462,38 @@ fn runs_the_real_git() {
     assert_eq!(untracked, Ok(None));
     assert!(status.entries[1].untracked());
 
-    // 另一个文件已在暂存区：只提交 a.rs 时该文件的暂存状态保持不变。
+    // 提交读取真实暂存区：暂存 `a.rs` 后提交，已在暂存区的 `c.rs` 一并进入这次提交，未暂存的
+    // `b.rs` 留在工作区。
     std::fs::write(dir.join("c.rs"), "staged\n").unwrap();
     sh(&["add", "c.rs"]);
     let a = root.join("src/a.rs");
-    let oid = git.commit(
-        &root,
-        "second\n\n正文",
-        std::slice::from_ref(&a),
-        &[],
-        &[],
-        false,
-    );
+    git.stage(&root, std::slice::from_ref(&a)).unwrap();
+    let oid = git.commit(&root, "second\n\n正文", false);
     assert!(oid.as_ref().is_ok_and(|o| o.len() >= 7), "{oid:?}");
     let status = git.status(&root, &cancel).unwrap();
     let left: Vec<_> = status.entries.iter().map(|e| e.path.clone()).collect();
-    assert_eq!(left, [root.join("c.rs"), root.join("b.rs")]);
+    assert_eq!(left, [root.join("b.rs")]);
     assert_eq!(git.last_message(&root), "second\n\n正文");
 
-    // 提交未跟踪的文件：先加入暂存区再提交；修改上一次提交时只改提交说明。
+    // 提交未跟踪的文件：先暂存再提交；修改上一次提交时只改提交说明。
     let b = root.join("b.rs");
-    git.commit(
-        &root,
-        "third",
-        std::slice::from_ref(&b),
-        std::slice::from_ref(&b),
-        &[],
-        false,
-    )
-    .unwrap();
-    git.commit(&root, "third, amended", &[], &[], &[], true)
-        .unwrap();
+    git.stage(&root, std::slice::from_ref(&b)).unwrap();
+    git.commit(&root, "third", false).unwrap();
+    git.commit(&root, "third, amended", true).unwrap();
     assert_eq!(git.last_message(&root), "third, amended");
     // 以 `#` 开头的行属于提交说明的正文，不能当作注释删除。
-    git.commit(&root, "#42 修复登录\n\n# 不是注释", &[], &[], &[], true)
+    git.commit(&root, "#42 修复登录\n\n# 不是注释", true)
         .unwrap();
     assert_eq!(git.last_message(&root), "#42 修复登录\n\n# 不是注释");
-    // 没有可提交的内容时返回错误，原因取自 `git` 的输出。
-    assert!(
-        git.commit(&root, "nothing", std::slice::from_ref(&a), &[], &[], false)
-            .is_err()
-    );
+    // 暂存区里没有可提交的内容时返回错误，原因取自 `git` 的输出。
+    assert!(git.commit(&root, "nothing", false).is_err());
 
     // 回滚：改过的文件恢复为 `HEAD` 的内容，新加入暂存区的文件移除出暂存区（工作区里的
     // 文件保留）。
     std::fs::write(&a, "changed again\n").unwrap();
+    // 暂存区里的另一个文件：回滚不动它的状态。
+    std::fs::write(root.join("c.rs"), "staged again\n").unwrap();
+    sh(&["add", "c.rs"]);
     // 名字里的 `[`、`*` 不按通配符解释：`[cd].rs` 当通配符时还会匹配上面暂存的 c.rs。
     let d = root.join("[cd].rs");
     std::fs::write(&d, "new\n").unwrap();
@@ -531,10 +507,9 @@ fn runs_the_real_git() {
     let d = status.entries.iter().find(|e| e.path == d).unwrap();
     assert!(d.untracked());
     let c = status.entries.iter().find(|e| e.path == root.join("c.rs"));
-    assert_eq!(c.and_then(|c| c.staged), Some(Change::Added));
+    assert_eq!(c.and_then(|c| c.staged), Some(Change::Modified));
 
-    // 只提交一部分：`e.rs` 有两处改动，只提交第一处。提交里只含第一处，工作区保留两处
-    // 改动，暂存区里别的文件（`c.rs`）不受影响。
+    // 只暂存一部分：`e.rs` 有两处改动，只暂存第一处。提交里只含第一处，工作区保留两处改动。
     let e = root.join("e.rs");
     std::fs::write(&e, "1\n2\n3\n4\n5\n6\n7\n8\n").unwrap();
     sh(&["add", "e.rs"]);
@@ -542,19 +517,12 @@ fn runs_the_real_git() {
     let worktree = "1\nTWO\n3\n4\n5\n6\nSEVEN\n8\n";
     std::fs::write(&e, worktree).unwrap();
     let first = "1\nTWO\n3\n4\n5\n6\n7\n8\n";
-    let part = Partial {
-        path: e.clone(),
-        content: first.as_bytes().to_vec(),
-    };
-    git.commit(
-        &root,
-        "only the first",
-        std::slice::from_ref(&e),
-        &[],
-        std::slice::from_ref(&part),
-        false,
-    )
-    .unwrap();
+    git.stage_partial(&root, &e, first.as_bytes()).unwrap();
+    // 部分暂存只改暂存区：工作区里的文件不变，两处改动都还在。
+    assert_eq!(std::fs::read_to_string(&e).unwrap(), worktree);
+    let index = git.index_content(&root, &e, &cancel).unwrap();
+    assert_eq!(index.as_deref(), Some(first.as_bytes()));
+    git.commit(&root, "only the first", false).unwrap();
     let head = git.head_content(&root, &e, &cancel).unwrap().unwrap();
     assert_eq!(String::from_utf8(head).unwrap(), first);
     assert_eq!(std::fs::read_to_string(&e).unwrap(), worktree);
@@ -564,8 +532,6 @@ fn runs_the_real_git() {
         (e_entry.staged, e_entry.unstaged),
         (None, Some(Change::Modified))
     );
-    let c = status.entries.iter().find(|x| x.path == root.join("c.rs"));
-    assert_eq!(c.and_then(|c| c.staged), Some(Change::Added));
     // `core.autocrlf`：工作区里是 CRLF、提交里是 LF；取 `HEAD` 版本时做同样的转换，两边
     // 内容一致。
     sh(&["config", "core.autocrlf", "true"]);
@@ -625,186 +591,630 @@ fn the_exit_code_of_test_decides_the_file_mode() {
     assert_eq!(mode_from_test(None), None);
 }
 
-#[cfg(unix)]
-#[test]
-fn partial_commits_keep_other_staged_files_and_the_execute_bit() {
-    use std::os::unix::fs::PermissionsExt;
+/// 一个真实的仓库，用于暂存相关的测试：临时目录里的新仓库，提交身份写在仓库配置里，
+/// `core.autocrlf` 由测试指定，不受本机全局配置影响。
+///
+/// 找不到 `git` 时 [`Repo::new`] 返回 `None`，测试直接跳过。
+struct Repo {
+    git: Git,
+    root: PathBuf,
+}
 
-    let mut vars: Vec<_> = std::env::vars_os().collect();
-    for (k, v) in [
-        ("GIT_AUTHOR_NAME", "t"),
-        ("GIT_AUTHOR_EMAIL", "t@t"),
-        ("GIT_COMMITTER_NAME", "t"),
-        ("GIT_COMMITTER_EMAIL", "t@t"),
-        ("GIT_CONFIG_COUNT", "1"),
-        ("GIT_CONFIG_KEY_0", "commit.gpgsign"),
-        ("GIT_CONFIG_VALUE_0", "false"),
-    ] {
-        vars.push((k.into(), v.into()));
+impl Repo {
+    /// 新建仓库；`autocrlf` 是仓库的 `core.autocrlf` 取值。
+    fn new(name: &str, autocrlf: &str) -> Option<Self> {
+        let git = real_git()?;
+        let dir = crate::test_util::scratch(name);
+        let root = winc_config::files::canonicalize(&dir).unwrap();
+        let repo = Repo { git, root };
+        repo.ok(&["init", "-q", "-b", "main"]);
+        repo.ok(&["config", "user.name", "t"]);
+        repo.ok(&["config", "user.email", "t@t"]);
+        repo.ok(&["config", "commit.gpgsign", "false"]);
+        repo.ok(&["config", "core.autocrlf", autocrlf]);
+        Some(repo)
     }
-    let shell = Shell::with_vars(vars);
-    let Ok(git) = Git::find(&shell) else {
-        return;
-    };
-    let dir = crate::test_util::scratch("git-partial-index");
-    let root = winc_config::files::canonicalize(&dir).unwrap();
-    let sh = |args: &[&str]| {
-        let out = Command::new("git")
+
+    /// 运行 `git`，返回去掉首尾空白的标准输出。
+    fn sh(&self, args: &[&str]) -> String {
+        String::from_utf8_lossy(&self.raw(args)).trim().to_owned()
+    }
+
+    /// 运行 `git`，返回原样的标准输出。
+    fn raw(&self, args: &[&str]) -> Vec<u8> {
+        let out = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
-            .arg(&root)
+            .arg(&self.root)
             .args(args)
             .output()
             .unwrap();
-        assert!(out.status.success(), "git {args:?}");
-        String::from_utf8_lossy(&out.stdout).trim().to_owned()
-    };
-    sh(&["init", "-q", "-b", "main"]);
-    sh(&["config", "user.name", "t"]);
-    sh(&["config", "user.email", "t@t"]);
-    sh(&["config", "commit.gpgsign", "false"]);
-    let script = root.join("run.sh");
-    std::fs::write(&script, "1\n2\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    sh(&["add", "run.sh"]);
-    sh(&["commit", "-q", "-m", "first"]);
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    }
 
-    // `staged.txt` 已暂存；只提交 `run.sh` 的一部分。
-    std::fs::write(root.join("staged.txt"), "s\n").unwrap();
-    sh(&["add", "staged.txt"]);
-    std::fs::write(&script, "1\n2\n3\n4\n").unwrap();
-    let part = Partial {
-        path: script.clone(),
-        content: b"1\n2\n3\n".to_vec(),
-    };
-    git.commit(
-        &root,
-        "part",
-        std::slice::from_ref(&script),
-        &[],
-        std::slice::from_ref(&part),
-        false,
-    )
-    .unwrap();
+    /// 运行 `git`，只关心是否成功。
+    fn ok(&self, args: &[&str]) {
+        let _ = self.sh(args);
+    }
 
-    assert_eq!(sh(&["diff", "--cached", "--name-only"]), "staged.txt");
-    assert!(sh(&["ls-tree", "HEAD", "run.sh"]).starts_with("100755 "));
-    assert_eq!(sh(&["show", "HEAD:run.sh"]), "1\n2\n3");
-    let _ = std::fs::remove_dir_all(&dir);
+    /// 写文件，父目录不存在时先建，返回绝对路径。
+    fn write(&self, path: &str, content: &str) -> PathBuf {
+        self.write_bytes(path, content.as_bytes())
+    }
+
+    /// 写入任意字节，返回绝对路径。
+    fn write_bytes(&self, path: &str, content: &[u8]) -> PathBuf {
+        let path = self.root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    /// 返回 `path` 的绝对路径。
+    fn path(&self, path: &str) -> PathBuf {
+        self.root.join(path)
+    }
+
+    /// 暂存区里 `path` 的内容，套用检出时的转换；不在暂存区里时为 `None`。
+    fn index(&self, path: &str) -> Option<Vec<u8>> {
+        self.git
+            .index_content(&self.root, &self.path(path), &Cancel::default())
+            .unwrap()
+    }
+
+    /// 暂存区里 `path` 的原始内容（Git 保存的形式，不套用过滤器）；条目不存在时 panic。
+    fn blob(&self, path: &str) -> Vec<u8> {
+        self.raw(&["cat-file", "blob", &format!(":{path}")])
+    }
+
+    /// 状态里 `path` 的条目。
+    fn entry(&self, path: &str) -> Entry {
+        let status = self.git.status(&self.root, &Cancel::default()).unwrap();
+        let path = self.path(path);
+        status
+            .entries
+            .into_iter()
+            .find(|e| e.path == path)
+            .unwrap_or_else(|| panic!("{path:?} 不在状态里"))
+    }
+
+    /// 已暂存的路径，按路径排序。
+    fn staged(&self) -> Vec<String> {
+        let status = self.git.status(&self.root, &Cancel::default()).unwrap();
+        let mut paths: Vec<String> = status
+            .entries
+            .iter()
+            .filter(|e| e.staged.is_some())
+            .map(|e| {
+                e.path
+                    .strip_prefix(&self.root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        paths.sort();
+        paths
+    }
 }
 
+/// 整文件暂存与取消暂存：只改选中的路径，目录包含其中的新文件，删除也能暂存；取消暂存保留工作区。
 #[test]
-fn partial_commits_failed_commits_and_missing_contents() {
-    let mut vars: Vec<_> = std::env::vars_os().collect();
-    for (k, v) in [
-        ("GIT_AUTHOR_NAME", "t"),
-        ("GIT_AUTHOR_EMAIL", "t@t"),
-        ("GIT_COMMITTER_NAME", "t"),
-        ("GIT_COMMITTER_EMAIL", "t@t"),
-        ("GIT_CONFIG_COUNT", "1"),
-        ("GIT_CONFIG_KEY_0", "commit.gpgsign"),
-        ("GIT_CONFIG_VALUE_0", "false"),
-    ] {
-        vars.push((k.into(), v.into()));
-    }
-    let shell = Shell::with_vars(vars);
-    let Ok(git) = Git::find(&shell) else {
+fn staging_whole_files_keeps_other_paths() {
+    let Some(repo) = Repo::new("git-stage-whole", "false") else {
         return;
     };
-    let dir = crate::test_util::scratch("git-unborn");
-    let root = winc_config::files::canonicalize(&dir).unwrap();
-    let sh = |args: &[&str]| {
-        let ok = Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(args)
-            .output()
-            .unwrap()
-            .status
-            .success();
-        assert!(ok, "git {args:?}");
-    };
-    sh(&["init", "-q", "-b", "main"]);
-    let cancel = Cancel::default();
+    repo.write("a.txt", "one\n");
+    repo.write("keep.txt", "keep\n");
+    repo.write("dir/x.txt", "x\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
 
-    // 还没有提交过：文件不在 `HEAD` 里，不算失败；只提交一部分时同样可以提交。
-    let a = root.join("a.txt");
-    std::fs::write(&a, "1\n2\n").unwrap();
-    assert_eq!(git.head_content(&root, &a, &cancel), Ok(None));
-    let part = Partial {
-        path: a.clone(),
-        content: b"1\n".to_vec(),
-    };
-    git.commit(
-        &root,
-        "first",
-        std::slice::from_ref(&a),
-        &[],
-        std::slice::from_ref(&part),
-        false,
-    )
-    .unwrap();
-    let head = git.head_content(&root, &a, &cancel).unwrap();
-    assert_eq!(head.as_deref(), Some(&b"1\n"[..]));
-    assert_eq!(std::fs::read_to_string(&a).unwrap(), "1\n2\n");
+    repo.write("a.txt", "two\n");
+    repo.write("new.txt", "new\n");
+    repo.write("dir/y.txt", "y\n");
+    std::fs::remove_file(repo.path("keep.txt")).unwrap();
 
-    // 版本不存在不是「没有该文件」。
-    assert!(git.content_at(&root, "no-such-rev", &a, &cancel).is_err());
+    // 只暂存一个文件：其他路径的暂存状态不变。
+    repo.git
+        .stage(&repo.root, std::slice::from_ref(&repo.path("a.txt")))
+        .unwrap();
+    assert_eq!(repo.index("a.txt").as_deref(), Some(&b"two\n"[..]));
+    assert_eq!(repo.index("new.txt"), None);
+    assert_eq!(repo.staged(), ["a.txt"]);
+
+    // 暂存目录：其中的已跟踪文件和未跟踪文件一并加入。
+    repo.git
+        .stage(&repo.root, std::slice::from_ref(&repo.path("dir")))
+        .unwrap();
+    assert_eq!(repo.index("dir/y.txt").as_deref(), Some(&b"y\n"[..]));
+    assert_eq!(repo.index("dir/x.txt").as_deref(), Some(&b"x\n"[..]));
+
+    // 暂存删除：条目从暂存区移除。
+    repo.git
+        .stage(&repo.root, std::slice::from_ref(&repo.path("keep.txt")))
+        .unwrap();
+    assert_eq!(repo.entry("keep.txt").staged, Some(Change::Deleted));
+    assert!(!repo.path("keep.txt").exists());
+
+    // 取消暂存：暂存区回到 `HEAD`，工作区里的文件和改动都还在。
+    repo.git
+        .unstage(
+            &repo.root,
+            &[repo.path("a.txt"), repo.path("dir"), repo.path("keep.txt")],
+        )
+        .unwrap();
+    assert_eq!(repo.index("a.txt").as_deref(), Some(&b"one\n"[..]));
+    assert_eq!(repo.index("dir/y.txt"), None);
+    assert_eq!(repo.index("keep.txt").as_deref(), Some(&b"keep\n"[..]));
     assert_eq!(
-        git.content_at(&root, "HEAD", &root.join("none.txt"), &cancel),
-        Ok(None)
+        std::fs::read_to_string(repo.path("a.txt")).unwrap(),
+        "two\n"
+    );
+    assert!(repo.path("dir/y.txt").exists());
+    assert!(!repo.path("keep.txt").exists());
+    assert_eq!(repo.staged(), Vec::<String>::new());
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 改名的文件：同时处理新旧两个路径，取消暂存后不会留下一个新增和一个未暂存的删除。
+#[test]
+fn staging_a_rename_covers_the_old_path_too() {
+    let Some(repo) = Repo::new("git-stage-rename", "false") else {
+        return;
+    };
+    repo.write("old.txt", "one\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+    repo.ok(&["mv", "old.txt", "new.txt"]);
+    let (old, new) = (repo.path("old.txt"), repo.path("new.txt"));
+    let entry = repo.entry("new.txt");
+    assert_eq!(entry.staged, Some(Change::Renamed));
+    assert_eq!(entry.from.as_deref(), Some(old.as_path()));
+
+    // 取消暂存：暂存区回到 `HEAD` 里的旧路径，工作区里是改名后的新路径。
+    repo.git
+        .unstage(&repo.root, &[new.clone(), old.clone()])
+        .unwrap();
+    assert_eq!(repo.index("old.txt").as_deref(), Some(&b"one\n"[..]));
+    assert_eq!(repo.index("new.txt"), None);
+    assert_eq!(repo.staged(), Vec::<String>::new());
+
+    // 再暂存两个路径：改名重新进入暂存区。
+    repo.git.stage(&repo.root, &[new, old]).unwrap();
+    assert_eq!(
+        repo.sh(&["diff", "--cached", "--name-status"]),
+        "R100\told.txt\tnew.txt"
+    );
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 还没有提交过时取消暂存：只从暂存区移除条目，工作区不变，文件回到未跟踪。
+#[test]
+fn unstaging_before_the_first_commit_removes_the_entries() {
+    let Some(repo) = Repo::new("git-unstage-unborn", "false") else {
+        return;
+    };
+    let a = repo.write("a.txt", "one\n");
+    let b = repo.write("b.txt", "two\n");
+    repo.ok(&["add", "-A"]);
+
+    repo.git
+        .unstage(&repo.root, std::slice::from_ref(&a))
+        .unwrap();
+    assert_eq!(repo.index("a.txt"), None);
+    assert!(repo.entry("a.txt").untracked());
+    assert_eq!(repo.index("b.txt").as_deref(), Some(&b"two\n"[..]));
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "one\n");
+
+    // 全部取消暂存后暂存区为空，没有可提交的内容。
+    repo.git
+        .unstage(&repo.root, std::slice::from_ref(&b))
+        .unwrap();
+    assert_eq!(repo.staged(), Vec::<String>::new());
+    assert!(repo.git.commit(&repo.root, "first", false).is_err());
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "two\n");
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 全部暂存与取消暂存作用于整个仓库：未跟踪且未被忽略的文件一并加入，忽略的文件不动；还没有
+/// 提交过时取消暂存清空暂存区。
+#[test]
+fn staging_all_touches_the_whole_repository() {
+    let Some(repo) = Repo::new("git-stage-all", "false") else {
+        return;
+    };
+    repo.write(".gitignore", "ignored.txt\n");
+    repo.write("a.txt", "one\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+    repo.write("a.txt", "two\n");
+    repo.write("dir/new.txt", "new\n");
+    repo.write("ignored.txt", "ignored\n");
+
+    repo.git.stage_all(&repo.root).unwrap();
+    assert_eq!(repo.index("a.txt").as_deref(), Some(&b"two\n"[..]));
+    assert_eq!(repo.index("dir/new.txt").as_deref(), Some(&b"new\n"[..]));
+    assert_eq!(repo.index("ignored.txt"), None);
+    assert_eq!(repo.staged(), ["a.txt", "dir/new.txt"]);
+
+    // 取消暂存全部：暂存区回到 `HEAD`，工作区不变。
+    repo.git.unstage_all(&repo.root).unwrap();
+    assert_eq!(repo.staged(), Vec::<String>::new());
+    assert_eq!(
+        std::fs::read_to_string(repo.path("a.txt")).unwrap(),
+        "two\n"
+    );
+    assert!(repo.path("dir/new.txt").exists());
+    let _ = std::fs::remove_dir_all(&repo.root);
+
+    // 还没有提交过：同样只清空暂存区。
+    let Some(repo) = Repo::new("git-stage-all-unborn", "false") else {
+        return;
+    };
+    let a = repo.write("a.txt", "one\n");
+    repo.ok(&["add", "-A"]);
+    repo.git.unstage_all(&repo.root).unwrap();
+    assert_eq!(repo.index("a.txt"), None);
+    assert!(repo.entry("a.txt").untracked());
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "one\n");
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 提交读取暂存区而不是工作区：暂存以后继续改文件，提交里是暂存的内容。
+#[test]
+fn a_commit_takes_the_index_not_the_worktree() {
+    let Some(repo) = Repo::new("git-commit-index", "false") else {
+        return;
+    };
+    let a = repo.write("a.txt", "v1\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+
+    repo.write("a.txt", "v2\n");
+    repo.git
+        .stage(&repo.root, std::slice::from_ref(&a))
+        .unwrap();
+    repo.write("a.txt", "v3\n");
+    // 同一文件两侧都有变化。
+    let entry = repo.entry("a.txt");
+    assert_eq!(
+        (entry.staged, entry.unstaged),
+        (Some(Change::Modified), Some(Change::Modified))
     );
 
-    // 提交被 hooks 拒绝：未跟踪的文件不留在暂存区。
-    let hook = root.join(".git/hooks/pre-commit");
-    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    std::fs::write(&hook, "#!/bin/sh\necho 不许提交 >&2\nexit 1\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let risks = git.inspect(&root).unwrap();
-    git.trust(&root, risks.fingerprint);
-    let b = root.join("b.txt");
-    std::fs::write(&b, "new\n").unwrap();
-    let refused = git.commit(
-        &root,
-        "second",
-        std::slice::from_ref(&b),
-        std::slice::from_ref(&b),
-        &[],
-        false,
+    repo.git.commit(&repo.root, "second", false).unwrap();
+    let cancel = Cancel::default();
+    assert_eq!(
+        repo.git
+            .head_content(&repo.root, &a, &cancel)
+            .unwrap()
+            .as_deref(),
+        Some(&b"v2\n"[..])
     );
-    assert!(refused.unwrap_err().contains("不许提交"));
-    let status = git.status(&root, &cancel).unwrap();
-    let entry = status.entries.iter().find(|e| e.path == b).unwrap();
-    assert!(entry.untracked(), "{entry:?}");
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "v3\n");
+    let entry = repo.entry("a.txt");
+    assert_eq!(
+        (entry.staged, entry.unstaged),
+        (None, Some(Change::Modified))
+    );
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
 
-    // 必需的过滤器失败：返回错误，不能当成文件不在 `HEAD` 里。
-    std::fs::remove_file(&hook).unwrap();
-    std::fs::write(root.join(".gitattributes"), "*.t filter=x\n").unwrap();
-    let t = root.join("a.t");
-    std::fs::write(&t, "hi\n").unwrap();
-    sh(&["add", "a.t", ".gitattributes"]);
-    sh(&[
-        "-c",
-        "user.name=t",
-        "-c",
-        "user.email=t@t",
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "-q",
-        "-m",
-        "t",
-    ]);
-    sh(&["config", "filter.x.smudge", "false"]);
-    sh(&["config", "filter.x.required", "true"]);
-    let risks = git.inspect(&root).unwrap();
-    git.trust(&root, risks.fingerprint);
-    assert!(git.head_content(&root, &t, &cancel).is_err());
+/// 部分暂存与取消暂存：改动块、单行都只改暂存区，未选中的内容留在工作区。
+#[test]
+fn partial_staging_writes_only_the_selected_hunks_and_lines() {
+    let Some(repo) = Repo::new("git-stage-partial", "false") else {
+        return;
+    };
+    let a = repo.write("a.txt", "1\n2\n3\n4\n5\n6\n7\n8\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+    let worktree = "1\nTWO\n3\n4\n5\n6\nSEVEN\n8\n";
+    repo.write("a.txt", worktree);
 
-    let _ = std::fs::remove_dir_all(&dir);
+    // 两处改动相隔 4 行以上，是两块；只暂存第一块。
+    let first = "1\nTWO\n3\n4\n5\n6\n7\n8\n";
+    repo.git
+        .stage_partial(&repo.root, &a, first.as_bytes())
+        .unwrap();
+    assert_eq!(repo.index("a.txt").as_deref(), Some(first.as_bytes()));
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), worktree);
+    let entry = repo.entry("a.txt");
+    assert_eq!(
+        (entry.staged, entry.unstaged),
+        (Some(Change::Modified), Some(Change::Modified))
+    );
+
+    // 再暂存第二块，暂存区与工作区一致。
+    repo.git
+        .stage_partial(&repo.root, &a, worktree.as_bytes())
+        .unwrap();
+    assert_eq!(repo.index("a.txt").as_deref(), Some(worktree.as_bytes()));
+
+    // 取消暂存第二块：暂存区回到只有第一块，工作区不动。
+    repo.git
+        .unstage_partial(&repo.root, &a, first.as_bytes())
+        .unwrap();
+    assert_eq!(repo.index("a.txt").as_deref(), Some(first.as_bytes()));
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), worktree);
+
+    // 单行：一处改动里删两行、加两行，只取其中一行。选择算法与界面的逐行勾选相同，
+    // 保留的旧行排在加入的新行之前。
+    let line = repo.write("line.txt", "a\nb\nc\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "lines"]);
+    repo.write("line.txt", "a\nB\nC\n");
+    let mut keep = winc_core::diff::LineSet::default();
+    keep.new.insert(1);
+    let target = winc_core::diff::pick_changes("a\nb\nc\n", "a\nB\nC\n", |_, _| {
+        winc_core::diff::Pick::Lines(keep.clone())
+    });
+    assert_eq!(target, "a\nB\n");
+    repo.git
+        .stage_partial(&repo.root, &line, target.as_bytes())
+        .unwrap();
+    assert_eq!(repo.index("line.txt").as_deref(), Some(target.as_bytes()));
+    assert_eq!(std::fs::read_to_string(&line).unwrap(), "a\nB\nC\n");
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 部分暂存新文件、删除文件、空文件；缺失文件与空文件分开处理。
+#[test]
+fn partial_staging_new_deleted_and_empty_files() {
+    let Some(repo) = Repo::new("git-stage-partial-kinds", "false") else {
+        return;
+    };
+    repo.write("gone.txt", "1\n2\n3\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+
+    // 新文件只暂存一部分：暂存区里是选中的内容，其余留在工作区，条目显示为新增 + 修改。
+    // 内容与后面删除的文件区分开，免得 `git status` 把两者认成改名。
+    let new = repo.write("new.txt", "alpha\nbeta\ngamma\n");
+    repo.git
+        .stage_partial(&repo.root, &new, b"alpha\nbeta\n")
+        .unwrap();
+    assert_eq!(
+        repo.index("new.txt").as_deref(),
+        Some(&b"alpha\nbeta\n"[..])
+    );
+    let entry = repo.entry("new.txt");
+    assert_eq!(
+        (entry.staged, entry.unstaged),
+        (Some(Change::Added), Some(Change::Modified))
+    );
+
+    // 删除文件只暂存一部分删除：暂存区里留下没删的行。
+    let gone = repo.path("gone.txt");
+    std::fs::remove_file(&gone).unwrap();
+    repo.git
+        .stage_partial(&repo.root, &gone, b"1\n3\n")
+        .unwrap();
+    assert_eq!(repo.index("gone.txt").as_deref(), Some(&b"1\n3\n"[..]));
+
+    // 删除的每一行都暂存：条目移出暂存区，状态是已暂存的删除。
+    repo.git.stage_partial(&repo.root, &gone, b"").unwrap();
+    assert_eq!(repo.index("gone.txt"), None);
+    assert_eq!(repo.entry("gone.txt").staged, Some(Change::Deleted));
+
+    // 空文件：条目仍在，内容是空的。
+    let empty = repo.write("empty.txt", "");
+    repo.git.stage_partial(&repo.root, &empty, b"").unwrap();
+    assert_eq!(repo.index("empty.txt").as_deref(), Some(&b""[..]));
+    assert_eq!(repo.entry("empty.txt").staged, Some(Change::Added));
+
+    // 暂存区里已经是空文件：补丁要带 `diff --git` 头，`git` 才认得出这是往空文件里加内容。
+    repo.write("empty.txt", "x\ny\n");
+    repo.git
+        .stage_partial(&repo.root, &empty, b"x\ny\n")
+        .unwrap();
+    assert_eq!(repo.index("empty.txt").as_deref(), Some(&b"x\ny\n"[..]));
+
+    // 取消暂存新文件的全部内容：条目移出暂存区，文件回到未跟踪。
+    repo.git.unstage_partial(&repo.root, &new, b"").unwrap();
+    assert_eq!(repo.index("new.txt"), None);
+    assert!(repo.entry("new.txt").untracked());
+    assert_eq!(
+        std::fs::read_to_string(&new).unwrap(),
+        "alpha\nbeta\ngamma\n"
+    );
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 部分暂存保留 CRLF、BOM 和缺少末尾换行的内容，`core.autocrlf` 由 `git` 套用。
+#[test]
+fn partial_staging_keeps_crlf_bom_and_missing_final_newline() {
+    let Some(repo) = Repo::new("git-stage-partial-bytes", "false") else {
+        return;
+    };
+    let crlf = repo.write("crlf.txt", "1\r\n2\r\n3\r\n");
+    let bom = repo.write("bom.txt", "\u{feff}one\ntwo\n");
+    let end = repo.write("end.txt", "a\nb");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+
+    // 换行符原样保存：补丁里的内容与暂存区逐字节一致。
+    repo.write("crlf.txt", "1\r\nTWO\r\n3\r\n");
+    repo.git
+        .stage_partial(&repo.root, &crlf, b"1\r\nTWO\r\n3\r\n")
+        .unwrap();
+    assert_eq!(repo.blob("crlf.txt"), b"1\r\nTWO\r\n3\r\n");
+
+    // BOM 属于第一行的内容，不因为逐行比较丢掉。
+    repo.write("bom.txt", "\u{feff}one\nTWO\n");
+    repo.git
+        .stage_partial(&repo.root, &bom, "\u{feff}one\nTWO\n".as_bytes())
+        .unwrap();
+    assert_eq!(repo.blob("bom.txt"), "\u{feff}one\nTWO\n".as_bytes());
+
+    // 末尾没有换行符：暂存区里同样没有。
+    repo.write("end.txt", "a\nB");
+    repo.git.stage_partial(&repo.root, &end, b"a\nB").unwrap();
+    assert_eq!(repo.blob("end.txt"), b"a\nB");
+    let _ = std::fs::remove_dir_all(&repo.root);
+
+    // `core.autocrlf=true`：工作区是 CRLF、暂存区里是 LF；目标内容按工作区的形式给出，写进
+    // 暂存区时套用同样的过滤器。
+    let Some(repo) = Repo::new("git-stage-partial-autocrlf", "true") else {
+        return;
+    };
+    let f = repo.write("f.txt", "1\r\n2\r\n3\r\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+    repo.write("f.txt", "1\r\nTWO\r\n3\r\n");
+    repo.git
+        .stage_partial(&repo.root, &f, b"1\r\nTWO\r\n3\r\n")
+        .unwrap();
+    assert_eq!(repo.blob("f.txt"), b"1\nTWO\n3\n");
+    assert_eq!(
+        repo.index("f.txt").as_deref(),
+        Some(&b"1\r\nTWO\r\n3\r\n"[..])
+    );
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 文件名里的 `[` 按字面处理：名字相近的其他文件不受影响。
+#[test]
+fn partial_staging_does_not_touch_files_with_similar_names() {
+    let Some(repo) = Repo::new("git-stage-partial-names", "false") else {
+        return;
+    };
+    let bracket = repo.write("a[1].txt", "x\ny\n");
+    let plain = repo.write("a1.txt", "x\ny\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+    repo.write("a[1].txt", "x\nY\n");
+    repo.write("a1.txt", "x\nZ\n");
+
+    repo.git
+        .stage_partial(&repo.root, &bracket, b"x\nY\n")
+        .unwrap();
+    assert_eq!(repo.index("a[1].txt").as_deref(), Some(&b"x\nY\n"[..]));
+    assert_eq!(repo.index("a1.txt").as_deref(), Some(&b"x\ny\n"[..]));
+
+    repo.git
+        .stage(&repo.root, std::slice::from_ref(&plain))
+        .unwrap();
+    assert_eq!(repo.index("a1.txt").as_deref(), Some(&b"x\nZ\n"[..]));
+    assert_eq!(repo.index("a[1].txt").as_deref(), Some(&b"x\nY\n"[..]));
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 暂存区被其他进程占用时返回原因，暂存区保持原样。
+#[test]
+fn partial_staging_reports_a_locked_index() {
+    let Some(repo) = Repo::new("git-stage-partial-lock", "false") else {
+        return;
+    };
+    let a = repo.write("a.txt", "1\n2\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+    repo.write("a.txt", "1\nTWO\n");
+    let lock = repo.root.join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+
+    let error = repo
+        .git
+        .stage_partial(&repo.root, &a, b"1\nTWO\n")
+        .unwrap_err();
+    assert!(error.contains("index.lock"), "{error}");
+    std::fs::remove_file(&lock).unwrap();
+    // 暂存区没有被改动。
+    assert_eq!(repo.index("a.txt").as_deref(), Some(&b"1\n2\n"[..]));
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 无法逐行映射的内容返回明确原因，不猜测，也不改成整文件暂存；冲突文件同样拒绝。
+#[test]
+fn partial_staging_rejects_binary_and_conflicted_content() {
+    let Some(repo) = Repo::new("git-stage-partial-binary", "false") else {
+        return;
+    };
+    let bin = repo.write_bytes("bin.dat", &[0xff, 0x00, 0xfe]);
+    let nul = repo.write_bytes("nul-bytes.txt", b"a\0b\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+
+    // 不是 UTF-8 的内容。
+    let error = repo
+        .git
+        .stage_partial(&repo.root, &bin, &[0xff, 0x00, 0xfd])
+        .unwrap_err();
+    assert!(error.contains("UTF-8"), "{error}");
+    assert_eq!(repo.blob("bin.dat"), vec![0xff, 0x00, 0xfe]);
+
+    // 是 UTF-8 但含 NUL，同样不是文本。
+    let error = repo
+        .git
+        .stage_partial(&repo.root, &nul, b"a\0c\n")
+        .unwrap_err();
+    assert!(error.contains("UTF-8"), "{error}");
+    assert_eq!(repo.blob("nul-bytes.txt"), b"a\0b\n");
+
+    // 合并冲突的条目在暂存区里有多份内容，写不进单份内容。
+    repo.write("m.txt", "top\nours\nbottom\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "ours"]);
+    repo.ok(&["switch", "-q", "-c", "other", "HEAD~1"]);
+    repo.write("m.txt", "top\ntheirs\nbottom\n");
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "theirs"]);
+    repo.ok(&["switch", "-q", "main"]);
+    let out = crate::test_util::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&repo.root)
+        .args(["merge", "other"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "应当出冲突");
+    let m = repo.path("m.txt");
+    let error = repo
+        .git
+        .stage_partial(&repo.root, &m, b"top\nboth\nbottom\n")
+        .unwrap_err();
+    assert!(!error.is_empty());
+    // 冲突仍在，没有变成普通的暂存内容。
+    assert!(repo.entry("m.txt").conflicted());
+    let _ = std::fs::remove_dir_all(&repo.root);
+}
+
+/// 部分暂存保留暂存区里的文件模式：可执行位不会因为逐行写入而丢掉。
+#[cfg(unix)]
+#[test]
+fn partial_staging_keeps_the_execute_bit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(repo) = Repo::new("git-stage-partial-mode", "false") else {
+        return;
+    };
+    let script = repo.write("run.sh", "1\n2\n3\n");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    repo.ok(&["add", "-A"]);
+    repo.ok(&["commit", "-q", "-m", "first"]);
+
+    repo.write("run.sh", "1\n2\n4\n");
+    repo.git
+        .stage_partial(&repo.root, &script, b"1\n2\n4\n")
+        .unwrap();
+    assert!(
+        repo.sh(&["ls-files", "-s", "run.sh"])
+            .starts_with("100755 ")
+    );
+
+    // 新的可执行文件：补丁里写明模式。
+    let new = repo.write("new.sh", "a\nb\n");
+    std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).unwrap();
+    repo.git.stage_partial(&repo.root, &new, b"a\n").unwrap();
+    assert!(
+        repo.sh(&["ls-files", "-s", "new.sh"])
+            .starts_with("100755 ")
+    );
+    let _ = std::fs::remove_dir_all(&repo.root);
 }
 
 #[test]
@@ -916,7 +1326,7 @@ fn untrusted_repository_commands_do_not_run() {
     let dir = crate::test_util::scratch("trust");
     let root = winc_config::files::canonicalize(&dir).unwrap();
     let sh = |args: &[&str]| {
-        let ok = Command::new("git")
+        let ok = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(&root)
             .args(args)
@@ -930,6 +1340,7 @@ fn untrusted_repository_commands_do_not_run() {
     sh(&["config", "user.name", "t"]);
     sh(&["config", "user.email", "t@t"]);
     sh(&["config", "commit.gpgsign", "false"]);
+    sh(&["config", "core.autocrlf", "false"]);
     std::fs::write(root.join(".gitattributes"), "*.t filter=x\n").unwrap();
     std::fs::write(root.join("a.t"), "hi\n").unwrap();
     sh(&["add", "."]);
@@ -956,7 +1367,7 @@ fn untrusted_repository_commands_do_not_run() {
     assert!(!marker.exists(), "不可信的仓库里运行了配置中的命令");
     let risks = git.untrusted(&root).expect("应当不可信");
     assert_eq!(risks.filters, ["x"]);
-    let refused = git.commit(&root, "m", &[root.join("a.t")], &[], &[], false);
+    let refused = git.commit(&root, "m", false);
     assert!(refused.unwrap_err().contains("信任"));
     assert!(git.operate(&root, &["switch", "-c", "b"]).is_err());
 
@@ -994,7 +1405,7 @@ fn reading_runs_no_signature_or_textconv_program() {
     let root = winc_config::files::canonicalize(&dir).unwrap();
     let sh = |args: &[&str], stdin: &str| {
         use std::io::Write;
-        let mut child = Command::new("git")
+        let mut child = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(&root)
             .args(args)
@@ -1065,7 +1476,7 @@ fn push_skips_remotes_that_look_like_options() {
     let dir = crate::test_util::scratch("push-remote");
     let root = winc_config::files::canonicalize(&dir).unwrap();
     let sh = |args: &[&str]| {
-        let ok = Command::new("git")
+        let ok = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(&root)
             .args(args)
@@ -1079,6 +1490,7 @@ fn push_skips_remotes_that_look_like_options() {
     sh(&["config", "user.name", "t"]);
     sh(&["config", "user.email", "t@t"]);
     sh(&["config", "commit.gpgsign", "false"]);
+    sh(&["config", "core.autocrlf", "false"]);
     sh(&["commit", "-q", "--allow-empty", "-m", "a"]);
     let marker = root.join("ran");
     let remote = format!("--receive-pack=touch '{}';", marker.display());
@@ -1099,7 +1511,7 @@ fn log_filter_also_finds_a_commit_by_its_hash() {
     };
     let dir = crate::test_util::scratch("git-log-hash");
     let sh = |args: &[&str]| {
-        let output = Command::new("git")
+        let output = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(&dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -1168,7 +1580,7 @@ fn log_streams_read_batches_from_one_git() {
     };
     let dir = crate::test_util::scratch("git-log-stream");
     let sh = |args: &[&str]| {
-        let ok = Command::new("git")
+        let ok = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(&dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -1237,18 +1649,23 @@ fn undoing_a_commit_keeps_its_changes_staged() {
     let dir = crate::test_util::scratch("git-undo-commit");
     let root = winc_config::files::canonicalize(&dir).unwrap();
     let sh = |args: &[&str]| {
-        let out = Command::new("git").arg("-C").arg(&root).args(args).output();
+        let out = crate::test_util::quiet(Command::new("git"))
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output();
         String::from_utf8(out.unwrap().stdout).unwrap()
     };
     sh(&["init", "-q", "-b", "main"]);
     let a = root.join("a.rs");
     std::fs::write(&a, "one\n").unwrap();
     let only = std::slice::from_ref(&a);
-    git.commit(&root, "first", only, only, &[], false).unwrap();
+    git.stage(&root, only).unwrap();
+    git.commit(&root, "first", false).unwrap();
     let first = git.last_commit(&root).unwrap();
     std::fs::write(&a, "two\n").unwrap();
-    git.commit(&root, "second\n\n正文", only, &[], &[], false)
-        .unwrap();
+    git.stage(&root, only).unwrap();
+    git.commit(&root, "second\n\n正文", false).unwrap();
     let second = git.last_commit(&root).unwrap();
     assert_eq!(second.subject, "second");
     assert_eq!(second.message, "second\n\n正文");
@@ -1375,7 +1792,7 @@ fn operations_ask_through_the_askpass_program_and_keep_their_output() {
     .unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(
-        Command::new("git")
+        crate::test_util::quiet(Command::new("git"))
             .args(["init", "-q"])
             .arg(&root)
             .status()

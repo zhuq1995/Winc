@@ -1,4 +1,4 @@
-//! 改动列表：行、勾选、选中、滚动、固定在顶部的行和键盘。
+//! 改动列表：行、选中、滚动、固定在顶部的行和键盘。
 
 use super::*;
 
@@ -29,99 +29,112 @@ impl App {
         self.git.status.as_ref()?.entries.get(i)
     }
 
-    /// 切换第 `i` 个文件的勾选；该文件在多选的选区里时，选中的各个文件一起勾上或取消。
-    pub(super) fn toggle_commit_check(&mut self, i: usize) {
-        let Some(entry) = self.commit_entry(i).cloned() else {
+    /// 文件行上的 ＋／−：这一行在选区里时作用于整个选区，否则只作用于它自己。
+    pub(super) fn stage_commit_file(&mut self, group: CommitGroup, index: usize) {
+        let Some(path) = self.commit_entry(index).map(|e| e.path.clone()) else {
             return;
         };
-        let on = !self.commit.checked(&entry);
-        if !(self.commit_multi_selected() && self.commit_is_selected(&entry.path)) {
-            self.commit.set_checked(&entry, on);
-            return;
-        }
-        let paths = self.commit_selection();
-        let Some(status) = self.git.status.as_ref() else {
-            return;
+        let file = CommitFile::new(group, path);
+        let files = if self.commit_multi_selected() && self.commit_is_selected(&file) {
+            self.commit_selection()
+        } else {
+            vec![file]
         };
-        let entries: Vec<Entry> = status
-            .entries
-            .iter()
-            .filter(|e| paths.contains(&e.path))
-            .cloned()
-            .collect();
-        for entry in &entries {
-            self.commit.set_checked(entry, on);
-        }
+        self.stage_files(files);
     }
 
-    /// 只选中 `path`（清掉多选），在预览标签里打开它的差异；列表滚到让它露出来。
-    pub(in crate::app::git) fn select_commit_file(&mut self, path: PathBuf) {
+    /// 这一组里各文件在状态里的条目。
+    pub(crate) fn commit_group_files(&self, group: CommitGroup) -> Vec<CommitFile> {
+        let Some(status) = self.git.status.as_ref() else {
+            return Vec::new();
+        };
+        (status.entries.iter())
+            .filter(|e| group.holds(e))
+            .map(|e| CommitFile::new(group, e.path.clone()))
+            .collect()
+    }
+
+    /// 只选中 `file`（清掉多选），在预览标签里打开它所在组的差异；列表滚到让它露出来。
+    pub(in crate::app::git) fn select_commit_file(&mut self, file: CommitFile) {
         self.commit.marked.clear();
-        self.commit.anchor = Some(path.clone());
-        self.commit.selected = Some(path.clone());
+        self.commit.anchor = Some(file.clone());
+        self.commit.selected = Some(file.clone());
         self.reveal_commit_selection();
-        self.git_preview_changes(&path);
+        self.git_preview_changes(&file);
     }
 
     /// 列表里看得见的文件，按显示顺序。
-    pub(crate) fn commit_files(&self) -> Vec<PathBuf> {
+    pub(crate) fn commit_files(&self) -> Vec<CommitFile> {
         let Some(status) = self.git.status.as_ref() else {
             return Vec::new();
         };
         self.commit_rows()
             .iter()
             .filter_map(|r| match r {
-                CommitRow::File { index, .. } => Some(status.entries[*index].path.clone()),
+                CommitRow::File { group, index, .. } => {
+                    Some(CommitFile::new(*group, status.entries[*index].path.clone()))
+                }
                 _ => None,
             })
             .collect()
     }
 
     /// 选中的各个文件，按显示顺序；没有选中时为空。
-    pub(crate) fn commit_selection(&self) -> Vec<PathBuf> {
+    pub(crate) fn commit_selection(&self) -> Vec<CommitFile> {
         let files = self.commit_files();
         if self.commit.marked.is_empty() {
             return files
                 .into_iter()
-                .filter(|p| self.commit.selected.as_ref() == Some(p))
+                .filter(|f| self.commit.selected.as_ref() == Some(f))
                 .collect();
         }
-        let mut selection: Vec<PathBuf> = files
+        let mut selection: Vec<CommitFile> = files
             .into_iter()
-            .filter(|p| self.commit.marked.contains(p))
+            .filter(|f| self.commit.marked.contains(f))
             .collect();
         // 收起的目录里选中的文件（⌘、⇧ 单击目录选上的）排在后面，按状态里的顺序。
         if selection.len() < self.commit.marked.len()
             && let Some(status) = self.git.status.as_ref()
         {
-            let shown: HashSet<&PathBuf> = selection.iter().collect();
-            let hidden: Vec<PathBuf> = status
-                .entries
-                .iter()
-                .filter(|e| self.commit.marked.contains(&e.path) && !shown.contains(&e.path))
-                .map(|e| e.path.clone())
+            let shown: HashSet<&CommitFile> = selection.iter().collect();
+            let mut hidden: Vec<CommitFile> = (self.commit.marked.iter())
+                .filter(|f| !shown.contains(f))
+                // 刷新后已经不在这一组里的记录不再算选中：按它操作会落到变了的条目上。
+                .filter(|f| {
+                    status
+                        .entries
+                        .iter()
+                        .any(|e| e.path == f.path && f.group.holds(e))
+                })
+                .cloned()
                 .collect();
+            hidden.sort_by_key(|f| {
+                status
+                    .entries
+                    .iter()
+                    .position(|e| e.path == f.path)
+                    .unwrap_or(usize::MAX)
+            });
             selection.extend(hidden);
         }
         selection
     }
 
     /// 第 `row` 行（目录）下面的各个文件，收起的子目录里的也算；不是目录时为空。
-    pub(crate) fn commit_dir_files(&self, row: usize) -> Vec<PathBuf> {
+    pub(crate) fn commit_dir_files(&self, row: usize) -> Vec<CommitFile> {
         let rows = self.commit_rows();
         let (Some(CommitRow::Dir { group, dir, .. }), Some(status)) =
             (rows.get(row), self.git.status.as_ref())
         else {
             return Vec::new();
         };
-        rows.dir(*group, dir)
-            .iter()
-            .map(|&i| status.entries[i].path.clone())
+        (rows.dir(*group, dir).iter())
+            .map(|&i| CommitFile::new(*group, status.entries[i].path.clone()))
             .collect()
     }
 
     /// 只选中 `files`（不打开预览），第一个成为当前行和扩展选区的起点。
-    pub(crate) fn select_commit_files(&mut self, files: Vec<PathBuf>) {
+    pub(crate) fn select_commit_files(&mut self, files: Vec<CommitFile>) {
         let first = files.first().cloned();
         self.commit.marked = files.into_iter().collect();
         self.commit.selected = first.clone();
@@ -141,6 +154,14 @@ impl App {
         {
             commit.marked.insert(current);
         }
+        // 选区只在一个组里：从另一组的目录开始时以这一组重新开始。
+        if commit
+            .selected
+            .as_ref()
+            .is_some_and(|current| current.group != first.group)
+        {
+            commit.marked.clear();
+        }
         if files.iter().all(|f| commit.marked.contains(f)) {
             for file in &files {
                 commit.marked.remove(file);
@@ -159,55 +180,56 @@ impl App {
         self.commit.marked.len()
     }
 
-    /// 文件 `path` 是否选中。
-    pub(crate) fn commit_is_selected(&self, path: &Path) -> bool {
+    /// 文件 `file` 是否选中。
+    pub(crate) fn commit_is_selected(&self, file: &CommitFile) -> bool {
         if self.commit.marked.is_empty() {
-            return self.commit.selected.as_deref() == Some(path);
+            return self.commit.selected.as_ref() == Some(file);
         }
-        self.commit.marked.contains(path)
+        self.commit.marked.contains(file)
     }
 
     /// 是否选中了不止一个文件（还在改动里的，收起的目录里的也算）。
     ///
     /// 和 `commit_selection().len() > 1` 一样，但不排序、不克隆路径：绘制时每帧都要问。
     pub(crate) fn commit_multi_selected(&self) -> bool {
-        let Some(status) = self.git.status.as_ref() else {
-            return false;
-        };
         self.commit.marked.len() > 1
-            && status
-                .entries
-                .iter()
-                .filter(|e| self.commit.marked.contains(&e.path))
-                .nth(1)
-                .is_some()
     }
 
-    /// 把 `path` 加入或移出选区（⌘ 单击）；加入时该文件成为当前行和扩展选区的起点。
-    pub(super) fn toggle_commit_selected(&mut self, path: PathBuf) {
+    /// 把 `file` 加入或移出选区（⌘ 单击）；加入时该文件成为当前行和扩展选区的起点。
+    ///
+    /// 多选只在同一个组里：从另一组开始选择时以新组作为选区。
+    pub(super) fn toggle_commit_selected(&mut self, file: CommitFile) {
         let commit = &mut self.commit;
-        if commit.marked.is_empty()
+        if commit
+            .selected
+            .as_ref()
+            .is_some_and(|current| current.group != file.group)
+        {
+            commit.marked.clear();
+        } else if commit.marked.is_empty()
             && let Some(current) = commit.selected.clone()
         {
             commit.marked.insert(current);
         }
-        if !commit.marked.remove(&path) {
-            commit.marked.insert(path.clone());
+        if !commit.marked.remove(&file) {
+            commit.marked.insert(file.clone());
         }
-        commit.selected = Some(path.clone());
-        commit.anchor = Some(path);
+        commit.selected = Some(file.clone());
+        commit.anchor = Some(file);
         if commit.marked.is_empty() {
             commit.selected = None;
         }
     }
 
-    /// 选中从扩展选区的起点到 `path` 之间看得见的各个文件（⇧ 单击、⇧↑↓）；`path` 成为当前行。
-    pub(super) fn select_commit_range(&mut self, path: PathBuf) {
+    /// 选中从扩展选区的起点到 `file` 之间看得见的各个文件（⇧ 单击、⇧↑↓）；`file` 成为当前行。
+    pub(super) fn select_commit_range(&mut self, file: CommitFile) {
         let Some(status) = self.git.status.as_ref() else {
             return;
         };
         let row = self.commit_rows().iter().position(|r| match r {
-            CommitRow::File { index, .. } => status.entries[*index].path == path,
+            CommitRow::File { group, index, .. } => {
+                *group == file.group && status.entries[*index].path == file.path
+            }
             _ => false,
         });
         if let Some(row) = row {
@@ -218,32 +240,44 @@ impl App {
     /// 选中从扩展选区的起点到第 `to` 行之间的各行：文件行是它自己，目录行是它下面的所有文件
     /// （收起的也算）。
     ///
-    /// 第 `to` 行的文件（目录时是它下面的第一个）成为当前行。
+    /// 只选第 `to` 行所在的组：跨过组标题时不会把另一组的同名文件也选上。第 `to` 行的文件
+    /// （目录时是它下面的第一个）成为当前行。
     pub(super) fn select_commit_rows(&mut self, to: usize) {
         let rows = self.commit_rows();
         let Some(status) = self.git.status.as_ref() else {
             return;
         };
         let file_at = |r: usize| match rows.get(r) {
-            Some(CommitRow::File { index, .. }) => Some(status.entries[*index].path.clone()),
+            Some(CommitRow::File { group, index, .. }) => {
+                Some(CommitFile::new(*group, status.entries[*index].path.clone()))
+            }
             _ => None,
         };
-        let from = [&self.commit.anchor, &self.commit.selected]
+        let Some(group) = file_at(to)
+            .or_else(|| self.commit_dir_files(to).into_iter().next())
+            .map(|f| f.group)
+        else {
+            return;
+        };
+        let from = [self.commit.anchor.as_ref(), self.commit.selected.as_ref()]
             .into_iter()
             .flatten()
-            .find_map(|a| (0..rows.len()).find(|&r| file_at(r).as_ref() == Some(a)))
+            .find_map(|a| {
+                (0..rows.len()).find(|&r| file_at(r).as_ref() == Some(a) && a.group == group)
+            })
             .unwrap_or(to);
         let mut marked = HashSet::new();
         for r in from.min(to)..=from.max(to) {
             match file_at(r) {
-                Some(path) => {
-                    marked.insert(path);
+                Some(file) if file.group == group => {
+                    marked.insert(file);
                 }
+                Some(_) => {}
                 None => marked.extend(self.commit_dir_files(r)),
             }
         }
         let current = file_at(to).or_else(|| self.commit_dir_files(to).into_iter().next());
-        let Some(current) = current else {
+        let Some(current) = current.filter(|f| f.group == group) else {
             return;
         };
         self.commit.anchor = file_at(from).or(Some(current.clone()));
@@ -254,14 +288,19 @@ impl App {
 
     /// 让选中的文件露在列表里：盖在固定的组、目录下面、或者已滚出列表时，滚到它正好露出来。
     pub(super) fn reveal_commit_selection(&mut self) {
-        let Some(status) = self.git.status.as_ref() else {
+        let Some(selected) = self.commit.selected.clone() else {
             return;
         };
         let rows = self.commit_rows();
-        let selected = self.commit.selected.as_deref();
         let Some(i) = rows.iter().position(|r| match r {
-            CommitRow::File { index, .. } => {
-                Some(status.entries[*index].path.as_path()) == selected
+            CommitRow::File { group, index, .. } => {
+                let path = self
+                    .git
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.entries.get(*index))
+                    .map(|e| e.path.as_path());
+                *group == selected.group && path == Some(selected.path.as_path())
             }
             _ => false,
         }) else {
@@ -373,15 +412,20 @@ impl App {
     /// 没有选中文件时为 `None`。
     fn commit_anchor(&self, rows: &CommitRows) -> Option<usize> {
         let (status, root) = (self.git.status.as_ref()?, self.git.root.as_deref()?);
-        let selected = self.commit.selected.as_deref()?;
-        let index = status.entries.iter().position(|e| e.path == selected)?;
-        let entry = &status.entries[index];
-        // 目录排在其子目录之前，因此最后一个包含该文件的行即最内层。
+        let selected = self.commit.selected.as_ref()?;
         rows.iter().rposition(|row| match row {
-            CommitRow::File { index: i, .. } => *i == index,
-            CommitRow::Group(group) => group.holds(entry),
+            CommitRow::File { group, index, .. } => {
+                *group == selected.group && status.entries[*index].path == selected.path
+            }
+            CommitRow::Group(group) => {
+                *group == selected.group
+                    && status
+                        .entries
+                        .iter()
+                        .any(|e| e.path == selected.path && group.holds(e))
+            }
             CommitRow::Dir { group, dir, .. } => {
-                group.holds(entry) && entry.path.starts_with(root.join(dir))
+                *group == selected.group && selected.path.starts_with(root.join(dir))
             }
         })
     }
@@ -421,8 +465,9 @@ impl App {
     /// 处理改动列表中的按键。
     ///
     /// `↑` `↓` 选择并预览，`Home` `End` 移到第一个、最后一个文件，`PageUp` `PageDown` 翻页，
-    /// 以上按键配合 `⇧` 时扩展选区；`←` `→` 收起、展开选中文件所在的目录；空格切换勾选；
-    /// `⌫` 回滚选中的文件；回车打开文件；`Tab` 移到提交信息；`Esc` 先缩小为单选，再回到编辑区。
+    /// 以上按键配合 `⇧` 时扩展选区；`←` `→` 收起、展开选中文件所在的目录；空格对选区执行所在
+    /// 组的暂存或取消暂存；`⌫` 回滚选中的文件；回车打开文件；`Tab` 移到提交信息；`Esc` 先缩小为
+    /// 单选，再回到编辑区。
     pub(in crate::app) fn on_key_commit_list(&mut self, event: &KeyEvent) {
         self.commit_list_key(&event.logical_key);
     }
@@ -434,22 +479,23 @@ impl App {
             return;
         };
         // 各文件在 `rows` 中的行号及其在状态中的下标。
-        let files: Vec<(usize, usize)> = rows
+        let files: Vec<(usize, CommitFile)> = rows
             .iter()
             .enumerate()
             .filter_map(|(r, row)| match row {
-                CommitRow::File { index, .. } => Some((r, *index)),
+                CommitRow::File { group, index, .. } => Some((
+                    r,
+                    CommitFile::new(*group, status.entries[*index].path.clone()),
+                )),
                 _ => None,
             })
             .collect();
-        let selected = self.commit.selected.as_deref();
-        let at = files
-            .iter()
-            .position(|&(_, i)| Some(status.entries[i].path.as_path()) == selected);
+        let selected = self.commit.selected.clone();
+        let at = files.iter().position(|(_, f)| Some(f) == selected.as_ref());
         // 选中文件所在的行；文件被收起而不可见时为收起它的目录（或组）所在的行。
         let anchor = self.commit_anchor(&rows);
         // 要用到的那个文件的路径先取出来，下面改 `self` 时不再借着状态。
-        let path = |i: usize| files.get(i).map(|&(_, f)| status.entries[f].path.clone());
+        let path = |i: usize| files.get(i).map(|(_, f)| f.clone());
         // 翻页距离为可见整行数减一，保留一行上下文；落在该行或其后第一个文件上，
         // 跳过组、目录行，到达两端时停在第一个、最后一个文件。
         let page = ((self.commit_parts().list.h / COMMIT_ROW).floor() as usize)
@@ -521,23 +567,29 @@ impl App {
                     self.reveal_commit_selection();
                 }
             }
+            // 空格对选区执行所在组的暂存或取消暂存。
             Key::Named(NamedKey::Space) => {
-                if let Some(i) = at {
-                    self.toggle_commit_check(files[i].1);
+                let files = self.commit_selection();
+                if !files.is_empty() {
+                    self.stage_files(files);
                 }
             }
             // `⌫` 确认后回滚选中的文件。
             Key::Named(NamedKey::Backspace | NamedKey::Delete) => {
-                let paths = self.commit_selection();
+                let paths: Vec<PathBuf> = self
+                    .commit_selection()
+                    .into_iter()
+                    .map(|f| f.path)
+                    .collect();
                 if !paths.is_empty() {
                     self.confirm_rollback(paths);
                 }
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(path) = target
-                    && path.is_file()
+                if let Some(file) = target
+                    && file.path.is_file()
                 {
-                    self.open_path(&path);
+                    self.open_path(&file.path);
                     self.focus = Focus::Editor;
                 }
             }
@@ -546,8 +598,8 @@ impl App {
                 self.focus = Focus::CommitMessage;
             }
             Key::Named(NamedKey::Escape) if self.commit_multi_selected() => {
-                if let Some(path) = self.commit.selected.clone() {
-                    self.select_commit_file(path);
+                if let Some(file) = self.commit.selected.clone() {
+                    self.select_commit_file(file);
                 }
             }
             Key::Named(NamedKey::Escape) if self.editor.active.is_some() => {

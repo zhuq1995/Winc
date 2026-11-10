@@ -9,6 +9,9 @@ impl App {
             root: root.into(),
             path: path.into(),
             oid: None,
+            from: None,
+            compare: Compare::Head,
+            index: 0,
             target: Target::Open,
             view: Err("读不出来".into()),
         });

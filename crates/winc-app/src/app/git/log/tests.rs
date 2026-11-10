@@ -3,7 +3,6 @@
 use super::*;
 
 /// 日志标签的标题，测试中与 [`log_title`] 在默认语言下的结果比较。
-#[cfg(unix)]
 pub(crate) const LOG_TITLE: &str = "Git 日志";
 
 fn commit(local: &str, time: i64) -> Commit {

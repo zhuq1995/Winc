@@ -8,7 +8,6 @@ git-push-no-remote = This repository has no remote configured
 git-file-outside-repository = File isn't in a Git repository
 git-run-failed = Git failed
 git-run-spawn-failed = Couldn't run Git ({ $error })
-git-commit-partial-during-operation = { $operation } in progress; can't commit only some changes
 git-trust-config-unreadable = Couldn't read the repository's configuration
 git-trust-required = This repository runs programs automatically during Git operations ({ $commands }). Trust the repository first
 git-list-separator = { ", " }
@@ -273,7 +272,6 @@ git-commit-unresolved-conflicts = { $count ->
     [one] { $count } file still has unresolved conflicts. Resolve them first
    *[other] { $count } files still have unresolved conflicts. Resolve them first
 }
-git-commit-nothing-checked = Select the files to commit first
 git-commit-done = Committed { $oid }: { $subject }
 git-commit-failed = Couldn't commit: { $error }
 git-commit-done-in = Committed { $oid } in “{ $name }”
@@ -297,11 +295,40 @@ git-commit-push-confirm-button = Commit and Push
 git-undo-commit-done = Undid commit { $oid }; its changes are staged
 git-undo-commit-done-in = Undid commit { $oid } in “{ $name }”
 git-undo-commit-failed = Couldn't undo the commit: { $error }
-git-commit-partial-not-utf8 = “{ $name }” isn't UTF-8 text, so its changes can't be partially committed
+git-stage-partial-not-utf8 = “{ $name }” isn't UTF-8 text, so its changes can't be partially staged
+git-stage-partial-bom = “{ $name }” starts with a byte order mark, so only the whole file can be staged
+git-stage-partial-symlink = “{ $name }” is a symbolic link, so only the whole file can be staged
+git-stage-busy = The staging area is being updated; try again when it finishes
+git-stage-done = { $count ->
+    [0] Staged all changes
+    [one] Staged { $count } file
+   *[other] Staged { $count } files
+}
+git-unstage-done = { $count ->
+    [0] Unstaged all changes
+    [one] Unstaged { $count } file
+   *[other] Unstaged { $count } files
+}
+git-stage-done-in = { $count ->
+    [0] Staged all changes in “{ $name }”
+   *[other] Staged { $count } files in “{ $name }”
+}
+git-unstage-done-in = { $count ->
+    [0] Unstaged all changes in “{ $name }”
+   *[other] Unstaged { $count } files in “{ $name }”
+}
+git-stage-failed = Staging failed: { $error }
+git-stage-failed-in = Staging failed in “{ $name }”: { $error }
+git-stage-save-pending = “{ $name }” is still being saved; staging didn't start
+git-stage-unresolved = { $count ->
+    [one] { $count } file still has conflict markers; resolve it before staging
+   *[other] { $count } files still have conflict markers; resolve them before staging
+}
+git-stage-selection-stale = The selected changes have changed; select them again
 git-abort-confirm = Abort { $operation }?
 git-abort-confirm-detail = The working tree returns to its state before the operation began, and resolved conflicts are discarded.
 git-abort-confirm-button = Abort { $operation }
-git-rollback-nothing-checked = Select the files to roll back first
+git-rollback-nothing-checked = There are no files to roll back
 git-rollback-confirm-one = Roll back changes to “{ $name }”?
 git-rollback-confirm-many = Roll back changes to { $count } files?
 git-rollback-confirm-detail = Tracked files are restored to the last commit, and untracked files are moved to the { common-trash }.
@@ -325,6 +352,7 @@ git-unusable = Can't use Git: { $error }
 git-not-a-repository = The current folder isn't a Git repository
 git-no-file-in-tab = The current tab has no file
 git-diff-title = { $name } · Diff
+git-diff-title-staged = { $name } · Staged Diff
 git-diff-submodule = “{ $name }” is a submodule; no diff is shown
 git-diff-head-unreadable = Couldn’t read the last committed version of “{ $name }”: { $error }
 git-diff-too-large = “{ $name }” is too large; no diff is shown
@@ -333,6 +361,9 @@ git-diff-identical = “{ $name }” is the same as in the last commit; no chang
 git-diff-line-endings-only = “{ $name }” differs from the last commit only in line endings
 git-diff-side-worktree-deleted = Working Tree · Deleted
 git-diff-side-head-missing = HEAD · File Doesn't Exist
+git-diff-side-index = Staging Area
+git-diff-side-index-missing = Staging Area · File Doesn't Exist
+git-diff-index-unreadable = Couldn't read the staged version of “{ $name }”: { $error }
 
 ## Trusting repository configuration
 
@@ -636,13 +667,14 @@ git-change-popup-more-lines = { $count ->
 ## Commit view file list
 
 git-commit-group-changes = Changes
-git-commit-group-conflicts = Conflicts
-git-commit-group-untracked = Untracked Files
+git-commit-group-conflicts = Merged Changes
+git-commit-group-staged = Staged Changes
+git-commit-nothing-to-commit = There are no changes to commit
+git-commit-stage-all-confirm = Stage all changes and commit?
+git-commit-stage-all-detail = Stages every change in the current repository “{ $name }”, including untracked files that aren't ignored, then commits them.
+git-commit-stage-all-push = After committing, the new commit is pushed to the upstream branch.
+git-commit-stage-all-button = Stage All and Commit
 git-commit-open-deleted = The file was deleted and can't be opened
-git-commit-blocker-conflicts = { $count ->
-    [one] { $count } file still has unresolved conflicts
-   *[other] { $count } files still have unresolved conflicts
-}
 git-log-files-changed = { $count ->
     [one] { $count } file changed
    *[other] { $count } files changed

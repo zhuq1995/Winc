@@ -19,7 +19,6 @@ use crate::layout::{
 
 mod animation;
 mod editor;
-#[cfg(unix)]
 mod git;
 mod input;
 #[cfg(target_os = "macos")]
@@ -414,4 +413,18 @@ fn a_commit_finishing_after_a_folder_switch_does_not_push_the_new_repo() {
         Some("已在「other-repo」中提交 abc1234")
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 给测试里启动的命令行程序（`git` 等）加上不创建控制台窗口的标志：由没有控制台的进程启动
+/// 测试时，Windows 为每个控制台程序单独弹出一个窗口，跑一遍测试会弹出大量窗口。
+/// `0x0800_0000` 是 `CREATE_NO_WINDOW`，与产品内启动 `git` 的方式一致。
+pub(crate) fn quiet(command: std::process::Command) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        let mut command = command;
+        std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000);
+        command
+    }
+    #[cfg(not(windows))]
+    command
 }

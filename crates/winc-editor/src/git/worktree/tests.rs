@@ -36,7 +36,7 @@ fn lists_the_real_worktrees() {
     let main = dir.join("repo");
     std::fs::create_dir_all(&main).unwrap();
     let sh = |args: &[&str]| {
-        let ok = Command::new("git")
+        let ok = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(&main)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -117,7 +117,7 @@ fn copies_ignored_files_and_checks_before_removing() {
     let main = dir.join("repo");
     std::fs::create_dir_all(main.join("config")).unwrap();
     let sh = |args: &[&str]| {
-        let ok = Command::new("git")
+        let ok = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(&main)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -191,7 +191,7 @@ fn copies_ignored_files_and_checks_before_removing() {
     );
     // 游离地提交两次：这两个提交不在任何分支上，移除工作树后无法再找回。
     let commit = |dir: &Path| {
-        let ok = Command::new("git")
+        let ok = crate::test_util::quiet(Command::new("git"))
             .arg("-C")
             .arg(dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])

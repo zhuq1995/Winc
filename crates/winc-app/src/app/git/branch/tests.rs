@@ -4,7 +4,6 @@ use super::*;
 
 impl App {
     /// 测试用：在 `root` 里做完了「拉取」，收下结果。
-    #[cfg(unix)] // 只有 Unix 上的 Git 测试用到
     pub(in crate::app) fn pulled_in(&mut self, root: &Path) {
         let what = "拉取".to_owned();
         // 换目录之前起的操作：编号比后来起的都小。

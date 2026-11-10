@@ -8,7 +8,7 @@ use super::*;
 
 /// 在 `dir` 中运行 `git args`，失败时 panic。
 fn sh(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = crate::test_util::quiet(Command::new("git"))
         .arg("-C")
         .arg(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -28,6 +28,8 @@ fn cloned(name: &str) -> (PathBuf, PathBuf) {
     sh(&remote, &["init", "-q", "--bare", "-b", "main"]);
     let work = crate::test_util::scratch(name);
     sh(&work, &["init", "-q", "-b", "main"]);
+    // 本机全局 `core.autocrlf` 影响检出内容：仓库里固定为 false，测试不随机器配置变化。
+    sh(&work, &["config", "core.autocrlf", "false"]);
     std::fs::write(work.join("a.txt"), "one\n").unwrap();
     sh(&work, &["add", "."]);
     sh(&work, &["commit", "-q", "-m", "one"]);

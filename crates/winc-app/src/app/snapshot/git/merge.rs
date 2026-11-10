@@ -15,7 +15,7 @@ fn conflicted_repo(dir: &Path) -> bool {
         return false;
     }
     let git = |args: &[&str]| {
-        Command::new("git")
+        crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -153,7 +153,10 @@ fn files_with_conflict_markers_are_not_committed() {
     );
     // 仍有冲突标记时按钮不可用，按下也不会提交。
     let blocker = app.commit.blocker(&status);
-    assert_eq!(blocker.as_deref(), Some("1 个文件仍有未解决的冲突"));
+    assert_eq!(
+        blocker.as_deref(),
+        Some("1 个文件仍有未解决的冲突，请先解决")
+    );
     app.git_commit();
     app.git_refresh();
     assert_eq!(
@@ -162,12 +165,15 @@ fn files_with_conflict_markers_are_not_committed() {
     );
 
     // 在编辑器中选定一侧但尚未保存时，按下按钮先保存；标记已移除，因此正常提交。
+    // 解决后的文件还没暂存：确认暂存全部并提交。
     use crate::app::git::merge::MergeTarget;
     use winc_editor::git::merge::Pick;
     paint(&mut app);
     app.press_merge(MergeTarget::Pick(0, Pick::Theirs));
     app.git_commit();
-    app.git_refresh();
+    press_alert(&mut app, 0);
+    // 提交在后台线程里完成，等它结束再读状态。
+    wait_commit(&mut app);
     let status = app.git.status.clone().unwrap();
     assert_eq!(status.operation, None);
     assert!(status.unresolved.is_empty());
@@ -218,7 +224,7 @@ fn three_way_app(name: &str) -> Option<(App, PathBuf)> {
 fn three_way_app_with(name: &str, base: &str, side: &str, main: &str) -> Option<(App, PathBuf)> {
     let dir = search_folder(name);
     let run = |args: &[&str]| {
-        Command::new("git")
+        crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(&dir)
             .args(args)
@@ -229,7 +235,9 @@ fn three_way_app_with(name: &str, base: &str, side: &str, main: &str) -> Option<
     let mut ready = run(&["init", "-q", "-b", "main"])
         && run(&["config", "user.name", "t"])
         && run(&["config", "user.email", "t@t"])
-        && run(&["config", "commit.gpgsign", "false"]);
+        && run(&["config", "commit.gpgsign", "false"])
+        // 本机全局 `core.autocrlf` 影响检出内容：仓库里固定为 false。
+        && run(&["config", "core.autocrlf", "false"]);
     std::fs::write(&file, base).unwrap();
     ready = ready && run(&["add", "--all"]) && run(&["commit", "-q", "-m", "base"]);
     ready = ready && run(&["switch", "-q", "-c", "side"]);

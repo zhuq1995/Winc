@@ -13,7 +13,7 @@ fn dated_commit(root: &Path, file: &str, text: &str, message: &str, who: (&str, 
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, text).unwrap();
     git_in(root, &["add", "."]);
-    let ok = Command::new("git")
+    let ok = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(root)
         .args(["-c", &format!("user.name={}", who.0), "-c"])

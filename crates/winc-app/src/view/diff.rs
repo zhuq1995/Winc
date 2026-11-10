@@ -10,7 +10,6 @@ use std::fmt::Write as _;
 use std::ops::Range;
 
 use winc_config::RenderWhitespace;
-use winc_core::diff::Pick;
 use winc_core::text::{self, MAX_LINE_CHARS};
 use winc_core::wrap::{self, Breaks};
 use winc_core::{Lines, Selection};
@@ -22,16 +21,13 @@ use super::editor::{
     trailing_whitespace, whitespace_shown,
 };
 use super::*;
-use crate::app::{DIFF_TEXT_PAD, DiffParts, DiffTarget, Focus, HunkKind, diff_parts};
+use crate::app::{CommitFile, DIFF_TEXT_PAD, DiffParts, DiffTarget, Focus, HunkKind, diff_parts};
 use crate::icons::Direction;
 use crate::layout::{GIT_LANE, Ruler, editor_content_height};
 
 /// 中间一栏勾选框的边长（逻辑像素）；「»」按钮的图标和它一样大，左右成对。
-const DIFF_BUTTON: f32 = 13.0;
 /// 行勾选框的边长（逻辑像素）：小于整段改动的勾选框，以示层级。
-const LINE_CHECK_SIZE: f32 = 11.0;
 /// 不提交的行的底色相对正常底色的不透明度：仍可辨认是改动，又能与提交的行区分。
-const SKIPPED_LINE_ALPHA: f32 = 0.35;
 /// 工具栏按钮的边长（逻辑像素）。
 const BUTTON: f32 = 24.0;
 /// 返回一处改动使用的颜色：只在右侧新增的绿、只在左侧删掉的灰、两侧都有（修改）的蓝。
@@ -160,7 +156,18 @@ pub(super) fn draw_diff(app: &mut App, frame: &mut Frame<'_>, index: usize) {
     let edit = edit_state(app, &view, new_lines(&view, rows));
     let mut hits = Vec::new();
 
-    draw_body(app, frame, &mut view, &parts, scroll, pos, &edit, &mut hits);
+    let file = app.diff_commit_file(app.editor.documents[index].id);
+    draw_body(
+        app,
+        frame,
+        &mut view,
+        file.as_ref(),
+        &parts,
+        scroll,
+        pos,
+        &edit,
+        &mut hits,
+    );
     draw_header(app, frame, &view, &parts, pos, &mut hits);
     draw_overview(app, frame, &view, &parts, index);
 
@@ -468,6 +475,7 @@ fn draw_body(
     app: &mut App,
     frame: &mut Frame<'_>,
     view: &mut DiffView,
+    file: Option<&CommitFile>,
     parts: &DiffParts,
     scroll: Scroll,
     pos: f32,
@@ -497,13 +505,9 @@ fn draw_body(
     let hunk_y =
         |view: &DiffView, h: usize| unified.then(|| body.y + (view.hunk_pos(h) - pos) * lh);
     let drawn = drawn_rows(view, body, scroll, pos, lh);
-    // 各段改动的提交方式；文件不在提交视图里时为空，不绘制任何勾选框。
-    let inclusions: Vec<Pick> = app.diff_entry(view).map_or_else(Vec::new, |entry| {
-        let all: Vec<(u64, std::ops::Range<usize>)> = (view.keys.iter().zip(&view.hunks))
-            .map(|(&key, hunk)| (key, hunk.old.clone()))
-            .collect();
-        (app.commit).hunk_inclusions(entry, &all)
-    });
+    // 这个差异属于提交视图的哪个条目：已暂存的改动取消暂存，其余的暂存。普通编辑器里的比较没有
+    // 条目，不画改动块和行的按钮。
+    let stage = file.map(|f| f.group.stages());
     let mut chars: Vec<char> = Vec::with_capacity(256);
     let mut tokens = Vec::with_capacity(32);
     let mut number = String::new();
@@ -579,31 +583,10 @@ fn draw_body(
             }
         };
         let shade = hunk.map(|h| row_shade(view, h));
-        // 只提交部分行的改动里，不提交的行底色变淡。
-        let line_skipped = hunk.is_some_and(|h| {
-            let start = if side == LEFT {
-                view.hunks[h].old.start
-            } else {
-                view.hunks[h].new.start
-            };
-            matches!(inclusions.get(h), Some(Pick::Lines(set))
-                if (if side == LEFT { &set.old } else { &set.new }).contains(&(line - start)))
-        });
         if let Some(shade) = shade {
-            let fill = if line_skipped {
-                shade.line.alpha(shade.line.a * SKIPPED_LINE_ALPHA)
-            } else {
-                shade.line
-            };
-            frame.rect_clipped(band, fill, 0.0, body);
-            // 单栏时行勾选框显示在加减号的位置。
-            let line_check = hunk
-                .and_then(|h| inclusions.get(h))
-                .is_some_and(|inclusion| {
-                    matches!(inclusion, Pick::Lines(_))
-                        || app.hover == Hover::Diff(DiffTarget::IncludeLine(side, line))
-                });
-            if unified && part == 0 && !line_check {
+            frame.rect_clipped(band, shade.line, 0.0, body);
+            // 单栏时改动的加减号显示在行号的右边。
+            if unified && part == 0 {
                 let sign = if side == LEFT { "−" } else { "+" };
                 frame.text(
                     FontKind::Mono,
@@ -648,25 +631,28 @@ fn draw_body(
             );
         }
 
-        // 行勾选框：只提交部分行的改动一直显示；其他改动在鼠标移到这一格时显示。
-        if let (0, Some(inclusion)) = (part, hunk.and_then(|h| inclusions.get(h))) {
+        // 行的 ＋／−：暂存或取消暂存这一行。改动行在鼠标移到这一格时显示。
+        if let (0, Some(sign), Some(_)) = (part, stage, hunk) {
             let cell = parts.line_checks[side];
             let rect = Rect::new(cell.x, y, cell.w, lh);
-            let hovered = app.hover == Hover::Diff(DiffTarget::IncludeLine(side, line));
-            if hovered || matches!(inclusion, Pick::Lines(_)) {
-                let on = !line_skipped && !matches!(inclusion, Pick::Skip);
-                icons::line_checkbox(
-                    frame,
-                    (rect.x + rect.w / 2.0, y + lh / 2.0),
-                    LINE_CHECK_SIZE,
-                    on,
-                    None,
-                    p.accent,
-                    p.text_dim.alpha(0.7),
+            let target = DiffTarget::StageLine(side, line);
+            let hovered = app.hover == Hover::Diff(target);
+            if hovered {
+                // 悬停时显示底色，提示这一格可以按。
+                frame.rect_clipped(rect, p.hover, 3.0, body);
+                let sign = if sign { "+" } else { "−" };
+                let baseline = baseline_in(rect, ascent, descent);
+                frame.text(
+                    FontKind::Ui,
+                    app.fonts.ui_small,
+                    rect.x + (rect.w - app.cell) / 2.0,
+                    baseline,
+                    sign,
+                    p.text_muted,
                     body,
                 );
             }
-            hits.push((rect.intersect(body), DiffTarget::IncludeLine(side, line)));
+            hits.push((rect.intersect(body), target));
         }
 
         let text_side = if side == LEFT {
@@ -959,9 +945,9 @@ fn draw_body(
         }
     }
 
-    // 改动勾选框：与每段改动右侧第一行（右侧没有行时是插入的那道线）同高，提交时包含这一处改动。
-    // 文件不在提交视图里时不绘制。
-    if !inclusions.is_empty() {
+    // 改动块的 ＋／−：与每段改动右侧第一行（右侧没有行时是插入的那道线）同高，暂存或取消暂存这
+    // 一处改动。文件不在提交视图里时不绘制。
+    if let Some(sign) = stage {
         for (h, rows) in view.hunk_rows[RIGHT].iter().enumerate() {
             let mid = if let Some(y) = hunk_y(view, h) {
                 y + lh / 2.0
@@ -975,30 +961,24 @@ fn draw_body(
             }
             let mid = mid.max(body.y + 10.0);
             let c = (parts.include_x, mid);
-            // 和左边的「»」一套线条图标（`icons::line_checkbox`），悬停时才有底色。
-            let hovered = app.hover == Hover::Diff(DiffTarget::Include(h));
-            match inclusions.get(h) {
-                Some(Pick::Lines(_)) => icons::line_checkbox_mixed(
-                    frame,
-                    c,
-                    DIFF_BUTTON,
-                    hovered.then_some(p.hover),
-                    p.accent,
-                    body,
-                ),
-                inclusion => icons::line_checkbox(
-                    frame,
-                    c,
-                    DIFF_BUTTON,
-                    matches!(inclusion, Some(Pick::Apply)),
-                    hovered.then_some(p.hover),
-                    p.accent,
-                    p.text_dim.alpha(0.7),
-                    body,
-                ),
+            let target = DiffTarget::StageHunk(h);
+            let hovered = app.hover == Hover::Diff(target);
+            if hovered {
+                frame.rect(Rect::new(c.0 - 7.0, c.1 - 8.0, 14.0, 16.0), p.hover);
             }
+            let box_ = Rect::new(c.0 - 6.0, c.1 - 8.0, 12.0, 16.0);
+            let baseline = baseline_in(box_, ascent, descent);
+            frame.text(
+                FontKind::Ui,
+                app.fonts.ui_small,
+                c.0 - app.cell / 2.0,
+                baseline,
+                if sign { "+" } else { "−" },
+                if hovered { p.text } else { p.text_muted },
+                body,
+            );
             let rect = Rect::new(c.0 - 10.0, c.1 - 10.0, 20.0, 20.0);
-            hits.push((rect.intersect(body), DiffTarget::Include(h)));
+            hits.push((rect.intersect(body), target));
         }
     }
 

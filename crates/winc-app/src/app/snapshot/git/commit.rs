@@ -40,7 +40,7 @@ fn long_name_repo(name: &str) -> Option<(PathBuf, String)> {
 }
 
 #[test]
-fn commit_only_the_checked_hunks() {
+fn staging_one_hunk_keeps_the_other_hunk_in_the_working_tree() {
     let dir = search_folder("git-partial");
     if !long_repo(&dir) {
         return;
@@ -52,33 +52,56 @@ fn commit_only_the_checked_hunks() {
     }
     let root = app.git.root.clone().unwrap();
     let file = root.join("src/main.rs");
-    app.git_preview_changes(&file);
+    app.run_action(Action::ShowCommit);
+    app.git_preview_changes(&commit_file(CommitGroup::Changes, &file));
     paint(&mut app);
-    // 两处改动各有一个勾选框；勾掉第二处（删掉 `value_50`），文件变成「部分」。
+    // 两处改动各有一个按钮：只暂存第一处（`value_5` 改成 500）。
     assert!(
         app.diff_hits
             .iter()
-            .any(|(_, t)| *t == DiffTarget::Include(1))
+            .any(|(_, t)| *t == DiffTarget::StageHunk(0))
     );
-    app.press_diff(DiffTarget::Include(1));
-    let status = app.git.status.clone().unwrap();
-    let entry = status.entries.iter().find(|e| e.path == file).unwrap();
-    assert_eq!(app.commit.file_state(entry), Some(false));
+    app.press_diff(DiffTarget::StageHunk(0));
+    wait_staging(&mut app);
+    let entries: Vec<_> = (app.git.status.as_ref().unwrap().entries.iter())
+        .map(|e| (e.path.clone(), e.staged, e.unstaged))
+        .collect();
+    assert!(
+        staged_paths(&app).contains(&file),
+        "{:?} {:?} {:?}",
+        app.status_message,
+        app.notice,
+        entries
+    );
+    assert!(unstaged_paths(&app).contains(&file));
 
-    // 勾掉后又修改这一处（删掉的行换成别的内容）：在 `HEAD` 中仍是同几行，依然不提交。
-    let disk = std::fs::read_to_string(&file).unwrap();
-    std::fs::write(
-        &file,
-        disk.replace(
-            "let value_49 = 49;\n",
-            "let value_49 = 49;\nlet value_50 = 5000;\n",
-        ),
-    )
-    .unwrap();
+    // 暂存区里是 `value_5 = 500`、`value_50` 照旧；删掉 `value_50` 的那处还在工作区里。
+    let staged = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["show", ":src/main.rs"])
+        .output()
+        .unwrap();
+    let staged = String::from_utf8(staged.stdout).unwrap();
+    assert!(staged.contains("let value_5 = 500;"));
+    assert!(staged.contains("let value_50 = 50;"));
+    assert!(
+        !std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("let value_50")
+    );
 
+    // 只提交暂存区：`value_5` 的改动进提交，删掉 `value_50` 的那处不进。
     app.commit.message.set_text("only value_5");
     app.git_commit();
-    let head = Command::new("git")
+    for _ in 0..200 {
+        app.poll_commit();
+        if !app.commit.busy {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let head = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(&root)
         .args(["show", "HEAD:src/main.rs"])
@@ -86,13 +109,64 @@ fn commit_only_the_checked_hunks() {
         .unwrap();
     let head = String::from_utf8(head.stdout).unwrap();
     assert!(head.contains("let value_5 = 500;"));
-    assert!(head.contains("let value_50 = 50;") && !head.contains("5000"));
-    // 没提交的那处还在工作区里，文件仍然有改动。
-    let disk = std::fs::read_to_string(&file).unwrap();
-    assert!(disk.contains("let value_50 = 5000;"));
+    assert!(head.contains("let value_50 = 50;"));
+
+    // 没暂存的那处还在工作区里，文件仍然有改动。
     app.git_refresh();
-    let status = app.git.status.clone().unwrap();
-    assert!(status.entries.iter().any(|e| e.path == file));
+    wait_staging(&mut app);
+    assert!(unstaged_paths(&app).contains(&file));
+    assert!(!staged_paths(&app).contains(&file));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 已暂存的差异里取消暂存一块：只有这一块回到工作区，其余已暂存的内容留在暂存区。
+#[test]
+fn unstaging_one_hunk_keeps_the_other_one_staged() {
+    let dir = search_folder("git-unstage-hunk");
+    if !long_repo(&dir) {
+        return;
+    }
+    let mut app = app_with(&dir, false);
+    app.settings_toggle(Setting::GitModule);
+    if git_unusable(&app) {
+        return;
+    }
+    let root = app.git.root.clone().unwrap();
+    let file = root.join("src/main.rs");
+    let dirty = std::fs::read_to_string(&file).unwrap();
+    git_in(&root, &["add", "src/main.rs"]);
+    app.git_refresh();
+    wait_staging(&mut app);
+    app.run_action(Action::ShowCommit);
+    let pick = commit_file(CommitGroup::Staged, &file);
+    app.git_preview_changes(&pick);
+    paint(&mut app);
+
+    // 已暂存的差异里，按钮表示取消暂存。
+    assert_eq!(app.diff_stage_tip(false), "取消暂存此块");
+    assert!(
+        app.diff_hits
+            .iter()
+            .any(|(_, t)| *t == DiffTarget::StageHunk(0))
+    );
+    app.press_diff(DiffTarget::StageHunk(0));
+    wait_staging(&mut app);
+
+    // 第一块（`value_5`）回到工作区，删掉 `value_50` 的那块仍在暂存区。
+    let staged = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["show", ":src/main.rs"])
+        .output()
+        .unwrap();
+    let staged = String::from_utf8(staged.stdout).unwrap();
+    assert!(staged.contains("let value_5 = 5;"), "{staged}");
+    assert!(!staged.contains("let value_50 = 50;"), "{staged}");
+    // 工作区里的两处改动都还在。
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), dirty);
+    assert!(staged_paths(&app).contains(&file));
+    assert!(unstaged_paths(&app).contains(&file));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -127,27 +201,28 @@ fn commit_list_groups_changes_by_directory() {
             .position(|e| e.path.ends_with(name))
             .unwrap()
     };
-    // 已暂存的新文件和改过的 `src/main.rs` 同在「更改」一组里。
-    let changes: Vec<CommitRow> = app
+    // `git add -A` 以后全部改动都在「已暂存的更改」一组里。
+    let staged: Vec<CommitRow> = app
         .commit_rows()
         .iter()
-        .skip_while(|r| **r != CommitRow::Group(CommitGroup::Changes))
+        .skip_while(|r| **r != CommitRow::Group(CommitGroup::Staged))
         .cloned()
         .collect();
     let dir = |dir: &str, label: &str, depth| CommitRow::Dir {
-        group: CommitGroup::Changes,
+        group: CommitGroup::Staged,
         dir: PathBuf::from(dir),
         label: label.into(),
         depth,
     };
     let file = |name: &str, depth| CommitRow::File {
+        group: CommitGroup::Staged,
         index: index(name),
         depth,
     };
     assert_eq!(
-        changes,
+        staged,
         [
-            CommitRow::Group(CommitGroup::Changes),
+            CommitRow::Group(CommitGroup::Staged),
             dir("pkg", "pkg", 0),
             dir("pkg/core/model", "core/model", 1),
             file("model/a.rs", 2),
@@ -160,34 +235,46 @@ fn commit_list_groups_changes_by_directory() {
         ]
     );
 
-    // 新文件默认勾着。目录的勾选框取消目录下的所有文件，再点一次全部勾上。
+    // 目录行的 − 取消暂存这一目录在所在组里的文件，其他文件不动。
     let row = |app: &App, r: &CommitRow| app.commit_rows().iter().position(|x| x == r).unwrap();
     let pkg = row(&app, &dir("pkg", "pkg", 0));
-    let checked = |app: &App, name: &str| app.commit.checked(&status.entries[index(name)]);
-    assert!(checked(&app, "model/a.rs") && checked(&app, "top.rs"));
-    app.press_commit(CommitTarget::DirCheck(pkg));
-    assert!(!checked(&app, "model/a.rs") && !checked(&app, "pkg/z.rs"));
-    assert!(checked(&app, "top.rs"));
-    app.press_commit(CommitTarget::DirCheck(pkg));
-    assert!(checked(&app, "model/a.rs") && checked(&app, "pkg/z.rs"));
-    let rows = app.commit_rows();
-    let members = rows.dir(CommitGroup::Changes, Path::new("pkg"));
+    let under_pkg: Vec<PathBuf> = (app.commit_dir_files(pkg).into_iter())
+        .map(|f| f.path)
+        .collect();
+    let members = app
+        .commit_rows()
+        .dir(CommitGroup::Staged, Path::new("pkg"))
+        .len();
     // `pkg` 目录这一组：合并后的 `core/model` 与 `pkg/z.rs` 里的文件都算在内。
-    assert_eq!(members.len(), 3);
-    assert_eq!(app.commit.members_state(&status, members), Some(true));
-    // 组与目录的勾选框每帧都要查其下所有文件：结果按勾选的版本缓存，勾选不变时复用上次的结果。
-    let cached = |app: &App| {
-        let compute = || app.commit.members_state(&status, members);
-        rows.members_state(members, app.commit.checks(), compute)
-    };
-    assert_eq!(cached(&app), Some(true));
-    app.press_commit(CommitTarget::DirCheck(pkg));
-    assert!(!checked(&app, "model/a.rs"));
-    assert_eq!(cached(&app), None);
-    // 勾选不重排行：已排好的行继续复用，收起或展开目录后才重新排。
-    assert!(std::rc::Rc::ptr_eq(&rows, &app.commit_rows()));
+    assert_eq!(members, 3);
+    let top = root.join("top.rs");
+    assert!(staged_paths(&app).contains(&root.join("pkg/z.rs")));
+    app.press_commit(CommitTarget::DirStage(pkg));
+    wait_staging(&mut app);
+    let left = staged_paths(&app);
+    assert!(under_pkg.iter().all(|p| !left.contains(p)));
+    assert!(left.contains(&top));
+    // 再按一次：这一目录的文件重新进入暂存区。取消暂存后列表重排，「pkg」到了「更改」组里；
+    // 状态刷新过，先重画一帧让命中跟上，按钮的下标防护才放行。
+    paint(&mut app);
+    let again = app
+        .commit_rows()
+        .iter()
+        .position(|r| matches!(r, CommitRow::Dir { label, .. } if label == "pkg"))
+        .unwrap();
+    app.press_commit(CommitTarget::DirStage(again));
+    wait_staging(&mut app);
+    let left = staged_paths(&app);
+    assert!(under_pkg.iter().all(|p| left.contains(p)));
+    assert!(left.contains(&top));
 
-    // 点击目录行收起：其下的行不再出现；「全部展开」恢复。
+    // 点击目录行收起：其下的行不再出现；「全部展开」恢复。重新暂存后列表又重排过，同样先重画。
+    paint(&mut app);
+    let pkg = app
+        .commit_rows()
+        .iter()
+        .position(|r| matches!(r, CommitRow::Dir { label, .. } if label == "pkg"))
+        .unwrap();
     app.press_commit(CommitTarget::Dir(pkg));
     assert!(!app.commit_rows().contains(&file("pkg/z.rs", 1)));
     app.run_commit_more_command(crate::app::input::context_menu::MenuCommand::CommitExpandAll);
@@ -218,7 +305,12 @@ fn right_clicking_a_changed_file_offers_diff_open_and_rollback() {
     let row = app
         .commit_hits
         .iter()
-        .find(|(_, t)| *t == CommitTarget::File(index))
+        .find(|(_, t)| {
+            *t == CommitTarget::File {
+                group: CommitGroup::Changes,
+                index,
+            }
+        })
         .unwrap()
         .0;
     right_click(&mut app, (row.x + 120.0, row.y + row.h / 2.0));
@@ -226,13 +318,17 @@ fn right_clicking_a_changed_file_offers_diff_open_and_rollback() {
         app.context_menu.as_ref().map(|m| m.target.clone()),
         Some(MenuTarget::CommitFile(main.clone()))
     );
-    assert_eq!(app.commit.selected.as_deref(), Some(main.as_path()));
+    assert_eq!(
+        app.commit.selected.as_ref().map(|f| f.path.clone()),
+        Some(main.clone())
+    );
     let commands: Vec<MenuCommand> = menu_commands(&app).into_iter().map(|(c, _)| c).collect();
     assert_eq!(
         commands,
         [
             MenuCommand::GitShowDiff,
             MenuCommand::GitOpenFile,
+            MenuCommand::CommitStage,
             MenuCommand::GitRollbackFile,
             MenuCommand::RevealInTree,
             MenuCommand::Reveal,
@@ -256,7 +352,7 @@ fn right_clicking_a_changed_file_offers_diff_open_and_rollback() {
 }
 
 #[test]
-fn commit_view_commits_only_the_checked_files() {
+fn commit_view_stages_by_file_and_commits_the_index() {
     let dir = search_folder("git-commit");
     if !make_repo(&dir) {
         return;
@@ -279,75 +375,76 @@ fn commit_view_commits_only_the_checked_files() {
     assert_eq!(app.focus, Focus::CommitMessage);
     paint(&mut app);
 
-    // 「更改」一组里是改过的 `src/main.rs` 和已暂存的新文件 `src/new.rs`，都在 `src` 目录下面，
-    // 默认都勾上。
-    let status = app.git.status.clone().unwrap();
-    let rows = app.commit_rows();
-    let src = |group| CommitRow::Dir {
+    // 已暂存的新文件在「已暂存的更改」里，改过的 `src/main.rs` 在「更改」里。
+    let root = app.git.root.clone().unwrap();
+    let (main, new) = (root.join("src/main.rs"), root.join("src/new.rs"));
+    let dir_row = |group| CommitRow::Dir {
         group,
         dir: PathBuf::from("src"),
         label: "src".into(),
         depth: 0,
     };
     assert_eq!(
-        rows[..],
+        app.commit_rows()[..],
         [
+            CommitRow::Group(CommitGroup::Staged),
+            dir_row(CommitGroup::Staged),
+            CommitRow::File {
+                group: CommitGroup::Staged,
+                index: 1,
+                depth: 1,
+            },
             CommitRow::Group(CommitGroup::Changes),
-            src(CommitGroup::Changes),
-            CommitRow::File { index: 0, depth: 1 },
-            CommitRow::File { index: 1, depth: 1 },
+            dir_row(CommitGroup::Changes),
+            CommitRow::File {
+                group: CommitGroup::Changes,
+                index: 0,
+                depth: 1,
+            },
         ]
     );
-    assert!(app.commit.checked(&status.entries[0]));
-    assert!(app.commit.checked(&status.entries[1]));
-    assert_eq!(
-        app.commit.group_state(&status, CommitGroup::Changes),
-        Some(true)
-    );
+    assert_eq!(staged_paths(&app), vec![new.clone()]);
+    assert_eq!(unstaged_paths(&app), vec![main.clone()]);
 
-    // 点 `src/new.rs` 的勾选框；点 `src/main.rs` 那一行打开差异。
+    // 点 `src/main.rs` 那一行打开「更改」的差异（暂存区 ↔ 工作区）。
     let target =
         |app: &App, t: CommitTarget| app.commit_hits.iter().find(|(_, h)| *h == t).unwrap().0;
-    let check = target(&app, CommitTarget::Check(1));
-    click(&mut app, (check.x + 4.0, check.y + 4.0));
-    assert!(!app.commit.checked(&status.entries[1]));
-    let row = target(&app, CommitTarget::File(0));
+    let row = target(
+        &app,
+        CommitTarget::File {
+            group: CommitGroup::Changes,
+            index: 0,
+        },
+    );
     click(&mut app, (row.x + row.w / 2.0, row.y + 4.0));
     assert_eq!(
         app.editor.active().unwrap().title.as_deref(),
         Some("main.rs · 差异")
     );
+    assert_eq!(
+        app.commit.selected.as_ref().map(|f| f.path.clone()),
+        Some(main.clone())
+    );
 
-    // 键盘：焦点在列表里，↓ 选下一个文件，差异在同一个预览标签里换内容；空格切换勾选。
-    let tabs = app.editor.documents.len();
+    // 空格暂存选中的文件：它进入「已暂存的更改」，两行是同一个文件的两侧。
     let key = |app: &mut App, key: NamedKey| app.commit_list_key(&Key::Named(key));
-    assert_eq!(app.focus, Focus::CommitList);
-    key(&mut app, NamedKey::ArrowDown);
-    assert_eq!(
-        app.commit.selected.as_deref(),
-        Some(status.entries[1].path.as_path())
-    );
-    assert_eq!(app.editor.documents.len(), tabs);
-    assert_eq!(
-        app.editor.active().unwrap().title.as_deref(),
-        Some("new.rs · 差异")
-    );
     key(&mut app, NamedKey::Space);
-    assert!(app.commit.checked(&status.entries[1]));
-    key(&mut app, NamedKey::ArrowUp);
+    wait_staging(&mut app);
+    assert_eq!(staged_paths(&app), [main.clone(), new.clone()]);
+    assert!(unstaged_paths(&app).is_empty());
     assert_eq!(
-        app.commit.selected.as_deref(),
-        Some(status.entries[0].path.as_path())
+        app.commit_rows()
+            .iter()
+            .filter(|r| matches!(r, CommitRow::File { .. }))
+            .count(),
+        2
     );
 
     // 没写提交信息：不提交。
     app.git_commit();
     assert_eq!(app.git.status.as_ref().unwrap().entries.len(), 2);
 
-    // 只提交 `src/new.rs`：先取消 `src/main.rs` 的勾选。
-    paint(&mut app);
-    let check = target(&app, CommitTarget::Check(0));
-    click(&mut app, (check.x + 4.0, check.y + 4.0));
+    // 写信息后提交暂存区里的两个文件。
     app.focus = Focus::CommitMessage;
     // 提交信息可以多行：回车换行，⌘↩ 才提交。
     app.edit_field(|f| f.insert("加上 new.rs"));
@@ -357,35 +454,49 @@ fn commit_view_commits_only_the_checked_files() {
     app.commit_message_key(&Key::Named(NamedKey::Enter), true, false);
     assert!(!app.commit.busy);
     assert_eq!(app.commit.message.text(), "");
-    let status = app.git.status.clone().unwrap();
-    let left: Vec<_> = status.entries.iter().map(|e| e.path.clone()).collect();
-    let root = app.git.root.clone().unwrap();
-    assert_eq!(left, [root.join("src/main.rs")]);
-    // 用户取消过的勾选在提交后重置：剩下的 `src/main.rs` 重新处于勾选状态。
-    assert!(app.commit.checked(&status.entries[0]));
-
-    // 修改上一次提交：信息填进输入框，修改后提交。
-    app.run_commit_button_command(crate::app::input::context_menu::MenuCommand::CommitAmend);
-    assert_eq!(app.commit.message.text(), "加上 new.rs\n正文");
-    app.commit.message.set_text("加上 new.rs 和 main.rs");
-    app.git_commit();
+    wait_staging(&mut app);
     assert!(app.git.status.as_ref().unwrap().entries.is_empty());
     paint(&mut app);
 
-    // 回滚只处理勾上的文件：已修改的文件恢复 `HEAD` 中的内容，未跟踪的文件默认不勾，保留。
-    let main = root.join("src/main.rs");
+    // 修改上一次提交：只改信息时暂存区是空的也可以提交。
+    app.run_commit_button_command(crate::app::input::context_menu::MenuCommand::CommitAmend);
+    assert_eq!(app.commit.message.text(), "加上 new.rs\n正文");
+    app.commit.message.set_text("改过的说明");
+    app.git_commit();
+    for _ in 0..200 {
+        app.poll_commit();
+        if !app.commit.busy {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let subject = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["log", "-1", "--pretty=%s"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(subject.stdout).unwrap().trim(),
+        "改过的说明"
+    );
+
+    // 回滚一组：已修改的文件恢复 `HEAD` 中的内容，未跟踪的文件同样在「更改」里。
     let before = std::fs::read_to_string(&main).unwrap();
-    std::fs::write(&main, "changed\n").unwrap();
+    std::fs::write(&main, "changed").unwrap();
     std::fs::write(root.join("scratch.txt"), "x").unwrap();
     app.git_refresh();
+    wait_staging(&mut app);
+    assert_eq!(
+        unstaged_paths(&app),
+        [main.clone(), root.join("scratch.txt")]
+    );
+    app.commit.clear_selection();
     app.press_commit(CommitTarget::GroupRevert(CommitGroup::Changes));
     assert_eq!(std::fs::read_to_string(&main).unwrap(), before);
-    assert!(root.join("scratch.txt").exists());
-    // 勾上以后，未跟踪的文件移到废纸篓（测试中直接删除）。
-    app.press_commit(CommitTarget::GroupCheck(CommitGroup::Untracked));
-    app.press_commit(CommitTarget::GroupRevert(CommitGroup::Untracked));
     assert!(!root.join("scratch.txt").exists());
-    assert!(app.git.status.as_ref().unwrap().entries.is_empty());
+    app.git_refresh();
+    wait_staging(&mut app);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -404,7 +515,14 @@ fn hovering_a_change_offers_open_and_revert() {
         |app: &App, t: CommitTarget| app.commit_hits.iter().find(|(_, h)| *h == t).map(|h| h.0);
     // 未悬停时不显示按钮；悬停该行时右端显示「打开文件」「回滚」，两者均有悬停提示。
     assert!(find(&app, CommitTarget::OpenFile(index)).is_none());
-    let row = find(&app, CommitTarget::File(index)).unwrap();
+    let row = find(
+        &app,
+        CommitTarget::File {
+            group: CommitGroup::Changes,
+            index,
+        },
+    )
+    .unwrap();
     app.on_mouse_move(row.x + 120.0, row.y + row.h / 2.0);
     paint(&mut app);
     let open = find(&app, CommitTarget::OpenFile(index)).unwrap();
@@ -442,7 +560,13 @@ fn shoot_commit_row_actions() {
     let index = entries.iter().position(|e| e.path == main).unwrap();
     let find =
         |app: &App, t: CommitTarget| app.commit_hits.iter().find(|(_, h)| *h == t).unwrap().0;
-    let row = find(&app, CommitTarget::File(index));
+    let row = find(
+        &app,
+        CommitTarget::File {
+            group: CommitGroup::Changes,
+            index,
+        },
+    );
     app.on_mouse_move(row.x + 120.0, row.y + row.h / 2.0);
     paint(&mut app);
     let revert = find(&app, CommitTarget::RevertFile(index));
@@ -461,6 +585,11 @@ fn shoot_commit_view() {
         if !long_repo(&dir) {
             return;
         }
+        // 同一个文件在「已暂存的更改」和「更改」里各有一行：暂存一版后又改了一处。
+        git_in(&dir, &["add", "src/main.rs"]);
+        let main = dir.join("src/main.rs");
+        let text = std::fs::read_to_string(&main).unwrap();
+        std::fs::write(&main, format!("{text}// 暂存之后又改了一处\n")).unwrap();
         std::fs::write(dir.join("src/config.rs"), "pub struct Config;\n").unwrap();
         std::fs::create_dir_all(dir.join("docs")).unwrap();
         std::fs::write(dir.join("docs/notes.md"), "# notes\n").unwrap();
@@ -482,7 +611,10 @@ fn shoot_commit_view() {
             .iter()
             .position(|e| e.path == main);
         paint(&mut app);
-        app.press_commit(CommitTarget::File(index.unwrap()));
+        app.press_commit(CommitTarget::File {
+            group: CommitGroup::Changes,
+            index: index.unwrap(),
+        });
         app.focus = Focus::CommitMessage;
         // 鼠标停在标题行的「Git 日志」按钮上，提示已显示。
         let log = app.commit_parts().tools[0].0;
@@ -673,25 +805,150 @@ fn switching_the_module_off_takes_focus_out_of_the_commit_view() {
 }
 
 #[test]
-fn committing_a_checked_file_saves_its_unsaved_edits_first() {
+fn committing_an_unsaved_document_saves_it_before_staging() {
     let Some((mut app, root)) = git_app("git-commit-dirty", false) else {
         return;
     };
     app.open_path(&root.join("src/main.rs"));
-    app.run(winc_editor::Command::Insert("// 还没保存\n".into()));
+    app.run(winc_editor::Command::Insert("// 还没保存".into()));
     assert!(app.editor.active().unwrap().is_dirty());
     app.run_action(Action::ShowCommit);
     app.commit.message.set_text("带上没保存的修改");
+    // 暂存区为空：先确认；取消时文件、暂存区与提交信息保持原状。
     app.git_commit();
-    // 提交的是编辑器中看到的内容（整个勾选的文件也会先保存），而不是磁盘上的旧内容。
+    assert!(app.alert.is_some());
+    press_alert(&mut app, 1);
+    assert!(app.alert.is_none());
+    assert!(app.editor.active().unwrap().is_dirty());
+    assert!(
+        (app.git.status.as_ref().unwrap().entries.iter()).all(|e| e.staged.is_none()),
+        "取消后暂存区保持原状"
+    );
+    assert_eq!(app.commit.message.text(), "带上没保存的修改");
+
+    // 确认：文案写明当前仓库和未跟踪的文件，保存发生在暂存之前。
+    app.git_commit();
+    assert!(app.alert.as_ref().unwrap().detail.contains("未跟踪"));
+    press_alert(&mut app, 0);
     assert!(!app.editor.active().unwrap().is_dirty());
-    let out = Command::new("git")
+    wait_commit(&mut app);
+    let out = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(&root)
         .args(["show", "HEAD:src/main.rs"])
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).contains("// 还没保存"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 暂存前发现文件在编辑器之外被改过：不写磁盘、不暂存，由冲突卡片等用户选择保留哪一边。
+#[test]
+fn staging_a_file_changed_outside_the_editor_stops_before_saving() {
+    let Some((mut app, root)) = git_app("git-commit-disk-conflict", false) else {
+        return;
+    };
+    let main = root.join("src/main.rs");
+    app.open_path(&main);
+    app.run(winc_editor::Command::Insert("// 编辑器里".into()));
+    // 编辑器之外改动磁盘上的同一个文件。
+    std::fs::write(&main, "// 磁盘上\n").unwrap();
+
+    app.run_action(Action::ShowCommit);
+    app.stage_files(vec![commit_file(CommitGroup::Changes, &main)]);
+    assert!(!app.commit.staging);
+    assert!(staged_paths(&app).is_empty());
+    assert!(app.editor.active().unwrap().is_dirty());
+    assert!(app.editor.active().unwrap().in_conflict());
+    assert_eq!(std::fs::read_to_string(&main).unwrap(), "// 磁盘上\n");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_refused_stage_all_keeps_the_working_tree_and_the_message() {
+    let Some((mut app, root)) = git_app("git-commit-stage-all-fail", false) else {
+        return;
+    };
+    app.run_action(Action::ShowCommit);
+    app.commit.message.set_text("会被拒绝");
+    let head = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let head = String::from_utf8(head.stdout).unwrap();
+    // 暂存区被别的进程锁着：`git add` 失败，不提交，信息留着。
+    std::fs::write(root.join(".git/index.lock"), "").unwrap();
+    app.git_commit();
+    press_alert(&mut app, 0);
+    wait_commit(&mut app);
+    assert!(staged_paths(&app).is_empty());
+    assert_eq!(app.commit.message.text(), "会被拒绝");
+    let now = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&now.stdout), head);
+    assert!(app.status_message.is_some() || app.notice.is_some());
+    std::fs::remove_file(root.join(".git/index.lock")).unwrap();
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_refused_commit_keeps_the_index_and_the_message() {
+    let Some((mut app, root)) = git_app("git-commit-refused", false) else {
+        return;
+    };
+    app.run_action(Action::ShowCommit);
+    let main = root.join("src/main.rs");
+    let file = commit_file(CommitGroup::Changes, &main);
+    app.stage_files(vec![file]);
+    wait_staging(&mut app);
+    assert!(staged_paths(&app).contains(&main));
+
+    // 提交身份是空的：`git commit` 被拒绝，暂存区和提交信息都保留。
+    git_in(&root, &["config", "user.name", ""]);
+    git_in(&root, &["config", "user.email", ""]);
+    app.commit.message.set_text("会被拒绝");
+    app.git_commit();
+    wait_commit(&mut app);
+    assert!(staged_paths(&app).contains(&main));
+    assert_eq!(app.commit.message.text(), "会被拒绝");
+    git_in(&root, &["config", "--unset", "user.name"]);
+    git_in(&root, &["config", "--unset", "user.email"]);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn amending_an_empty_index_does_not_stage_everything() {
+    let Some((mut app, root)) = git_app("git-commit-amend-only", false) else {
+        return;
+    };
+    app.run_action(Action::ShowCommit);
+    paint(&mut app);
+    app.run_commit_button_command(crate::app::input::context_menu::MenuCommand::CommitAmend);
+    app.commit.message.set_text("只改提交信息");
+    // 修改上一次提交：暂存区为空也直接改，不暂存工作区的改动。
+    app.git_commit();
+    wait_commit(&mut app);
+    assert!(staged_paths(&app).is_empty());
+    let subject = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["log", "-1", "--pretty=%s"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&subject.stdout).trim(),
+        "只改提交信息"
+    );
+    assert_eq!(unstaged_paths(&app).len(), 2);
+
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -702,18 +959,15 @@ fn clicks_on_rows_drawn_before_a_refresh_are_ignored() {
     };
     app.run_action(Action::ShowCommit);
     paint(&mut app);
-    let before = app
-        .commit
-        .checked(&app.git.status.as_ref().unwrap().entries[0]);
-    // 状态在绘制以后刷新过：按上一帧记下的行号点，不处理。
+    // 状态在绘制以后刷新过：按上一帧记下的行号暂存，不处理。
     git_in(&root, &["add", "src/new.rs"]);
     app.git_refresh();
-    app.press_commit(CommitTarget::Check(0));
-    assert_eq!(
-        app.commit
-            .checked(&app.git.status.as_ref().unwrap().entries[0]),
-        before
-    );
+    app.press_commit(CommitTarget::FileStage {
+        group: CommitGroup::Changes,
+        index: 0,
+    });
+    assert!(!app.commit.staging);
+    assert!(app.commit.selected.is_none());
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -733,41 +987,161 @@ fn the_commit_more_menu_greys_out_what_does_not_apply() {
         app.commit_more_menu()
             .contains(&MenuEntry::Item(command, true))
     };
-    // 先清空勾选：列表初始全部展开，且没有任何文件被勾选。
-    for group in CommitGroup::ALL {
-        for _ in 0..3 {
-            let status = app.git.status.clone().unwrap();
-            if app.commit.group_state(&status, group).is_none() {
-                break;
-            }
-            app.press_commit(CommitTarget::GroupCheck(group));
-        }
-    }
     assert!(enabled(&app, MenuCommand::CommitTree));
     assert!(!enabled(&app, MenuCommand::CommitExpandAll));
     assert!(enabled(&app, MenuCommand::CommitCollapseAll));
-    // 没勾文件时悬停组标题，右端仍是文件数，没有「回滚」。
+    // 悬停组标题时右端是「回滚」；没选中文件时回滚整组。
     let reverts = |app: &mut App| {
         let (band, _) = *(app.commit_hits.iter())
-            .find(|(_, t)| *t == CommitTarget::Group(CommitGroup::Changes))
+            .find(|(_, t)| *t == CommitTarget::Group(CommitGroup::Staged))
             .unwrap();
         app.on_mouse_move(band.x + band.w / 2.0, band.y + band.h / 2.0);
         paint(app);
         (app.commit_hits.iter()).any(|(_, t)| matches!(t, CommitTarget::GroupRevert(_)))
     };
-    assert!(!reverts(&mut app));
+    assert!(reverts(&mut app));
 
     app.run_commit_more_command(MenuCommand::CommitCollapseAll);
-    let groups = [CommitGroup::Changes];
+    let groups = [CommitGroup::Staged];
     assert!(groups.iter().all(|g| app.commit.group_collapsed(*g)));
     assert!(enabled(&app, MenuCommand::CommitExpandAll));
     assert!(!enabled(&app, MenuCommand::CommitCollapseAll));
     app.run_commit_more_command(MenuCommand::CommitExpandAll);
     assert!(groups.iter().all(|g| !app.commit.group_collapsed(*g)));
 
-    app.press_commit(CommitTarget::GroupCheck(CommitGroup::Changes));
+    // 选中一个文件后，组标题上有「回滚」。
+    let index = (app.git.status.as_ref().unwrap().entries.iter())
+        .position(|e| e.path.ends_with("main.rs"))
+        .unwrap();
+    app.press_commit(CommitTarget::File {
+        group: CommitGroup::Staged,
+        index,
+    });
     paint(&mut app);
     assert!(reverts(&mut app));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 「⋯」菜单里的暂存全部与取消暂存全部：范围是整个仓库，未跟踪文件一并加入，取消暂存不动工作区。
+#[test]
+fn the_more_menu_stages_and_unstages_everything() {
+    use crate::app::input::context_menu::MenuCommand;
+
+    let Some((mut app, root)) = git_app("git-stage-all-menu", false) else {
+        return;
+    };
+    app.run_action(Action::ShowCommit);
+    let main = root.join("src/main.rs");
+    let new = root.join("src/new.rs");
+    assert_eq!(staged_paths(&app), Vec::<PathBuf>::new());
+
+    app.run_commit_more_command(MenuCommand::CommitStageAll);
+    wait_staging(&mut app);
+    assert_eq!(staged_paths(&app), [main.clone(), new.clone()]);
+    assert_eq!(app.status_message.as_deref(), Some("已暂存全部更改"));
+
+    // 取消暂存不保存文档：编辑器里的未保存修改保持原样，磁盘上也不动。
+    app.open_path(&main);
+    app.run(winc_editor::Command::Insert("// 未保存\n".into()));
+    app.run_commit_more_command(MenuCommand::CommitUnstageAll);
+    wait_staging(&mut app);
+    assert_eq!(app.status_message.as_deref(), Some("已取消暂存全部更改"));
+    assert_eq!(staged_paths(&app), Vec::<PathBuf>::new());
+    assert_eq!(unstaged_paths(&app), [main.clone(), new]);
+    assert!(app.editor.active().unwrap().is_dirty());
+    assert_eq!(std::fs::read_to_string(&main).unwrap(), "fn main() {}\n");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 暂存以后，打开着的「更改」差异换成新的暂存区作为左侧，不用重新打开。
+#[test]
+fn staging_refreshes_the_open_diff_baseline() {
+    let Some((mut app, root)) = git_app("git-diff-index-refresh", false) else {
+        return;
+    };
+    let main = root.join("src/main.rs");
+    git_in(&root, &["add", "-A"]);
+    git_in(&root, &["commit", "-q", "-m", "base"]);
+    std::fs::write(&main, "fn main() { one(); }\n").unwrap();
+    app.open_path(&main);
+    app.git_refresh();
+    app.run_action(Action::ShowCommit);
+    app.git_preview_changes(&commit_file(CommitGroup::Changes, &main));
+    let id = app.editor.active().unwrap().id;
+    let old = |app: &App| {
+        let doc = app.editor.document(id).unwrap();
+        doc.diff.as_deref().unwrap().old.text.to_string()
+    };
+    assert_eq!(old(&app), "fn main() {}\n");
+
+    // 终端里暂存同一个文件：右边跟着文档走，左边要用新的暂存区。
+    git_in(&root, &["add", "src/main.rs"]);
+    app.git_refresh();
+    assert_eq!(old(&app), "fn main() { one(); }\n");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 变基停下来时按「提交」等于继续变基：不需要提交信息，已解决的文件先显式暂存。
+#[test]
+fn committing_while_a_rebase_stopped_continues_it() {
+    use winc_editor::git::Operation;
+
+    let Some((mut app, root)) = git_app("git-commit-rebase", false) else {
+        return;
+    };
+    let main = root.join("src/main.rs");
+    git_in(&root, &["add", "-A"]);
+    git_in(&root, &["commit", "-q", "-m", "base"]);
+    git_in(&root, &["switch", "-q", "-c", "topic"]);
+    std::fs::write(&main, "fn main() { topic(); }\n").unwrap();
+    git_in(&root, &["commit", "-q", "-am", "topic"]);
+    git_in(&root, &["switch", "-q", "main"]);
+    std::fs::write(&main, "fn main() { main(); }\n").unwrap();
+    git_in(&root, &["commit", "-q", "-am", "main"]);
+    git_in(&root, &["switch", "-q", "topic"]);
+    // 两边改同一行：变基停下来等解决。
+    let done = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["rebase", "main"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    assert!(!done);
+    app.git_refresh();
+    app.run_action(Action::ShowCommit);
+    let status = app.git.status.as_ref().unwrap();
+    assert_eq!(status.operation, Some(Operation::Rebase));
+    assert!(
+        status
+            .entries
+            .iter()
+            .any(|e| e.path == main && e.conflicted())
+    );
+
+    // 解决后显式暂存，再按「提交」：提交信息为空也能继续，`git` 用原来的信息。
+    std::fs::write(&main, "fn main() { resolved(); }\n").unwrap();
+    app.stage_files(vec![commit_file(CommitGroup::Conflicts, &main)]);
+    wait_staging(&mut app);
+    assert!(staged_paths(&app).contains(&main));
+    app.git_commit();
+    wait_commit(&mut app);
+    assert_eq!(app.git.status.as_ref().unwrap().operation, None);
+    let log = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["log", "--format=%s"])
+        .output()
+        .unwrap();
+    let subjects = String::from_utf8_lossy(&log.stdout);
+    assert_eq!(
+        subjects.lines().collect::<Vec<_>>(),
+        ["topic", "main", "base", "first"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(&main).unwrap(),
+        "fn main() { resolved(); }\n"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -834,7 +1208,8 @@ fn the_commit_button_menu_pushes_after_committing_or_amends() {
     assert!(app.commit_parts().amend.is_some());
     assert!(!menu.contains(&MenuEntry::Item(MenuCommand::CommitAmend, true)));
     let width = app.panel_width;
-    app.panel_width = crate::theme::MIN_PANEL_WIDTH;
+    // 比最窄更窄：字体度量随平台差 1、2 像素，只压到下限不够保证放不下。
+    app.panel_width = crate::theme::MIN_PANEL_WIDTH - 40.0;
     paint(&mut app);
     assert!(app.commit_parts().amend.is_none());
     let menu = app.commit_button_menu();
@@ -883,8 +1258,8 @@ fn scrolled_changes_keep_their_group_and_folders_pinned_on_top() {
         return;
     }
     app.run_action(Action::ShowCommit);
-    app.press_commit(CommitTarget::Group(CommitGroup::Changes));
-    app.press_commit(CommitTarget::Group(CommitGroup::Changes));
+    app.press_commit(CommitTarget::Group(CommitGroup::Staged));
+    app.press_commit(CommitTarget::Group(CommitGroup::Staged));
     paint(&mut app);
     let rows = app.commit_rows();
     // 没滚动时什么也不固定。
@@ -903,7 +1278,7 @@ fn scrolled_changes_keep_their_group_and_folders_pinned_on_top() {
     assert_eq!(pinned.len(), 3);
     assert!(matches!(
         rows[pinned[0]],
-        CommitRow::Group(CommitGroup::Changes)
+        CommitRow::Group(CommitGroup::Staged)
     ));
     assert_eq!(pinned[2], b);
     let list = app.commit_parts().list;
@@ -1085,9 +1460,9 @@ fn showing_as_tree_switches_the_changes_between_a_tree_and_a_flat_list() {
         let (rect, _) = app.commit_hits.iter().find(|(_, t)| want(t)).unwrap();
         rect.x + rect.w / 2.0
     };
-    let group = check_x(&app, |t| matches!(t, CommitTarget::GroupCheck(_)));
+    let group = check_x(&app, |t| matches!(t, CommitTarget::GroupStage(_)));
     assert_eq!(
-        check_x(&app, |t| matches!(t, CommitTarget::Check(_))),
+        check_x(&app, |t| matches!(t, CommitTarget::FileStage { .. })),
         group
     );
 
@@ -1343,7 +1718,7 @@ fn a_long_change_name_slides_out_and_back_like_the_file_tree() {
     let entry = (status.entries.iter())
         .find(|e| e.path.ends_with(&long))
         .unwrap();
-    let key = CommitName::File(entry.path.clone());
+    let key = CommitName::File(CommitGroup::Staged, entry.path.clone());
     let rows = app.commit_rows();
     let i = (rows.iter())
         .position(|r| matches!(r, CommitRow::File { index, .. } if status.entries[*index].path == entry.path))
@@ -1436,7 +1811,7 @@ fn names_that_only_make_room_for_the_buttons_slide_the_buttons_out() {
         let path = (status.entries.iter())
             .find(|e| e.path.ends_with(name))
             .unwrap();
-        let key = CommitName::File(path.path.clone());
+        let key = CommitName::File(CommitGroup::Staged, path.path.clone());
         let rest = app.commit.names.peek(&key).unwrap().width;
         let y = list.y + i as f32 * COMMIT_ROW - app.commit.scroll + COMMIT_ROW / 2.0;
         app.on_mouse_move(list.x + 120.0, y);
@@ -1559,7 +1934,7 @@ fn change_list_keys_jump_to_the_ends_and_page() {
             .position(|r| match r {
                 CommitRow::File { index, .. } => {
                     let status = app.git.status.as_ref().unwrap();
-                    Some(&status.entries[*index].path) == selected.as_ref()
+                    (selected.as_ref()).is_some_and(|f| f.path == status.entries[*index].path)
                 }
                 _ => false,
             })
@@ -1658,12 +2033,14 @@ fn the_last_local_commit_can_be_undone() {
     );
 
     app.commit.message.set_text("加上改动\n\n正文");
+    // 暂存区为空：确认暂存全部并提交。
     app.git_commit();
+    press_alert(&mut app, 0);
     let second = app.git.status.as_ref().unwrap().oid.clone().unwrap();
     assert_ne!(second, first);
     assert_eq!(app.commit_undoable().unwrap().subject, "加上改动");
     paint(&mut app);
-    // 「上一次提交」在提交卡片上面（还有没勾的未跟踪文件，卡片还在），改动列表在它上面结束；
+    // 「上一次提交」在提交卡片上面（还有未暂存的未跟踪文件，卡片还在），改动列表在它上面结束；
     // 没有卡片时它在视图底部。
     let parts = app.commit_parts();
     let (bar, undo, button) = parts.undo.unwrap();
@@ -1730,39 +2107,78 @@ fn the_last_local_commit_can_be_undone() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// 在终端里只暂存了一部分的文件与其他文件的处理相同：勾选框为全选，提交的是工作区里的内容，
-/// 与暂存区无关。
+/// 在终端里只暂存了一部分的文件：同一个文件同时出现在两组里，各有自己的差异基准。
 #[test]
-fn files_staged_in_the_terminal_commit_what_is_in_the_working_tree() {
+fn a_file_staged_in_the_terminal_appears_in_both_groups() {
     let Some((mut app, root)) = git_app("git-commit-partly-staged", false) else {
         return;
     };
     let main = root.join("src/main.rs");
-    std::fs::write(&main, "staged\n").unwrap();
+    // `make_repo` 顺带新建的 `src/new.rs` 会混进列表：这里只看部分暂存的同一个文件。
+    let _ = std::fs::remove_file(root.join("src/new.rs"));
+    std::fs::write(&main, "staged").unwrap();
     git_in(&root, &["add", "src/main.rs"]);
-    std::fs::write(&main, "staged\nnot staged\n").unwrap();
+    std::fs::write(&main, "staged\nnot staged").unwrap();
     app.git_refresh();
     app.run_action(Action::ShowCommit);
     paint(&mut app);
-    let status = app.git.status.clone().unwrap();
-    let entry = status.entries.iter().find(|e| e.path == main).unwrap();
+    let entry = (app.git.status.as_ref().unwrap().entries.iter())
+        .find(|e| e.path == main)
+        .unwrap()
+        .clone();
     assert!(entry.staged.is_some() && entry.unstaged.is_some());
-    assert_eq!(app.commit.file_state(entry), Some(true));
 
-    app.commit.message.set_text("提交工作区里的内容");
+    // 同一个文件在两行里，各自属于一组。
+    assert_eq!(
+        app.commit_files(),
+        [
+            commit_file(CommitGroup::Staged, &main),
+            commit_file(CommitGroup::Changes, &main),
+        ]
+    );
+
+    // 「更改」一侧：暂存区的内容 ↔ 工作区的内容。
+    app.git_preview_changes(&commit_file(CommitGroup::Changes, &main));
+    let id = app.editor.active().unwrap().id;
+    let doc = app.editor.document(id).unwrap();
+    let diff = doc.diff.as_deref().unwrap();
+    assert_eq!(diff.old.text.to_string(), "staged");
+    assert_eq!(diff.new.text.to_string(), "staged\nnot staged");
+
+    // 「已暂存的更改」一侧：`HEAD` ↔ 暂存区，只读。`HEAD` 里是 [`search_folder`] 的模板。
+    app.git_preview_changes(&commit_file(CommitGroup::Staged, &main));
+    let id = app.editor.active().unwrap().id;
+    let doc = app.editor.document(id).unwrap();
+    let diff = doc.diff.as_deref().unwrap();
+    assert_eq!(
+        diff.old.text.to_string(),
+        "fn main() {\n    let config = load_config();\n    println!(\"{config:?}\");\n}\n"
+    );
+    assert_eq!(diff.new.text.to_string(), "staged");
+
+    // 提交暂存区：只有已暂存的那部分进提交，工作区里剩下的改动仍在「更改」里。
+    app.commit.message.set_text("只提交暂存的部分");
     app.git_commit();
-    let head = Command::new("git")
+    wait_commit(&mut app);
+    let head = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(&root)
         .args(["show", "HEAD:src/main.rs"])
         .output()
         .unwrap();
+    assert_eq!(String::from_utf8_lossy(&head.stdout), "staged");
+    assert_eq!(unstaged_paths(&app), vec![main.clone()]);
+
+    // 终端里取消暂存：改动回到「更改」，工作区里的内容不动。
+    git_in(&root, &["add", "src/main.rs"]);
+    git_in(&root, &["restore", "--staged", "src/main.rs"]);
+    app.git_refresh();
+    assert!(!staged_paths(&app).contains(&main));
+    assert!(unstaged_paths(&app).contains(&main));
     assert_eq!(
-        String::from_utf8_lossy(&head.stdout),
-        "staged\nnot staged\n"
+        std::fs::read_to_string(&main).unwrap(),
+        "staged\nnot staged"
     );
-    let status = app.git.status.clone().unwrap();
-    assert!(status.entries.iter().all(|e| e.path != main));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -1959,7 +2375,7 @@ fn a_deleted_upstream_keeps_its_commits_and_its_remote() {
     assert_eq!(app.git_sync_state(), SyncState::Publish);
     app.press_commit(CommitTarget::Sync);
     let remote_has = |dir: &Path| {
-        Command::new("git")
+        crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(dir)
             .args(["rev-parse", "--verify", "--quiet", "refs/heads/main"])
@@ -2125,59 +2541,58 @@ fn shoot_commit_narrow_dirs() {
 }
 
 #[test]
-fn untracked_files_stay_out_of_the_commit_until_checked() {
+fn untracked_files_sit_in_the_changes_group_until_staged() {
     let Some((mut app, root)) = git_app("git-commit-untracked", false) else {
         return;
     };
     app.run_action(Action::ShowCommit);
     paint(&mut app);
     let (main, new) = (root.join("src/main.rs"), root.join("src/new.rs"));
-    let status = app.git.status.clone().unwrap();
-    let entry = status.entries.iter().find(|e| e.path == new).unwrap();
 
-    // 未跟踪的文件单独成组，默认显示但不勾，不计入提交范围。
-    assert!(!app.commit.group_collapsed(CommitGroup::Untracked));
-    assert!(!app.commit.checked(entry));
+    // 未跟踪的文件和改动过的文件同在「更改」一组里，暂存区为空。
     assert_eq!(
-        app.commit.group_state(&status, CommitGroup::Untracked),
-        None
+        app.commit_files(),
+        [
+            commit_file(CommitGroup::Changes, &main),
+            commit_file(CommitGroup::Changes, &new),
+        ]
     );
-    assert_eq!(app.commit_files(), [main.clone(), new.clone()]);
-    assert_eq!(app.commit_scope(), Some(1));
-
-    // 收起和展开不改变勾选；收起时切换文件跳过这一组。
-    app.press_commit(CommitTarget::Group(CommitGroup::Untracked));
-    assert_eq!(app.commit_files(), std::slice::from_ref(&main));
-    assert!(!app.commit.checked(entry));
-    app.press_commit(CommitTarget::Group(CommitGroup::Untracked));
-    assert_eq!(app.commit_files(), [main.clone(), new.clone()]);
-
-    app.press_commit(CommitTarget::GroupCheck(CommitGroup::Untracked));
-    assert!(app.commit.checked(entry));
-    assert_eq!(app.commit_scope(), Some(2));
-    app.press_commit(CommitTarget::GroupCheck(CommitGroup::Untracked));
-    assert!(!app.commit.checked(entry));
-
-    // 没有勾上时提交只包含已跟踪的改动，未跟踪的文件仍未跟踪。
-    app.commit.message.set_text("只提交改动");
-    app.git_commit();
-    let status = app.git.status.clone().unwrap();
-    assert_eq!(status.entries.len(), 1);
-    assert_eq!(status.entries[0].path, new);
-    assert!(status.entries[0].untracked());
-
-    // 勾上以后随提交加入仓库；提交后勾选回到默认。
+    assert_eq!(app.commit_rows()[0], CommitRow::Group(CommitGroup::Changes));
     assert_eq!(app.commit_scope(), None);
-    app.press_commit(CommitTarget::GroupCheck(CommitGroup::Untracked));
+
+    // 收起再展开不影响其余分组；收起时切换文件跳过这一组。
+    app.press_commit(CommitTarget::Group(CommitGroup::Changes));
+    assert!(app.commit_files().is_empty());
+    app.press_commit(CommitTarget::Group(CommitGroup::Changes));
+    assert_eq!(app.commit_files().len(), 2);
+
+    // 组标题的 ＋ 暂存整组（含未跟踪的文件），− 取消暂存。
+    app.press_commit(CommitTarget::GroupStage(CommitGroup::Changes));
+    wait_staging(&mut app);
+    assert_eq!(staged_paths(&app), [main.clone(), new.clone()]);
+    assert_eq!(app.commit_scope(), Some(2));
+    app.press_commit(CommitTarget::GroupStage(CommitGroup::Staged));
+    wait_staging(&mut app);
+    assert!(staged_paths(&app).is_empty());
+    assert_eq!(app.commit_scope(), None);
+
+    // 再暂存后提交：未跟踪的文件随提交进入仓库。
+    app.press_commit(CommitTarget::GroupStage(CommitGroup::Changes));
+    wait_staging(&mut app);
     app.commit.message.set_text("加入新文件");
     app.git_commit();
+    wait_commit(&mut app);
     assert!(app.git.status.as_ref().unwrap().entries.is_empty());
-    std::fs::write(&new, "changed\n").unwrap();
-    std::fs::write(root.join("another.rs"), "\n").unwrap();
-    app.git_refresh();
-    let status = app.git.status.clone().unwrap();
-    let another = status.entries.iter().find(|e| e.untracked()).unwrap();
-    assert!(!app.commit.checked(another));
+    let tracked = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["ls-files", "src/new.rs"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&tracked.stdout).trim(),
+        "src/new.rs"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -2189,12 +2604,21 @@ fn the_commit_button_names_its_scope_only_for_a_plain_commit() {
     };
     app.run_action(Action::ShowCommit);
     paint(&mut app);
+    // 暂存区为空：按钮不写范围。
+    assert_eq!(app.commit_scope(), None);
+
+    // 暂存一个文件后写文件数。
+    let index = (app.git.status.as_ref().unwrap().entries.iter())
+        .position(|e| e.path.ends_with("main.rs"))
+        .unwrap();
+    app.press_commit(CommitTarget::FileStage {
+        group: CommitGroup::Changes,
+        index,
+    });
+    wait_staging(&mut app);
     assert_eq!(app.commit_scope(), Some(1));
 
-    // 没有勾选、修改上一次提交时都不写范围。
-    app.press_commit(CommitTarget::GroupCheck(CommitGroup::Changes));
-    assert_eq!(app.commit_scope(), None);
-    app.press_commit(CommitTarget::GroupCheck(CommitGroup::Changes));
+    // 修改上一次提交时不写范围。
     app.commit.amend = true;
     assert_eq!(app.commit_scope(), None);
     app.commit.amend = false;
@@ -2202,6 +2626,7 @@ fn the_commit_button_names_its_scope_only_for_a_plain_commit() {
     // 游离 `HEAD` 时也写文件数，分支写在上方的分支行里。
     git_in(&root, &["checkout", "-q", "--detach"]);
     app.git_refresh();
+    wait_staging(&mut app);
     assert_eq!(app.commit_scope(), Some(1));
 
     let _ = std::fs::remove_dir_all(&root);
@@ -2223,7 +2648,7 @@ fn a_rewritten_branch_is_not_force_pushed_without_confirmation() {
     );
     git_in(&root, &["push", "-q", "-u", "origin", "main"]);
     let pushed = |root: &Path| {
-        let output = std::process::Command::new("git")
+        let output = crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(root)
             .args(["rev-parse", "origin/main"])
@@ -2317,7 +2742,8 @@ fn the_sidebar_keeps_one_width_across_views() {
 }
 
 #[test]
-fn commit_only_the_checked_lines() {
+fn staging_one_line_leaves_the_other_added_line_behind() {
+    use winc_editor::diff_view::RIGHT;
     let dir = search_folder("git-partial-lines");
     if !long_repo(&dir) {
         return;
@@ -2333,58 +2759,63 @@ fn commit_only_the_checked_lines() {
     std::fs::write(
         &file,
         disk.replace(
-            "let value_5 = 500;\n",
-            "let value_5 = 500;\nlet added_a = 1;\nlet added_b = 2;\n",
+            "let value_5 = 500;",
+            "let value_5 = 500;\nlet added_a = 1;\nlet added_b = 2;",
         ),
     )
     .unwrap();
     app.git_refresh();
-    app.git_preview_changes(&file);
+    app.run_action(Action::ShowCommit);
+    let pick = commit_file(CommitGroup::Changes, &file);
+    app.git_preview_changes(&pick);
     paint(&mut app);
 
-    // 找到 `added_b` 所在的行并把它勾掉，同时只提交第一处改动。
-    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
+    // 只暂存 `added_b` 那一行：同一块改动里的另一行留在工作区。
     let text = std::fs::read_to_string(&file).unwrap();
     let line = text.lines().position(|l| l == "let added_b = 2;").unwrap();
-    let hunk = view
-        .hunks
-        .iter()
-        .position(|h| h.new.contains(&line))
-        .unwrap();
-    let hunks = view.hunks.len();
-    app.press_diff(DiffTarget::IncludeLine(RIGHT, line));
-    paint(&mut app);
+    let hunks: Vec<std::ops::Range<usize>> = {
+        let doc = app.editor.active().unwrap();
+        let view = doc.diff.as_deref().unwrap();
+        view.hunks.iter().map(|h| h.new.clone()).collect()
+    };
+    assert!(hunks.iter().any(|h| h.contains(&line)));
+    app.press_diff(DiffTarget::StageLine(RIGHT, line));
+    wait_staging(&mut app);
     assert!(
-        app.diff_hits
-            .iter()
-            .any(|(_, t)| *t == DiffTarget::IncludeLine(RIGHT, line))
+        app.status_message.is_some() || !staged_paths(&app).is_empty(),
+        "no result"
     );
-    let status = app.git.status.clone().unwrap();
-    let entry = status.entries.iter().find(|e| e.path == file).unwrap();
-    assert_eq!(app.commit.file_state(entry), Some(false));
-    for other in (0..hunks).filter(|&h| h != hunk) {
-        app.press_diff(DiffTarget::Include(other));
-    }
+    let staged = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["show", ":src/main.rs"])
+        .output()
+        .unwrap();
+    let staged = String::from_utf8(staged.stdout).unwrap();
+    assert!(staged.contains("let added_b = 2;"), "{staged}");
+    assert!(!staged.contains("let added_a = 1;"), "{staged}");
 
-    app.commit.message.set_text("only added_a");
+    // 提交暂存区：只有这一行进提交，另一行还在工作区里。
+    app.commit.message.set_text("only added_b");
     app.git_commit();
-    let head = Command::new("git")
+    wait_commit(&mut app);
+    let head = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(&root)
         .args(["show", "HEAD:src/main.rs"])
         .output()
         .unwrap();
     let head = String::from_utf8(head.stdout).unwrap();
-    assert!(head.contains("let added_a = 1;"), "{head}");
-    assert!(!head.contains("added_b"), "{head}");
-    // 没提交的行还在工作区里。
-    assert!(std::fs::read_to_string(&file).unwrap().contains("added_b"));
+    assert!(head.contains("let added_b = 2;"), "{head}");
+    assert!(!head.contains("let added_a = 1;"), "{head}");
+    assert!(std::fs::read_to_string(&file).unwrap().contains("added_a"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 差异里的选择按内容重新核对：内容已经变了、对不上时停下并提示重新选择，不退化成整文件暂存。
 #[test]
-fn line_checks_keep_their_state_until_the_change_is_edited() {
-    use winc_core::diff::Pick;
-    use winc_editor::diff_view::LEFT;
+fn a_stale_selection_is_refused_instead_of_staging_the_file() {
+    use crate::app::git::commit::StagePick;
     let dir = search_folder("git-line-state");
     if !long_repo(&dir) {
         return;
@@ -2394,82 +2825,48 @@ fn line_checks_keep_their_state_until_the_change_is_edited() {
     if git_unusable(&app) {
         return;
     }
-    let file = app.git.root.clone().unwrap().join("src/main.rs");
-    let status = app.git.status.clone().unwrap();
-    let entry = status
-        .entries
-        .iter()
-        .find(|e| e.path == file)
-        .unwrap()
-        .clone();
-    let (key, old) = (7, 0..2);
-    let all = [(key, old.clone())];
-    let inclusion =
-        |app: &App, key| app.commit.hunk_inclusions(&entry, &[(key, old.clone())])[0].clone();
-    assert_eq!(inclusion(&app, key), Pick::Apply);
-
-    // 勾掉一行：按行提交。再勾回来：整处提交。
-    app.commit.toggle_line(&entry, (0, 1), (RIGHT, 0), &all);
-    assert!(matches!(inclusion(&app, key), Pick::Lines(_)));
-    app.commit.toggle_line(&entry, (0, 1), (RIGHT, 0), &all);
-    assert_eq!(inclusion(&app, key), Pick::Apply);
-
-    // 内容变了：行号不再对应，整处不提交。
-    app.commit.toggle_line(&entry, (0, 1), (RIGHT, 0), &all);
-    assert_eq!(inclusion(&app, key + 1), Pick::Skip);
-
-    // 整段的勾选框把只提交部分行的改动恢复为整处提交。
-    app.commit.toggle_hunk(&entry, 0, &all);
-    assert_eq!(inclusion(&app, key), Pick::Apply);
-
-    // 所有行都勾掉时文件也勾掉。
-    for (side, line) in [(LEFT, 0), (LEFT, 1), (RIGHT, 0)] {
-        app.commit.toggle_line(&entry, (0, 1), (side, line), &all);
-    }
-    assert_eq!(app.commit.file_state(&entry), None);
-
-    // 文件没勾时勾上一行：文件勾上，只提交这一行。
-    app.commit.toggle_line(&entry, (0, 1), (RIGHT, 0), &all);
-    let Pick::Lines(set) = inclusion(&app, key) else {
-        panic!("应当按行提交");
-    };
-    assert_eq!(set.old.len(), 2);
-    assert!(set.new.is_empty());
-}
-
-/// 只提交部分行的改动：截图用于检查行勾选框、整段勾选框的「部分」状态和不提交行的底色。
-#[test]
-#[ignore = "截图，手动运行"]
-fn snapshot_partial_lines() {
-    let dir = search_folder("git-lines-shot");
-    if !long_repo(&dir) {
-        return;
-    }
-    let mut app = app_with(&dir, false);
-    app.settings_toggle(Setting::GitModule);
-    if git_unusable(&app) {
-        return;
-    }
     let root = app.git.root.clone().unwrap();
-    let file = root.join("src/main.rs");
-    let disk = std::fs::read_to_string(&file).unwrap();
-    std::fs::write(
-        &file,
-        disk.replace(
-            "let value_5 = 500;\n",
-            "let value_5 = 500;\nlet added_a = 1;\nlet added_b = 2;\nlet added_c = 3;\n",
-        ),
-    )
-    .unwrap();
-    app.git_refresh();
+    app.run_action(Action::ShowCommit);
+    let file = commit_file(CommitGroup::Changes, &root.join("src/main.rs"));
     app.git_preview_changes(&file);
+
+    // 对不上的内容键：刷新并提示，不写暂存区。
+    app.stage_pick(
+        file.clone(),
+        StagePick {
+            key: 0,
+            old: 0,
+            line: None,
+        },
+    );
+    assert!(!app.commit.staging);
+    assert!(staged_paths(&app).is_empty());
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|m| m.contains("重新选择")),
+        "{:?}",
+        app.status_message
+    );
+
+    // 对得上的内容键：暂存那一块。
     paint(&mut app);
-    let text = std::fs::read_to_string(&file).unwrap();
-    let line = text.lines().position(|l| l == "let added_b = 2;").unwrap();
-    app.press_diff(DiffTarget::IncludeLine(RIGHT, line));
-    shoot(&mut app, "diff-partial-lines");
-    app.press_diff(DiffTarget::Layout);
-    shoot(&mut app, "diff-partial-lines-unified");
+    let (key, old) = {
+        let doc = app.editor.active().unwrap();
+        let view = doc.diff.as_deref().unwrap();
+        (view.keys[0], view.hunks[0].old.start)
+    };
+    app.stage_pick(
+        file,
+        StagePick {
+            key,
+            old,
+            line: None,
+        },
+    );
+    wait_staging(&mut app);
+    assert!(staged_paths(&app).contains(&root.join("src/main.rs")));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 回归：滚动到长列表下方后提交，剩下的改动比滚动位置少，列表不能一片空白。
@@ -2514,7 +2911,13 @@ fn a_shorter_list_is_visible_after_scrolling_far_down() {
     assert!(app.commit.scroll <= app.commit_max_scroll());
     assert_eq!(app.commit.scroll, 0.0);
     assert!(
-        (app.commit_hits.iter()).any(|(_, target)| matches!(target, CommitTarget::File(_))),
+        (app.commit_hits.iter()).any(|(_, target)| matches!(
+            target,
+            CommitTarget::File {
+                group: CommitGroup::Changes,
+                index: _
+            }
+        )),
         "列表应当画出剩下的改动"
     );
 }
@@ -2622,10 +3025,19 @@ fn the_refresh_button_spins_for_at_least_one_turn() {
     paint(&mut app);
     assert!(!app.commit_refreshing());
     app.press_commit(CommitTarget::Refresh);
-    // 测试里读取就地完成，这时转的只是至少一圈的时长。
+    // 读取在后台进行：点下去后马上就在转。测试并行运行、机器繁忙时读取未必立刻结束，
+    // 先收下结果，再按「至少转满一圈」判断。
     assert!(app.commit_refreshing());
     assert!(app.animating());
     let turn = Duration::from_secs_f32(1.0 / crate::theme::SPIN_SPEED);
+    // 读取结束（收下结果）后，转满一圈就停。
+    for _ in 0..200 {
+        app.poll_git();
+        if app.git.running.is_none() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     app.commit.refreshed = Instant::now().checked_sub(turn);
     assert!(!app.commit_refreshing());
     let _ = std::fs::remove_dir_all(&root);
@@ -2897,7 +3309,8 @@ fn the_commit_button_widens_while_the_amend_toggle_fades_out() {
     let from = before.commit.w + before.commit_menu.w;
     assert!(before.amend.is_some());
 
-    app.panel_width = crate::theme::MIN_PANEL_WIDTH;
+    // 比最窄更窄：字体度量随平台差 1、2 像素，只压到下限不够保证放不下。
+    app.panel_width = crate::theme::MIN_PANEL_WIDTH - 40.0;
     paint(&mut app);
     let settled = app.commit_parts();
     let to = settled.commit.w + settled.commit_menu.w;
@@ -2986,8 +3399,15 @@ fn committed_rows_fade_out_instead_of_vanishing() {
     let rows = app.commit_rows();
     assert!(!rows.is_empty());
     let has_rows = |app: &App| {
-        (app.commit_hits.iter())
-            .any(|(_, t)| matches!(t, CommitTarget::File(_) | CommitTarget::Group(_)))
+        (app.commit_hits.iter()).any(|(_, t)| {
+            matches!(
+                t,
+                CommitTarget::File {
+                    group: CommitGroup::Changes,
+                    index: _
+                } | CommitTarget::Group(_)
+            )
+        })
     };
     assert!(has_rows(&app));
 
@@ -3038,10 +3458,12 @@ fn the_full_name_row_covers_the_scrollbar_like_the_file_tree() {
     paint(&mut app);
     let status = app.git.status.clone().unwrap();
     let rows = app.commit_rows();
-    let (i, index) = (rows.iter().enumerate())
+    let (i, group, index) = (rows.iter().enumerate())
         .find_map(|(i, r)| match r {
-            CommitRow::File { index, .. } if status.entries[*index].path.ends_with(&long) => {
-                Some((i, *index))
+            CommitRow::File { group, index, .. }
+                if status.entries[*index].path.ends_with(&long) =>
+            {
+                Some((i, *group, *index))
             }
             _ => None,
         })
@@ -3056,7 +3478,10 @@ fn the_full_name_row_covers_the_scrollbar_like_the_file_tree() {
     // 移到滚动条的可点击范围内：仍悬停在这一行上，全名保持显示。
     app.on_mouse_move(list.right() - 3.0, y);
     paint(&mut app);
-    assert_eq!(app.hover, Hover::Commit(CommitTarget::File(index)));
+    assert_eq!(
+        app.hover,
+        Hover::Commit(CommitTarget::File { group, index })
+    );
     assert!(app.commit.overflow.is_some_and(|o| o.row == i));
 
     // 在伸出侧栏的部分上滚动：滚动的是改动列表。
@@ -3084,10 +3509,12 @@ fn the_full_name_row_covers_the_splitter_like_the_file_tree() {
     paint(&mut app);
     let status = app.git.status.clone().unwrap();
     let rows = app.commit_rows();
-    let (i, index) = (rows.iter().enumerate())
+    let (i, group, index) = (rows.iter().enumerate())
         .find_map(|(i, r)| match r {
-            CommitRow::File { index, .. } if status.entries[*index].path.ends_with(&long) => {
-                Some((i, *index))
+            CommitRow::File { group, index, .. }
+                if status.entries[*index].path.ends_with(&long) =>
+            {
+                Some((i, *group, *index))
             }
             _ => None,
         })
@@ -3099,7 +3526,7 @@ fn the_full_name_row_covers_the_splitter_like_the_file_tree() {
     assert!(app.commit.overflow.is_some_and(|o| o.row == i));
 
     let splitter = app.layout.splitter;
-    let row = Hover::Commit(CommitTarget::File(index));
+    let row = Hover::Commit(CommitTarget::File { group, index });
     for x in [
         splitter.x + 1.0,
         splitter.x + splitter.w / 2.0,
@@ -3112,8 +3539,8 @@ fn the_full_name_row_covers_the_splitter_like_the_file_tree() {
     }
     click(&mut app, (splitter.x + splitter.w / 2.0, y));
     assert_eq!(
-        app.commit.selected.as_deref(),
-        Some(status.entries[index].path.as_path())
+        app.commit.selected.as_ref().map(|f| f.path.clone()),
+        Some(status.entries[index].path.clone())
     );
     assert_eq!(app.layout.splitter, splitter);
 
@@ -3125,11 +3552,9 @@ fn the_full_name_row_covers_the_splitter_like_the_file_tree() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 两处改动内容相同（加入了同样的一行）时各自勾选：勾掉其中一处只有这一处不提交，再点一次能
-/// 勾回来；提交时也只少了勾掉的那一处。
+/// 两处改动内容相同（加入了同样的一行）时按改动块的首行区分：只暂存其中一处，提交里也只多一行。
 #[test]
-fn identical_changes_are_checked_one_by_one() {
-    use winc_core::diff::Pick;
+fn identical_hunks_are_staged_one_by_one() {
     let dir = search_folder("git-identical-hunks");
     if !long_repo(&dir) {
         return;
@@ -3143,47 +3568,45 @@ fn identical_changes_are_checked_one_by_one() {
     let file = root.join("src/main.rs");
     let disk = std::fs::read_to_string(&file).unwrap();
     let disk = disk
-        .replace(
-            "let value_20 = 20;\n",
-            "let value_20 = 20;\nlet same = 1;\n",
-        )
-        .replace(
-            "let value_40 = 40;\n",
-            "let value_40 = 40;\nlet same = 1;\n",
-        );
+        .replace("let value_20 = 20;", "let value_20 = 20;\nlet same = 1;")
+        .replace("let value_40 = 40;", "let value_40 = 40;\nlet same = 1;");
     std::fs::write(&file, &disk).unwrap();
     app.git_refresh();
-    app.git_preview_changes(&file);
+    app.run_action(Action::ShowCommit);
+    let pick = commit_file(CommitGroup::Changes, &file);
+    app.git_preview_changes(&pick);
     paint(&mut app);
-    let picks = |app: &App| -> Vec<Pick> {
-        let view = app.editor.active().unwrap().diff.as_deref().unwrap();
-        let entry = app.diff_entry(view).unwrap();
-        let all: Vec<_> = (view.keys.iter().zip(&view.hunks))
-            .map(|(&k, h)| (k, h.old.clone()))
-            .collect();
-        app.commit.hunk_inclusions(entry, &all)
+    let keys: Vec<u64> = {
+        let doc = app.editor.active().unwrap();
+        doc.diff.as_deref().unwrap().keys.clone()
     };
-    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
-    let same: Vec<usize> = (0..view.hunks.len())
-        .filter(|&h| (0..view.hunks.len()).any(|o| o != h && view.keys[o] == view.keys[h]))
+    let same: Vec<usize> = (0..keys.len())
+        .filter(|&h| (0..keys.len()).any(|o| o != h && keys[o] == keys[h]))
         .collect();
-    assert_eq!(same.len(), 2, "two changes with the same content");
-    let (first, second) = (same[0], same[1]);
+    assert_eq!(same.len(), 2, "两处改动内容相同");
+    let second = same[1];
 
-    // 勾掉第二处：只有它不勾；再点一次勾回来。
-    app.press_diff(DiffTarget::Include(second));
-    let now = picks(&app);
-    assert_eq!((&now[first], &now[second]), (&Pick::Apply, &Pick::Skip));
-    app.press_diff(DiffTarget::Include(second));
-    assert!(picks(&app).iter().all(|p| *p == Pick::Apply));
+    // 暂存第二块：暂存区里只有 `value_40` 后面的那一行。
+    app.press_diff(DiffTarget::StageHunk(second));
+    wait_staging(&mut app);
+    let staged = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(&root)
+        .args(["show", ":src/main.rs"])
+        .output()
+        .unwrap();
+    let staged = String::from_utf8(staged.stdout).unwrap();
+    assert_eq!(staged.matches("let same = 1;").count(), 1, "{staged}");
+    assert!(
+        staged.contains("let value_40 = 40;\nlet same = 1;"),
+        "{staged}"
+    );
 
-    // 勾掉第一处后提交：只少了第一处加的那一行。
-    app.press_diff(DiffTarget::Include(first));
-    let now = picks(&app);
-    assert_eq!((&now[first], &now[second]), (&Pick::Skip, &Pick::Apply));
+    // 提交暂存区：只多了那一行，第一处改动仍在工作区。
     app.commit.message.set_text("only the second");
     app.git_commit();
-    let head = Command::new("git")
+    wait_commit(&mut app);
+    let head = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(&root)
         .args(["show", "HEAD:src/main.rs"])
@@ -3192,5 +3615,6 @@ fn identical_changes_are_checked_one_by_one() {
     let head = String::from_utf8(head.stdout).unwrap();
     assert_eq!(head.matches("let same = 1;").count(), 1, "{head}");
     assert!(head.contains("let value_40 = 40;\nlet same = 1;"), "{head}");
+    assert!(unstaged_paths(&app).contains(&file));
     let _ = std::fs::remove_dir_all(&dir);
 }

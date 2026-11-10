@@ -668,8 +668,9 @@ impl App {
         self.git_operate(
             t!("git-op-mark-resolved", name = name.as_str()),
             move |git, root| {
-                let relative = path.strip_prefix(root).unwrap_or(&path);
-                git.operate(root, &["add", "--", &relative.to_string_lossy()])
+                // 整文件暂存走 `:(literal)` 路径：文件名里的通配符不影响其他文件。
+                git.stage(root, std::slice::from_ref(&path))
+                    .map(|()| String::new())
             },
         );
     }

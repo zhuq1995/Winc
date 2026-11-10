@@ -797,7 +797,7 @@ pub(in crate::view) fn over(bg: Color, fg: Color) -> Color {
 
 /// 返回面板内按钮的悬停提示（按钮矩形和提示文本）；没有提示时返回 `None`。
 pub(in crate::view) fn tooltip(app: &App) -> Option<(Rect, String)> {
-    use crate::app::{CommitTarget, DiffTarget};
+    use crate::app::{CommitRow, CommitTarget, DiffTarget};
     use crate::keymap::Action;
     use crate::layout::with_key;
     match app.hover {
@@ -892,7 +892,7 @@ pub(in crate::view) fn tooltip(app: &App) -> Option<(Rect, String)> {
             use winc_editor::git::{Head, Operation};
             let parts = app.commit_parts();
             let status = app.git.status.as_ref()?;
-            if app.commit.busy {
+            if app.commit.busy || app.commit.staging {
                 return None;
             }
             if let Some(reason) = app.commit.blocker(status) {
@@ -982,6 +982,32 @@ pub(in crate::view) fn tooltip(app: &App) -> Option<(Rect, String)> {
             })
         }
         Hover::Commit(CommitTarget::Location) => None,
+        // 文件、目录和组标题上的 ＋／−：写明是暂存还是取消暂存；写暂存区或提交期间按钮不可用。
+        Hover::Commit(
+            target @ (CommitTarget::GroupStage(_)
+            | CommitTarget::DirStage(_)
+            | CommitTarget::FileStage { .. }),
+        ) => {
+            if app.commit.staging || app.commit.busy || app.branch.running.is_some() {
+                return None;
+            }
+            let rect = app.commit_hits.iter().find(|(_, t)| *t == target)?.0;
+            let group = match target {
+                CommitTarget::GroupStage(group) => group,
+                CommitTarget::DirStage(row) => match app.commit_rows().get(row) {
+                    Some(CommitRow::Dir { group, .. }) => *group,
+                    _ => return None,
+                },
+                CommitTarget::FileStage { group, .. } => group,
+                _ => return None,
+            };
+            let label = if group.stages() {
+                t!("workspace-tip-stage")
+            } else {
+                t!("workspace-tip-unstage")
+            };
+            Some((rect, label.to_owned()))
+        }
         Hover::Commit(CommitTarget::CommitMenu) => Some((
             app.commit_parts().commit_menu,
             t!("workspace-tip-commit-menu").to_owned(),
@@ -1079,8 +1105,8 @@ pub(in crate::view) fn tooltip(app: &App) -> Option<(Rect, String)> {
                     t!("workspace-tip-revert-to-left"),
                     Some(Action::GitRevertChange),
                 ),
-                DiffTarget::Include(_) => t!("workspace-tip-include-change").to_owned(),
-                DiffTarget::IncludeLine(..) => t!("workspace-tip-include-line").to_owned(),
+                DiffTarget::StageHunk(_) => app.diff_stage_tip(false),
+                DiffTarget::StageLine(..) => app.diff_stage_tip(true),
                 _ if app.editor.active()?.diff.as_deref()?.collapses() => {
                     t!("workspace-tip-expand-unchanged").to_owned()
                 }

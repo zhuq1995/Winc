@@ -292,7 +292,10 @@ fn shoot_themes() {
                 .iter()
                 .position(|e| e.path == main);
             paint(&mut app);
-            app.press_commit(CommitTarget::File(index.unwrap()));
+            app.press_commit(CommitTarget::File {
+                group: CommitGroup::Changes,
+                index: index.unwrap(),
+            });
             // 在右侧双击选中一个词，光标位于右侧。
             paint(&mut app);
             let view = app.editor.active().unwrap().diff.as_deref().unwrap();
@@ -419,7 +422,7 @@ fn measure_git_costs() {
             .unwrap();
     let repo = std::env::temp_dir().join(format!("winc-measure-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
-    let cloned = Command::new("git")
+    let cloned = crate::app::snapshot::quiet(Command::new("git"))
         .args(["clone", "-q", "--local"])
         .arg(&source)
         .arg(&repo)
@@ -756,7 +759,12 @@ fn nested_repositories_are_found_in_the_background_without_moving_earlier_ones()
     let names: Vec<String> = (0..app.git.repositories.len())
         .map(|i| app.git_repository_name(i))
         .collect();
-    assert_eq!(names, ["a", "group/b", "group/deep/c"]);
+    // 相对路径按平台分隔符显示。
+    let expected: Vec<String> = ["a", "group/b", "group/deep/c"]
+        .into_iter()
+        .map(|p| p.replace('/', std::path::MAIN_SEPARATOR_STR))
+        .collect();
+    assert_eq!(names, expected);
     assert_eq!(app.git.root.as_ref(), app.git.repositories.first());
 
     // 配置的层数生效：只找一层时找不到更深的。

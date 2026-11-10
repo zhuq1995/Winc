@@ -187,9 +187,23 @@ fn the_log_files_can_be_walked_with_the_keyboard_and_commits_opened_by_double_cl
         .find(|(_, t)| *t == LogTarget::Row(2))
         .unwrap();
     let at = (row.x + 200.0, row.y + row.h / 2.0);
+    // 连击按两次点击的时间间隔判断（`DOUBLE_CLICK`）：机器繁忙时两次点击可能超过时限。
+    // 先记下一次同一位置的点击，使这一次稳定地算作双击。
+    app.last_click = Some(crate::app::Click {
+        at: std::time::Instant::now(),
+        x: at.0,
+        y: at.1,
+        count: 1,
+    });
     click(&mut app, at);
-    click(&mut app, at);
-    app.poll_log();
+    // 提交的文件列表在后台读取：取回来后才打开第一个文件，这里等它，最多 2 秒。
+    for _ in 0..200 {
+        app.poll_log();
+        if app.editor.active().is_some_and(|d| d.diff.is_some()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let doc = app.editor.active().unwrap();
     assert!(doc.diff.is_some(), "双击打开了差异");
     let _ = std::fs::remove_dir_all(&root);
@@ -461,7 +475,11 @@ fn refreshing_the_log_updates_the_repository_state_and_reports_it() {
     show_all_log(&mut app);
     paint(&mut app);
     let git = |args: &[&str]| {
-        let run = Command::new("git").arg("-C").arg(&root).args(args).output();
+        let run = crate::app::snapshot::quiet(Command::new("git"))
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output();
         assert!(run.unwrap().status.success());
     };
     git(&["branch", "made-elsewhere"]);

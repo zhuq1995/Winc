@@ -38,9 +38,9 @@ pub use editor::sticky::{StickyCache, StickyRow};
 pub(crate) use git::branch::picker::{GitAnchor, PickerPart};
 pub(crate) use git::changes::{ChangeTarget, MARK_W, mark_x, ruler_rows};
 pub(crate) use git::commit::{
-    COMMIT_ROW, CommitGroup, CommitLabels, CommitName, CommitOverflow, CommitParts, CommitRow,
-    CommitRows, CommitTarget, MESSAGE_LINE, MESSAGE_PAD, STASH_GAP, StashLine, StashView,
-    SyncState,
+    COMMIT_ROW, CommitFile, CommitGroup, CommitLabels, CommitName, CommitOverflow, CommitParts,
+    CommitRow, CommitRows, CommitTarget, MESSAGE_LINE, MESSAGE_PAD, STASH_GAP, StashLine,
+    StashView, SyncState,
 };
 pub(crate) use input::context_menu::{
     CHECK_COLUMN, ICON_COLUMN, MenuIcon, POPUP_PAD, POPUP_TEXT_X, PopupLevel, PopupMenu, PopupRow,
@@ -242,8 +242,10 @@ pub enum UserEvent {
     GitSwitchBranch(winc_editor::git::Branch, bool),
     /// 确认框上确认了强制推送当前分支。
     GitForcePush,
-    /// 提示框上确认了提交勾上的文件并推送。
+    /// 提示框上确认了提交并推送。
     GitCommitAndPush,
+    /// 确认框上确认了暂存当前仓库的全部改动并提交；`true` 时提交完成后继续推送。
+    GitStageAllCommit(bool),
     /// 提示框上确认了撤销上一次提交。
     GitUndoCommit,
     /// 后台取到了某个文件在 `HEAD` 里的内容（行号栏改动标记的基准）。
@@ -543,7 +545,9 @@ impl Hover {
                         | CommitTarget::OpenFile(_)
                         | CommitTarget::RevertFile(_)
                         | CommitTarget::GroupRevert(_)
-                        | CommitTarget::Check(_)
+                        | CommitTarget::GroupStage(_)
+                        | CommitTarget::DirStage(_)
+                        | CommitTarget::FileStage { .. }
                 )
                 | Hover::Diff(
                     DiffTarget::Previous
@@ -553,8 +557,8 @@ impl Hover {
                         | DiffTarget::Layout
                         | DiffTarget::Collapse
                         | DiffTarget::Revert(_)
-                        | DiffTarget::Include(_)
-                        | DiffTarget::IncludeLine(..)
+                        | DiffTarget::StageHunk(_)
+                        | DiffTarget::StageLine(..)
                 )
                 | Hover::Merge(git::merge::MergeTarget::Previous | git::merge::MergeTarget::Next)
         )
@@ -1044,7 +1048,7 @@ pub struct App {
     ///
     /// 模块关着时为空。
     pub git: git::GitState,
-    /// Git 的提交视图：勾选、提交信息。
+    /// Git 的提交视图：暂存、提交信息。
     pub commit: git::commit::CommitState,
     /// 提交视图里可以点的地方，绘制时更新。
     pub commit_hits: Vec<(Rect, CommitTarget)>,

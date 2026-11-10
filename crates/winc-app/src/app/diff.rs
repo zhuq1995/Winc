@@ -25,8 +25,9 @@ use winit::event::KeyEvent;
 use winit::keyboard::{Key, NamedKey};
 
 use super::git::changes::replace_lines;
+use super::git::commit::{CommitFile, StagePick};
 use super::lifecycle::notice::FLASH_DURATION;
-use super::{App, Focus, UserEvent};
+use super::{App, CommitGroup, Focus, UserEvent};
 use crate::keymap::Action;
 
 /// 差异标签顶上标题栏的高度（逻辑像素）：两侧的标题，右端是统计和按钮。
@@ -165,10 +166,10 @@ pub enum DiffTarget {
     Fold(usize),
     /// 用左侧替换右侧的第几段改动，即把这一处改回 `HEAD` 的样子。
     Revert(usize),
-    /// 提交时是否包含第几段改动。
-    Include(usize),
-    /// 提交时是否包含一行：（侧，行号，从 0 起）。
-    IncludeLine(usize, usize),
+    /// 暂存或取消暂存第几段改动。
+    StageHunk(usize),
+    /// 暂存或取消暂存一行：（侧，行号，从 0 起）。
+    StageLine(usize, usize),
 }
 
 /// 差异里点击、拖选的单位：单击按字，双击按词，三击（或点在行号上）按行。
@@ -292,44 +293,81 @@ impl App {
                 self.clamp_scroll();
             }
             DiffTarget::Revert(hunk) => self.revert_diff_hunk(hunk),
-            DiffTarget::Include(hunk) => self.toggle_diff_hunk(hunk),
-            DiffTarget::IncludeLine(side, line) => self.toggle_diff_line(side, line),
+            DiffTarget::StageHunk(hunk) => self.stage_diff_hunk(hunk),
+            DiffTarget::StageLine(side, line) => self.stage_diff_line(side, line),
         }
         self.request_redraw();
     }
 
-    /// 差异标签对应提交视图里的哪个文件；不在提交视图里（没有改动、模块关着）时为 `None`。
-    pub(crate) fn diff_entry(&self, view: &DiffView) -> Option<&winc_editor::git::Entry> {
-        let path = view.repo_path.as_deref()?;
-        self.git
+    /// 差异标签 `id` 在提交视图里的条目：已暂存的比较对应「已暂存的更改」，未暂存的对应「更改」。
+    ///
+    /// 普通编辑器里的 Git 比较（`HEAD` ↔ 文档）和不在提交视图里的差异返回 `None`。
+    pub(crate) fn diff_commit_file(&self, id: DocumentId) -> Option<CommitFile> {
+        let tab = self.git.diff_tabs.get(&id)?;
+        let group = match tab.compare {
+            crate::app::git::Compare::Staged => CommitGroup::Staged,
+            crate::app::git::Compare::Working => CommitGroup::Changes,
+            crate::app::git::Compare::Head => return None,
+        };
+        let entry = self
+            .git
             .status
             .as_ref()?
             .entries
             .iter()
-            .find(|e| e.path == path && !e.is_dir)
+            .find(|e| e.path == tab.path)?;
+        group
+            .holds(entry)
+            .then(|| CommitFile::new(group, tab.path.clone()))
     }
 
-    /// 勾上或勾掉第 `hunk` 处改动：提交时只提交勾上的改动。
-    fn toggle_diff_hunk(&mut self, hunk: usize) {
-        let Some(view) = self.editor.active().and_then(|d| d.diff.as_deref()) else {
+    /// 「暂存此块／此行」的悬停提示：按差异所属的组说明是暂存还是取消暂存。
+    pub(crate) fn diff_stage_tip(&self, line: bool) -> String {
+        let Some(id) = self.editor.active().map(|d| d.id) else {
+            return String::new();
+        };
+        let stage = self.diff_commit_file(id).is_none_or(|f| f.group.stages());
+        match (stage, line) {
+            (true, false) => t!("workspace-tip-stage-change"),
+            (true, true) => t!("workspace-tip-stage-line"),
+            (false, false) => t!("workspace-tip-unstage-change"),
+            (false, true) => t!("workspace-tip-unstage-line"),
+        }
+        .to_owned()
+    }
+
+    /// 暂存或取消暂存差异里的第 `hunk` 块改动，按差异所属的组决定方向。
+    fn stage_diff_hunk(&mut self, hunk: usize) {
+        let Some(doc) = self.editor.active() else {
             return;
         };
-        let all: Vec<(u64, std::ops::Range<usize>)> = view
-            .keys
-            .iter()
-            .zip(&view.hunks)
-            .map(|(&k, h)| (k, h.old.clone()))
-            .collect();
-        let Some(entry) = self.diff_entry(view).cloned() else {
+        let Some(key) = doc.diff.as_deref().and_then(|v| v.keys.get(hunk)).copied() else {
             return;
         };
-        self.commit.toggle_hunk(&entry, hunk, &all);
+        let id = doc.id;
+        let Some(file) = self.diff_commit_file(id) else {
+            return;
+        };
+        let old = (doc.diff.as_deref())
+            .and_then(|v| v.hunks.get(hunk))
+            .map_or(0, |h| h.old.start);
+        self.stage_pick(
+            file,
+            StagePick {
+                key,
+                old,
+                line: None,
+            },
+        );
         self.request_redraw();
     }
 
-    /// 勾上或勾掉 `side` 侧第 `line` 行：提交时只提交勾上的行。
-    fn toggle_diff_line(&mut self, side: usize, line: usize) {
-        let Some(view) = self.editor.active().and_then(|d| d.diff.as_deref()) else {
+    /// 暂存或取消暂存 `side` 侧第 `line` 行，按差异所属的组决定方向。
+    fn stage_diff_line(&mut self, side: usize, line: usize) {
+        let Some(doc) = self.editor.active() else {
+            return;
+        };
+        let Some(view) = doc.diff.as_deref() else {
             return;
         };
         let range = |h: &winc_core::diff::LineHunk| {
@@ -342,20 +380,21 @@ impl App {
         let Some(hunk) = view.hunks.iter().position(|h| range(h).contains(&line)) else {
             return;
         };
-        let target = &view.hunks[hunk];
-        let (new_len, start) = (target.new.len(), range(target).start);
-        let all: Vec<(u64, std::ops::Range<usize>)> = view
-            .keys
-            .iter()
-            .zip(&view.hunks)
-            .map(|(&k, h)| (k, h.old.clone()))
-            .collect();
-        let Some(entry) = self.diff_entry(view).cloned() else {
+        let key = view.keys[hunk];
+        let offset = line - range(&view.hunks[hunk]).start;
+        let old = view.hunks[hunk].old.start;
+        let id = doc.id;
+        let Some(file) = self.diff_commit_file(id) else {
             return;
         };
-        let offset = line - start;
-        self.commit
-            .toggle_line(&entry, (hunk, new_len), (side, offset), &all);
+        self.stage_pick(
+            file,
+            StagePick {
+                key,
+                old,
+                line: Some((side, offset)),
+            },
+        );
         self.request_redraw();
     }
 
@@ -997,8 +1036,8 @@ impl App {
         if let Some((_, _, name, _)) = self.next_log_file(forward) {
             return Some(name);
         }
-        let (path, _, _) = self.next_changed_file(forward)?;
-        Some(winc_editor::display_name(&path).into_owned())
+        let (file, _, _) = self.next_changed_file(forward)?;
+        Some(winc_editor::display_name(&file.path).into_owned())
     }
 
     /// 走到头时的第一次按键提示「再按一次」，提示还在显示时的第二次才切换文件，往回切换时停在最后

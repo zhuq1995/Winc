@@ -121,7 +121,7 @@ fn background_confirmations_follow_the_window(
     let root = std::env::temp_dir().join(format!("winc-ui-background-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let git = |args: &[&str]| {
-        let result = std::process::Command::new("git")
+        let result = crate::app::snapshot::quiet(std::process::Command::new("git"))
             .arg("-C")
             .arg(&root)
             .args(args)

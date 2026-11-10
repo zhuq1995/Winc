@@ -381,6 +381,8 @@ impl App {
             GitSwitchBranch => self.switch_branch_from_command(),
             GitNewBranch => self.open_branch_dialog(None, None),
             GitStash => self.open_stash_prompt(),
+            GitStageAll => self.stage_all(true),
+            GitUnstageAll => self.stage_all(false),
             GitSync => self.git_sync(),
             GitFetch | GitPull | GitPullRebase | GitPush => {
                 use crate::app::input::context_menu::MenuCommand;
