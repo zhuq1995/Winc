@@ -28,21 +28,6 @@ pub fn commit(&self, root: &Path, message: &str, amend: bool) -> Result<String, 
 
 `content` 是工作区形式的目标 index 内容：调用方用 `winc_core::diff::pick_changes` 从当前 index 内容与磁盘内容组合得到。
 
-## 3. 上游合并提示
-
-合并 `upstream/dev` 时以下位置按 fork 的暂存模型解决，不要退回上游的内存勾选：
-
-| 位置 | fork 取值 |
-| --- | --- |
-| `DiffTarget` | `StageHunk`／`StageLine`（上游 `Include`／`IncludeLine` 是旧模型） |
-| `app/diff.rs` | `stage_diff_hunk`／`stage_diff_line`／`diff_commit_file` |
-| `view/diff.rs` | `stage` 分支画 ＋／−，不画勾选框 |
-| `view/git/commit.rs` | `stage_button` 画 ＋／−；浏览历史差异时（`commit.browse`）两者都不画、不记录命中 |
-| `Git::stage` | `git.rs` 中的 `Result<String, String>`；`staging.rs` 不重复定义 |
-| 格式化结果 | 保留 `job` 编号，`poll_formatting`／`formatting_done`／`wait_formatting` 三处一致 |
-
-上游新增的 `CommitState::browse`／`with_log_list`／日志差异文件列表整体保留，只把行身份换成 `(组, 路径)`。
-
 ## 3. 契约
 
 - **行身份**：`(仓库根目录, CommitGroup, 路径)`。同一路径可以同时出现在“已暂存的更改”和“更改”，禁止用 `Status::entries` 下标或单独路径区分。改名条目还带 `Entry::from`，整文件操作覆盖新旧两个路径。
