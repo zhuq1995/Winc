@@ -546,6 +546,134 @@ fn hovering_a_change_offers_open_and_revert() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// 行右端最右是 ＋／−：更改区的文件行是「打开文件」「回滚」「＋」，暂存区的同一文件只有「打开文件」
+/// 和「−」，那个 − 撤回更改区。
+#[test]
+fn the_rightmost_button_stages_or_unstages() {
+    let Some((mut app, root)) = git_app("git-commit-staged-actions", false) else {
+        return;
+    };
+    app.run_action(Action::ShowCommit);
+    paint(&mut app);
+    let main = root.join("src/main.rs");
+    let index = |app: &App| {
+        let entries = app.git.status.as_ref().unwrap().entries.clone();
+        (entries.iter()).position(|e| e.path == main).unwrap()
+    };
+    let find =
+        |app: &App, t: CommitTarget| app.commit_hits.iter().find(|(_, h)| *h == t).map(|h| h.0);
+    let hover = |app: &mut App, row: Rect| app.on_mouse_move(row.x + 120.0, row.y + row.h / 2.0);
+
+    // 目录行同样只有悬停时出现 ＋：用它暂存该目录在所在组里的文件。
+    app.commit.set_flat(false);
+    paint(&mut app);
+    let dir_row = (app.commit_rows().iter())
+        .position(|r| {
+            matches!(
+                r,
+                CommitRow::Dir {
+                    group: CommitGroup::Changes,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    let row = find(&app, CommitTarget::Dir(dir_row)).unwrap();
+    hover(&mut app, row);
+    paint(&mut app);
+    let stage = find(&app, CommitTarget::DirStage(dir_row)).unwrap();
+    assert_eq!(stage.right(), row.right() - 2.0);
+
+    // 更改区：＋ 在最右，回滚在它左边；悬停有提示，按下把文件放进暂存区。
+    let at = index(&app);
+    let row = find(
+        &app,
+        CommitTarget::File {
+            group: CommitGroup::Changes,
+            index: at,
+        },
+    )
+    .unwrap();
+    hover(&mut app, row);
+    paint(&mut app);
+    let open = find(&app, CommitTarget::OpenFile(at)).unwrap();
+    let revert = find(&app, CommitTarget::RevertFile(at)).unwrap();
+    let stage = find(
+        &app,
+        CommitTarget::FileStage {
+            group: CommitGroup::Changes,
+            index: at,
+        },
+    )
+    .unwrap();
+    assert!(open.right() <= revert.x && revert.right() <= stage.x);
+    assert_eq!(stage.right(), row.right() - 2.0);
+    app.on_mouse_move(stage.x + 4.0, stage.y + 4.0);
+    assert_eq!(
+        app.hover,
+        Hover::Commit(CommitTarget::FileStage {
+            group: CommitGroup::Changes,
+            index: at,
+        })
+    );
+    assert!(app.hover.has_tooltip());
+    app.press_commit(CommitTarget::FileStage {
+        group: CommitGroup::Changes,
+        index: at,
+    });
+    wait_staging(&mut app);
+    assert!(staged_paths(&app).contains(&main));
+
+    // 组标题：悬停时最右同样是 ＋／−，更改区有整组回滚。
+    paint(&mut app);
+    let row = find(&app, CommitTarget::Group(CommitGroup::Changes)).unwrap();
+    hover(&mut app, row);
+    paint(&mut app);
+    let stage = find(&app, CommitTarget::GroupStage(CommitGroup::Changes)).unwrap();
+    assert_eq!(stage.right(), row.right() - 2.0);
+    assert!(find(&app, CommitTarget::GroupRevert(CommitGroup::Changes)).is_some());
+
+    // 暂存区：组标题没有整组回滚，最右是 −；文件行同样如此，按下退回更改区，工作区不变。
+    paint(&mut app);
+    let group = find(&app, CommitTarget::Group(CommitGroup::Staged)).unwrap();
+    hover(&mut app, group);
+    paint(&mut app);
+    assert!(find(&app, CommitTarget::GroupRevert(CommitGroup::Staged)).is_none());
+    let stage = find(&app, CommitTarget::GroupStage(CommitGroup::Staged)).unwrap();
+    assert_eq!(stage.right(), group.right() - 2.0);
+    let at = index(&app);
+    let row = find(
+        &app,
+        CommitTarget::File {
+            group: CommitGroup::Staged,
+            index: at,
+        },
+    )
+    .unwrap();
+    hover(&mut app, row);
+    paint(&mut app);
+    assert!(find(&app, CommitTarget::RevertFile(at)).is_none());
+    let open = find(&app, CommitTarget::OpenFile(at)).unwrap();
+    let stage = find(
+        &app,
+        CommitTarget::FileStage {
+            group: CommitGroup::Staged,
+            index: at,
+        },
+    )
+    .unwrap();
+    assert!(open.right() <= stage.x);
+    assert_eq!(stage.right(), row.right() - 2.0);
+    app.press_commit(CommitTarget::FileStage {
+        group: CommitGroup::Staged,
+        index: at,
+    });
+    wait_staging(&mut app);
+    assert!(staged_paths(&app).is_empty());
+    assert!(unstaged_paths(&app).contains(&main));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// 截图：悬停改动行时右端的「打开文件」「回滚」，鼠标位于「回滚」上（`commit-row-actions`）。
 #[test]
 #[ignore]
@@ -990,16 +1118,22 @@ fn the_commit_more_menu_greys_out_what_does_not_apply() {
     assert!(enabled(&app, MenuCommand::CommitTree));
     assert!(!enabled(&app, MenuCommand::CommitExpandAll));
     assert!(enabled(&app, MenuCommand::CommitCollapseAll));
-    // 悬停组标题时右端是「回滚」；没选中文件时回滚整组。
-    let reverts = |app: &mut App| {
+    // 悬停暂存区的组标题时右端是 −，没有整组回滚。
+    let hover_group = |app: &mut App| {
         let (band, _) = *(app.commit_hits.iter())
             .find(|(_, t)| *t == CommitTarget::Group(CommitGroup::Staged))
             .unwrap();
         app.on_mouse_move(band.x + band.w / 2.0, band.y + band.h / 2.0);
         paint(app);
-        (app.commit_hits.iter()).any(|(_, t)| matches!(t, CommitTarget::GroupRevert(_)))
     };
-    assert!(reverts(&mut app));
+    let header =
+        |app: &App, want: fn(&CommitTarget) -> bool| (app.commit_hits.iter()).any(|(_, t)| want(t));
+    hover_group(&mut app);
+    assert!(!header(&app, |t| matches!(t, CommitTarget::GroupRevert(_))));
+    assert!(header(&app, |t| matches!(
+        t,
+        CommitTarget::GroupStage(CommitGroup::Staged)
+    )));
 
     app.run_commit_more_command(MenuCommand::CommitCollapseAll);
     let groups = [CommitGroup::Staged];
@@ -1009,7 +1143,7 @@ fn the_commit_more_menu_greys_out_what_does_not_apply() {
     app.run_commit_more_command(MenuCommand::CommitExpandAll);
     assert!(groups.iter().all(|g| !app.commit.group_collapsed(*g)));
 
-    // 选中一个文件后，组标题上有「回滚」。
+    // 选中一个文件后，暂存区的组标题仍然只有 −。
     let index = (app.git.status.as_ref().unwrap().entries.iter())
         .position(|e| e.path.ends_with("main.rs"))
         .unwrap();
@@ -1018,7 +1152,12 @@ fn the_commit_more_menu_greys_out_what_does_not_apply() {
         index,
     });
     paint(&mut app);
-    assert!(reverts(&mut app));
+    hover_group(&mut app);
+    assert!(!header(&app, |t| matches!(t, CommitTarget::GroupRevert(_))));
+    assert!(header(&app, |t| matches!(
+        t,
+        CommitTarget::GroupStage(CommitGroup::Staged)
+    )));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -1455,14 +1594,32 @@ fn showing_as_tree_switches_the_changes_between_a_tree_and_a_flat_list() {
     assert_eq!(tools[0].1, CommitTarget::Log);
     assert_eq!(tools[1].1, CommitTarget::Refresh);
     assert!(tools[1].0.x > tools[0].0.x && tools[1].0.x < tools[2].0.x);
-    // 平铺时文件不缩进：勾选框和组标题的勾选框在同一列。
-    let check_x = |app: &App, want: fn(&CommitTarget) -> bool| {
+    // 平铺时文件不缩进：组标题和文件行的 ＋／− 都在行右端，同一列。
+    let list = app.commit_parts().list;
+    let stage_x = |app: &mut App, want: fn(&CommitTarget) -> bool, row: usize| {
+        let y = list.y + row as f32 * COMMIT_ROW + COMMIT_ROW / 2.0 - app.commit.scroll;
+        app.on_mouse_move(list.x + 60.0, y);
+        paint(app);
         let (rect, _) = app.commit_hits.iter().find(|(_, t)| want(t)).unwrap();
         rect.x + rect.w / 2.0
     };
-    let group = check_x(&app, |t| matches!(t, CommitTarget::GroupStage(_)));
+    let group_row = (flat.iter())
+        .position(|r| matches!(r, CommitRow::Group(_)))
+        .unwrap();
+    let file_row = (flat.iter())
+        .position(|r| matches!(r, CommitRow::File { .. }))
+        .unwrap();
+    let group = stage_x(
+        &mut app,
+        |t| matches!(t, CommitTarget::GroupStage(_)),
+        group_row,
+    );
     assert_eq!(
-        check_x(&app, |t| matches!(t, CommitTarget::FileStage { .. })),
+        stage_x(
+            &mut app,
+            |t| matches!(t, CommitTarget::FileStage { .. }),
+            file_row
+        ),
         group
     );
 
@@ -1653,8 +1810,9 @@ fn hovering_a_long_change_name_shows_it_in_full_with_its_buttons_after_it() {
     assert_eq!(overflow.row, i);
     let spill = overflow.spill.expect("past the sidebar");
     assert_eq!(spill.x, list.right());
-    let (open, revert) = overflow.actions.expect("buttons after the name");
-    assert!(open.x > list.right() && revert.right() <= spill.right());
+    let actions = overflow.actions.expect("buttons after the name");
+    let open = actions.open;
+    assert!(open.x > list.right() && actions.stage.right() <= spill.right());
     let open_hit = app
         .commit_hits
         .iter()
@@ -1731,10 +1889,11 @@ fn a_long_change_name_slides_out_and_back_like_the_file_tree() {
     app.on_mouse_move(list.x + 120.0, y);
     paint(&mut app);
     let overflow = app.commit.overflow.expect("long name spills");
-    let (_, revert) = overflow.actions.unwrap();
+    let actions = overflow.actions.unwrap();
+    let stage = actions.stage;
     let view = app.commit.names.peek(&key).unwrap();
     assert!(app.commit.names.moving());
-    assert!(view.width < revert.x - list.x, "{}", view.width);
+    assert!(view.width < stage.x - list.x, "{}", view.width);
     assert!(
         (view.width - rest.width).abs() < 40.0,
         "{} {}",
@@ -1819,7 +1978,7 @@ fn names_that_only_make_room_for_the_buttons_slide_the_buttons_out() {
         let Some(overflow) = app.commit.overflow else {
             continue;
         };
-        let (end, _) = overflow.actions.unwrap();
+        let end = overflow.actions.unwrap().open;
         let start = (app.commit_hits.iter())
             .find(|(_, t)| matches!(t, CommitTarget::OpenFile(_)))
             .unwrap()

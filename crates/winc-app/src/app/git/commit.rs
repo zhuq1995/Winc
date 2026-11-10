@@ -128,8 +128,31 @@ pub(crate) struct CommitOverflow {
     pub y: f32,
     /// 伸出侧栏的那一段；全名在侧栏里写得下（只是要让开状态字母）时为 `None`。
     pub spill: Option<Rect>,
-    /// 文件行跟在全名后面的「打开文件」「回滚」两个按钮；目录行为 `None`。
-    pub actions: Option<(Rect, Rect)>,
+    /// 文件行跟在全名后面的按钮；目录行为 `None`。
+    pub actions: Option<FileActions>,
+}
+
+/// 改动行悬停时右端的按钮：打开、回滚（只有更改区有）、暂存或取消暂存（最右）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FileActions {
+    /// 「打开文件」。
+    pub open: Rect,
+    /// 「回滚」：丢弃改动。暂存区没有这个按钮，用最右的 − 撤回更改区。
+    pub revert: Option<Rect>,
+    /// 「暂存」／「取消暂存」。
+    pub stage: Rect,
+}
+
+impl FileActions {
+    /// 按绘制顺序返回按钮的命中区域和目标。
+    pub(crate) fn targets(&self, group: CommitGroup, index: usize) -> Vec<(Rect, CommitTarget)> {
+        let mut out = vec![(self.open, CommitTarget::OpenFile(index))];
+        if let Some(revert) = self.revert {
+            out.push((revert, CommitTarget::RevertFile(index)));
+        }
+        out.push((self.stage, CommitTarget::FileStage { group, index }));
+        out
+    }
 }
 
 /// 改动列表里一行名字的过渡状态的键（见 `TreeLabels`）：滚动、展开收起前后不变。
