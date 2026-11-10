@@ -5,6 +5,16 @@ use super::*;
 impl App {
     /// 返回项目列表中的悬停目标：条目本身，或鼠标停在条目上时右端的关闭按钮。
     pub(super) fn project_at(&self, x: f32, y: f32) -> Option<Hover> {
+        let projects = self.shared.projects();
+        if projects.len() < 2
+            || !self.layout.projects.contains(x, y)
+            || !projects
+                .iter()
+                .map(|project| project.key)
+                .eq(self.projects_keys.iter().copied())
+        {
+            return None;
+        }
         if let Some(&(_, key)) = self
             .projects_close
             .iter()

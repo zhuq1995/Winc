@@ -461,6 +461,7 @@ pub fn project_menu(
         ));
     }
     menu.push(Item(MenuCommand::CloseFolder, opened));
+    menu.push(Item(MenuCommand::CloseProject, true));
     menu
 }
 

@@ -57,6 +57,8 @@ pub struct SavePrompt {
     pub request: CloseRequest,
     /// 有未保存修改、需要询问的文档，按保存顺序排列。
     pub dirty: Vec<DocumentId>,
+    /// 这次保存和关闭结束后继续处理的一次关闭请求。
+    pub(crate) deferred: Option<CloseRequest>,
 }
 
 impl App {
@@ -76,6 +78,10 @@ impl App {
     ///
     /// 下次启动时打开当前目录（设置中关掉了「启动时打开上次的目录」时除外）。
     pub(crate) fn request_quit(&mut self) {
+        if self.closing_pending() {
+            self.defer_close(CloseRequest::Quit);
+            return;
+        }
         if !self.confirm_terminal_quit(CloseRequest::Quit) {
             self.request_close(CloseRequest::Quit);
         }
@@ -98,35 +104,198 @@ impl App {
     ///
     /// 还有别的项目时，窗口交给相邻的项目；这是最后一个项目时留在开始页上。
     pub(crate) fn request_close_project(&mut self) {
+        if self.closing_pending() {
+            self.defer_close(CloseRequest::CloseProject);
+            return;
+        }
         if !self.confirm_terminal_quit(CloseRequest::CloseProject) {
             self.request_close(CloseRequest::CloseProject);
         }
     }
 
-    /// 退出还没有结果：正在问要不要保存、在等另存为面板、在为关闭而格式化，或者在问要不要
-    /// 结束终端里的程序。
-    ///
+    /// 退出还没有结果：正在询问、保存或等待终端确认。
     /// 应用层据此判断一次 ⌘Q 是还在进行还是被取消了。
     pub(crate) fn closing_pending(&self) -> bool {
         self.save_prompt.is_some()
             || self.save_continuation.is_some()
+            || self.save_as_picker.is_some()
             || self.format.then_close.is_some()
+            || self.format_save_pending()
             || self.quit_confirming.is_some()
+            || self
+                .pending_ui
+                .iter()
+                .any(|action| matches!(action, PendingUi::Save(_) | PendingUi::Close(_)))
     }
 
     /// 是否正在为退出询问（要不要保存、要不要结束终端里的程序），而不是为别的关闭。
     pub(crate) fn quit_pending(&self) -> bool {
-        let quits =
-            |p: &Option<SavePrompt>| p.as_ref().is_some_and(|p| p.request == CloseRequest::Quit);
+        let quits = |p: &Option<SavePrompt>| {
+            p.as_ref().is_some_and(|p| {
+                p.request == CloseRequest::Quit || p.deferred == Some(CloseRequest::Quit)
+            })
+        };
         quits(&self.save_prompt)
             || quits(&self.save_continuation)
             || quits(&self.format.then_close)
+            || self.deferred_close == Some(CloseRequest::Quit)
             || self.quit_confirming == Some(CloseRequest::Quit)
+            || self.pending_ui.iter().any(|action| match action {
+                PendingUi::Save(prompt) => {
+                    prompt.request == CloseRequest::Quit
+                        || prompt.deferred == Some(CloseRequest::Quit)
+                }
+                PendingUi::Close(request) => *request == CloseRequest::Quit,
+                _ => false,
+            })
+    }
+
+    /// 取消退出意图，保留正在进行的保存和其他关闭操作。
+    pub(crate) fn cancel_pending_quit(&mut self) {
+        self.quit_requested = false;
+        if self.deferred_close == Some(CloseRequest::Quit) {
+            self.deferred_close = None;
+        }
+        // 空标签列表让已发出的询问或保存完成，但不再执行退出。
+        if self.quit_confirming == Some(CloseRequest::Quit) {
+            self.quit_confirming = Some(CloseRequest::Tabs(Vec::new()));
+        }
+        self.pending_ui.retain_mut(|action| match action {
+            PendingUi::Save(prompt) => {
+                if prompt.request == CloseRequest::Quit {
+                    prompt.request = CloseRequest::Tabs(Vec::new());
+                }
+                if prompt.deferred == Some(CloseRequest::Quit) {
+                    prompt.deferred = None;
+                }
+                true
+            }
+            PendingUi::Close(CloseRequest::Quit) => false,
+            _ => true,
+        });
+        for prompt in [
+            &mut self.save_prompt,
+            &mut self.save_continuation,
+            &mut self.format.then_close,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if prompt.request == CloseRequest::Quit {
+                prompt.request = CloseRequest::Tabs(Vec::new());
+            }
+            if prompt.deferred == Some(CloseRequest::Quit) {
+                prompt.deferred = None;
+            }
+        }
+    }
+
+    /// 保存期间合并关闭请求；退出优先，其次为关闭项目。
+    fn defer_close(&mut self, request: CloseRequest) {
+        if self.save_as_picker.is_none()
+            && !self.format_save_pending()
+            && !self
+                .pending_ui
+                .iter()
+                .any(|action| matches!(action, PendingUi::Save(_) | PendingUi::Close(_)))
+        {
+            return;
+        }
+        let request = match request {
+            CloseRequest::Tabs(ids) => {
+                let mut existing = Vec::new();
+                for id in ids {
+                    if self.editor.index_of(id).is_some() && !existing.contains(&id) {
+                        existing.push(id);
+                    }
+                }
+                if existing.is_empty() {
+                    return;
+                }
+                CloseRequest::Tabs(existing)
+            }
+            request @ (CloseRequest::Quit
+            | CloseRequest::CloseProject
+            | CloseRequest::CloseFolder
+            | CloseRequest::Switch(_)) => request,
+            CloseRequest::CloseWindow => return,
+        };
+        let pending = if let Some(prompt) = self
+            .save_continuation
+            .as_mut()
+            .or(self.format.then_close.as_mut())
+            .or(self.save_prompt.as_mut())
+        {
+            if prompt.request == request
+                || prompt.request == CloseRequest::Quit
+                || (prompt.request == CloseRequest::CloseProject
+                    && matches!(request, CloseRequest::Tabs(_)))
+            {
+                return;
+            }
+            &mut prompt.deferred
+        } else if let Some(PendingUi::Save(prompt)) = self
+            .pending_ui
+            .iter_mut()
+            .find(|action| matches!(action, PendingUi::Save(_)))
+        {
+            if prompt.request == request || prompt.request == CloseRequest::Quit {
+                return;
+            }
+            &mut prompt.deferred
+        } else {
+            &mut self.deferred_close
+        };
+        match (pending, request) {
+            (slot @ None, request) => *slot = Some(request),
+            (Some(CloseRequest::Quit), _) => {}
+            (slot, CloseRequest::Quit) => *slot = Some(CloseRequest::Quit),
+            (Some(CloseRequest::CloseProject), _) => {}
+            (slot, CloseRequest::CloseProject) => *slot = Some(CloseRequest::CloseProject),
+            (Some(CloseRequest::CloseFolder | CloseRequest::Switch(_)), CloseRequest::Tabs(_)) => {}
+            (slot, request @ (CloseRequest::CloseFolder | CloseRequest::Switch(_))) => {
+                *slot = Some(request);
+            }
+            (Some(CloseRequest::Tabs(existing)), CloseRequest::Tabs(ids)) => {
+                existing.retain(|id| self.editor.index_of(*id).is_some());
+                for id in ids {
+                    if self.editor.index_of(id).is_some() && !existing.contains(&id) {
+                        existing.push(id);
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// 保存完成后重新检查文档和终端，再继续被推迟的关闭。
+    pub(in crate::app) fn resume_deferred_close(&mut self, request: CloseRequest) {
+        if self.needs_prompt_window() {
+            self.pending_ui.push_back(PendingUi::Close(request));
+            return;
+        }
+        match request {
+            CloseRequest::Quit => self.request_quit(),
+            CloseRequest::CloseProject => self.request_close_project(),
+            CloseRequest::Tabs(ids) => self.request_close(CloseRequest::Tabs(ids)),
+            CloseRequest::CloseFolder => self.close_folder(),
+            CloseRequest::Switch(folder) => self.switch_folder(&folder),
+            CloseRequest::CloseWindow => self.request_close_window(),
+        }
+        if !self.closing_pending()
+            && let Some(request) = self.deferred_close.take()
+        {
+            self.resume_deferred_close(request);
+        }
     }
 
     /// 关闭目录（项目名菜单中的「关闭目录」）：先记录它的现场，再关闭所有标签和终端，回到开始页。
     pub(in crate::app) fn close_folder(&mut self) {
         if self.editor.workspace.is_none() {
+            return;
+        }
+        if self.closing_pending() {
+            self.defer_close(CloseRequest::CloseFolder);
             return;
         }
         self.remember_session();
@@ -139,24 +308,23 @@ impl App {
     ///
     /// 退出时先备份未保存的内容（热退出），已备份的文档不再询问。
     pub(in crate::app) fn request_close(&mut self, request: CloseRequest) {
-        // 正在为关闭而保存或格式化时，等待其完成，不重复处理。
-        if self.format.then_close.is_some() {
+        if request == CloseRequest::CloseWindow {
+            self.close_window_now();
+            return;
+        }
+        // 正在询问、另存为或保存时，等待其完成，不重复处理。
+        if self.closing_pending() {
+            self.defer_close(request);
             return;
         }
         // 后台在存的大文件先存完：要不要问、备份哪些，都按存完以后的样子算。
         self.wait_for_saves();
-        // 已经在询问时（例如提示框打开期间再次按 `⌘Q`）不再询问第二次。
-        if self.save_prompt.is_some() {
-            return;
-        }
 
-        // 退出、关闭开着目录的窗口时先写入备份，已备份的文档不再询问（热退出），下次启动或再次
-        // 打开该目录时恢复。没开目录的窗口关闭后，这些备份没有恢复的时机，因此逐个询问。
+        // 退出、关闭开着目录的项目时先写入备份，已备份的文档不再询问（热退出），下次启动或再次
+        // 打开该目录时恢复。没开目录的项目关闭后，这些备份没有恢复的时机，因此逐个询问。
         let backed_up = match request {
             CloseRequest::Quit => self.back_up_for_quit(),
-            CloseRequest::CloseWindow | CloseRequest::CloseProject
-                if self.editor.workspace.is_some() =>
-            {
+            CloseRequest::CloseProject if self.editor.workspace.is_some() => {
                 self.back_up_for_quit()
             }
             _ => Default::default(),
@@ -196,7 +364,15 @@ impl App {
             return;
         }
 
-        self.save_prompt = Some(SavePrompt { request, dirty });
+        if self.needs_prompt_window() {
+            self.pending_ui.push_back(PendingUi::Close(request));
+            return;
+        }
+        self.save_prompt = Some(SavePrompt {
+            request,
+            dirty,
+            deferred: None,
+        });
         self.show_save_prompt();
     }
 
@@ -245,6 +421,7 @@ impl App {
         if self.window.is_none() {
             return;
         }
+        self.show_window();
         let buttons = vec![
             AlertButton::new(save),
             AlertButton::cancel(t!("common-cancel")),
@@ -269,8 +446,12 @@ impl App {
         };
 
         match choice {
-            SaveChoice::Cancel => {}
-            SaveChoice::Discard => self.finish_close(prompt.request),
+            SaveChoice::Cancel => self.deferred_close = None,
+            SaveChoice::Discard => {
+                let mut prompt = prompt;
+                prompt.dirty.clear();
+                self.save_then_close(prompt);
+            }
             SaveChoice::Save => self.save_then_close(prompt),
         }
 
@@ -283,6 +464,14 @@ impl App {
     /// 格式化的文档先格式化，格式化并保存完成后由 `save_with_note` 回到这里。保存失败时中止，
     /// 不关闭。
     pub(in crate::app) fn save_then_close(&mut self, mut prompt: SavePrompt) {
+        if self.needs_prompt_window() {
+            self.pending_ui.push_back(PendingUi::Save(prompt));
+            return;
+        }
+        if self.format_save_pending() || self.save_as_picker.is_some() {
+            self.format.then_close = Some(prompt);
+            return;
+        }
         while let Some(&id) = prompt.dirty.first() {
             let Some(doc) = self.editor.document(id).filter(|d| d.is_dirty()) else {
                 prompt.dirty.remove(0);
@@ -305,7 +494,11 @@ impl App {
             prompt.dirty.remove(0);
         }
 
+        let deferred = prompt.deferred.or_else(|| self.deferred_close.take());
         self.finish_close(prompt.request);
+        if let Some(request) = deferred {
+            self.resume_deferred_close(request);
+        }
     }
 
     /// 在所有未保存的修改都已保存或放弃之后，执行 `request` 对应的关闭。
@@ -337,11 +530,13 @@ impl App {
 
     /// 关闭窗口而不退出应用（macOS）。
     ///
-    /// 窗口里放着所有项目，项目和运行中的终端都留着：只记下窗口大小和目录的现场，然后隐藏。
+    /// 窗口里放着所有项目，项目和运行中的终端都留着；记下备份、窗口大小和目录现场后隐藏。
     fn close_window_now(&mut self) {
         self.remember_window();
+        if self.editor.workspace.is_some() {
+            self.back_up_for_quit();
+        }
         self.remember_session();
-        self.close_settings();
         self.hide_window();
     }
 

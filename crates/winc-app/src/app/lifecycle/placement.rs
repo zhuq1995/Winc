@@ -143,6 +143,7 @@ impl App {
         if self.config.restore_window == Some(false) || self.window_hidden {
             return;
         }
+        self.note_window_frame();
         let (Some(window), Some(frame)) = (&self.window, self.window_frame) else {
             return;
         };

@@ -4,11 +4,8 @@
 //! 独立，点击条目切换当前项目。
 
 use super::*;
+use crate::layout::{PROJECT_GAP, PROJECT_PAD, PROJECT_ROW, projects_max_scroll, scroll_to_show};
 
-/// 项目条目一行的高度（逻辑像素）。
-const ROW_H: f32 = 30.0;
-/// 条目之间的间距（逻辑像素）。
-const ROW_GAP: f32 = 2.0;
 /// 条目内容与卡片边缘的间距（逻辑像素）。
 const PAD: f32 = 8.0;
 
@@ -26,14 +23,31 @@ pub(in crate::view) fn draw_projects(app: &mut App, frame: &mut Frame<'_>) {
     let clip = area;
 
     let projects = app.shared.projects();
+    app.projects_keys = projects.iter().map(|project| project.key).collect();
+    let max = projects_max_scroll(projects.len(), area.h);
+    app.projects_scroll = app.projects_scroll.clamp(0.0, max);
+    if app.projects_reveal {
+        if let Some(index) = projects
+            .iter()
+            .position(|project| Some(project.key) == app.key)
+        {
+            let top = PROJECT_PAD + index as f32 * (PROJECT_ROW + PROJECT_GAP);
+            app.projects_scroll =
+                scroll_to_show(app.projects_scroll, top, top + PROJECT_ROW, area.h).clamp(0.0, max);
+        }
+        app.projects_reveal = false;
+    }
     let active = app.key;
-    let mut y = area.y + 6.0;
+    let mut y = area.y + PROJECT_PAD - app.projects_scroll;
     for project in projects.iter() {
-        let row = Rect::new(area.x + PAD / 2.0, y, (area.w - PAD).max(0.0), ROW_H);
-        if row.bottom() > area.bottom() {
+        let row = Rect::new(area.x + PAD / 2.0, y, (area.w - PAD).max(0.0), PROJECT_ROW);
+        y += PROJECT_ROW + PROJECT_GAP;
+        if row.bottom() <= area.y {
+            continue;
+        }
+        if row.y >= area.bottom() {
             break;
         }
-        y += ROW_H + ROW_GAP;
 
         let current = Some(project.key) == active;
         let hovered = matches!(
@@ -51,7 +65,7 @@ pub(in crate::view) fn draw_projects(app: &mut App, frame: &mut Frame<'_>) {
             .clone()
             .unwrap_or_else(|| t!("workspace-projects-start-page").to_owned());
         let badge = p.project_badge(&name, 0);
-        let badge_rect = Rect::new(row.x + PAD, row.y + (ROW_H - 18.0) / 2.0, 18.0, 18.0);
+        let badge_rect = Rect::new(row.x + PAD, row.y + (PROJECT_ROW - 18.0) / 2.0, 18.0, 18.0);
         frame.rect_clipped(badge_rect, badge.background, 4.0, clip);
         let w = frame.measure(FontKind::Ui, app.fonts.ui_small, &badge.initials);
         label(
@@ -73,11 +87,21 @@ pub(in crate::view) fn draw_projects(app: &mut App, frame: &mut Frame<'_>) {
         ui_text(frame, app, text_x, row, &text, color, clip);
 
         if project.busy && !hovered {
-            let dot = Rect::new(row.right() - 12.0, row.y + (ROW_H - 6.0) / 2.0, 6.0, 6.0);
+            let dot = Rect::new(
+                row.right() - 12.0,
+                row.y + (PROJECT_ROW - 6.0) / 2.0,
+                6.0,
+                6.0,
+            );
             frame.rect_clipped(dot, p.modified_dot, 3.0, clip);
         }
         if hovered {
-            let close = Rect::new(row.right() - 24.0, row.y + (ROW_H - 18.0) / 2.0, 18.0, 18.0);
+            let close = Rect::new(
+                row.right() - 24.0,
+                row.y + (PROJECT_ROW - 18.0) / 2.0,
+                18.0,
+                18.0,
+            );
             let color = if app.hover == Hover::ProjectClose(project.key) {
                 p.text
             } else {
@@ -90,9 +114,15 @@ pub(in crate::view) fn draw_projects(app: &mut App, frame: &mut Frame<'_>) {
                 color,
                 clip,
             );
-            app.projects_close.push((close, project.key));
+            let close = close.intersect(area);
+            if close.w > 0.0 && close.h > 0.0 {
+                app.projects_close.push((close, project.key));
+            }
         }
 
-        app.projects_hits.push((row, project.key));
+        let row = row.intersect(area);
+        if row.w > 0.0 && row.h > 0.0 {
+            app.projects_hits.push((row, project.key));
+        }
     }
 }

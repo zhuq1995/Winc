@@ -38,8 +38,7 @@ pub struct Layout {
     pub projects: Rect,
     /// 侧栏卡片，从窗口顶部的留白之下到状态栏。
     ///
-    /// 宽度不随展开比例变化：未完全展开时左侧伸到窗口外，
-    /// 隐藏时整个位于窗口外（`right()` 不大于 0）。
+    /// 没有项目列表时随动画滑出窗口；有项目列表时裁到列表右侧的可见范围。
     pub sidebar: Rect,
     /// 侧栏第二行：左边项目和分支，右端当前视图的工具。
     pub sidebar_header: Rect,
@@ -120,7 +119,10 @@ impl Layout {
 
         // 取整：拖动分隔条时宽度来自鼠标位置，可能是小数。`visible_w` 已取整；若 `full_w` 不取整，
         // 两者的小数差会落到侧栏起点上，拖动时整个侧栏会随鼠标左右抖动。
-        let projects_w = projects_width.max(0.0).round();
+        let projects_w = projects_width
+            .max(0.0)
+            .min((width - 2.0 * ISLAND_MARGIN).max(0.0))
+            .round();
         let full_w = panel_width
             .min((width - projects_w - 320.0).max(MIN_PANEL_WIDTH))
             .round();
@@ -140,12 +142,18 @@ impl Layout {
         } else {
             Rect::default()
         };
-        let sidebar = Rect::new(
+        let mut sidebar = Rect::new(
             left + side_x + m,
             m,
             full_w - m - ISLAND_GAP / 2.0,
             (body_h - m).max(0.0),
         );
+        if projects_w > 0.0 {
+            sidebar = sidebar.intersect(Rect::new(left, 0.0, (width - left).max(0.0), body_h));
+            if sidebar.w <= 0.0 {
+                sidebar = Rect::default();
+            }
+        }
         let sidebar_header = Rect::new(sidebar.x, TOP_BAR_END, sidebar.w, SIDEBAR_HEADER);
         let tree = Rect::new(
             sidebar.x,
@@ -249,6 +257,21 @@ pub fn hit<T: Copy>(regions: &[(Rect, T)], x: f32, y: f32) -> Option<T> {
         .iter()
         .find(|(rect, _)| rect.contains(x, y))
         .map(|&(_, target)| target)
+}
+
+/// 项目列表条目的高度、间距与上下留白（逻辑像素）。
+pub(crate) const PROJECT_ROW: f32 = 30.0;
+pub(crate) const PROJECT_GAP: f32 = 2.0;
+pub(crate) const PROJECT_PAD: f32 = 6.0;
+
+/// 项目列表的最大滚动量。
+pub(crate) fn projects_max_scroll(count: usize, height: f32) -> f32 {
+    let content = if count == 0 {
+        0.0
+    } else {
+        2.0 * PROJECT_PAD + count as f32 * PROJECT_ROW + (count - 1) as f32 * PROJECT_GAP
+    };
+    (content - height.max(0.0)).max(0.0)
 }
 
 /// 返回使 `top..bottom`（内容坐标）落入高度为 `view` 的可见范围所需的滚动位置。

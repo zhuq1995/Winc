@@ -695,7 +695,16 @@ impl App {
     /// macOS 上是系统的面板；Windows 上是系统的文件对话框；其他 Unix 平台通过 XDG 桌面门户由
     /// 桌面环境显示面板（`portal.rs`），门户不可用时说明原因（`App::pick_failed`）。
     pub(in crate::app) fn pick(&mut self, kind: Pick) {
+        if let Pick::SaveAs(id) = &kind {
+            if self.save_as_picker.is_some() {
+                return;
+            }
+            self.save_as_picker = Some(*id);
+        }
         let Some(proxy) = self.proxy.clone() else {
+            // 无事件循环的测试自行送回面板结果。
+            #[cfg(not(test))]
+            self.on_picked(kind, None);
             return;
         };
         // 另存为：默认使用原来的名字，从原来所在的目录开始；新文件从已打开的目录开始。
@@ -718,6 +727,7 @@ impl App {
             use crate::macos::{Panel, show_panel};
 
             let Some(window) = self.window.clone() else {
+                self.on_picked(kind, None);
                 return;
             };
             let panel = match &kind {
@@ -805,7 +815,8 @@ impl App {
 
         #[cfg(not(any(unix, windows)))]
         {
-            let _ = (kind, name, dir, proxy);
+            let _ = (name, dir, proxy);
+            self.on_picked(kind, None);
             self.flash(t!("workspace-drop-to-open"));
         }
     }
@@ -824,25 +835,40 @@ impl App {
     pub(in crate::app) fn on_picked(&mut self, kind: Pick, path: Option<PathBuf>) {
         // 关闭流程中的「保存」在等待这次另存为：保存成功后继续处理剩下的文档；
         // 取消或保存失败时放弃整个关闭。
-        let continuation = match kind {
-            Pick::SaveAs(_) => self.save_continuation.take(),
-            Pick::Open | Pick::OpenFolder | Pick::WslFolder(_) | Pick::WorktreeFolder => None,
-        };
-
-        let Some(path) = path else { return };
-
-        match kind {
-            Pick::Open | Pick::OpenFolder | Pick::WslFolder(_) => self.open_path(&path),
-            Pick::WorktreeFolder => self.worktree_folder_picked(path),
-            Pick::SaveAs(id) => {
-                if self.save_document(id, Some(path))
-                    && let Some(prompt) = continuation
+        if let Pick::SaveAs(id) = kind {
+            if self.save_as_picker != Some(id) {
+                return;
+            }
+            self.save_as_picker = None;
+            let continuation = self.save_continuation.take();
+            let deferred = self.deferred_close.take();
+            if let Some(path) = path
+                && self.save_document(id, Some(path))
+            {
+                if let Some(prompt) = continuation {
+                    self.save_then_close(prompt);
+                } else if let Some(request) = deferred {
+                    self.resume_deferred_close(request);
+                }
+                if !self.format_save_pending()
+                    && self.save_as_picker.is_none()
+                    && let Some(prompt) = self.format.then_close.take()
                 {
                     self.save_then_close(prompt);
                 }
+            } else if self.format.then_close.is_some() {
+                self.abort_format_save_close();
             }
+            self.request_redraw();
+            return;
         }
 
+        let Some(path) = path else { return };
+        match kind {
+            Pick::Open | Pick::OpenFolder | Pick::WslFolder(_) => self.open_path(&path),
+            Pick::WorktreeFolder => self.worktree_folder_picked(path),
+            Pick::SaveAs(_) => unreachable!(),
+        }
         self.request_redraw();
     }
 

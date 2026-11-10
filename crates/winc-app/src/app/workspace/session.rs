@@ -40,7 +40,7 @@ impl App {
     /// 已经打开了其他目录时先替换：记录当前目录的现场，关闭该目录的标签（有未保存修改的先询问）
     /// 和终端（有程序在运行的先确认），再打开新目录。`path` 就是当前目录时只显示文件树；已在
     /// 另一个 winc 窗口里打开时切到该窗口。
-    pub(in crate::app) fn switch_folder(&mut self, path: &Path) {
+    pub(crate) fn switch_folder(&mut self, path: &Path) {
         let target = winc_config::files::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
         // 开在另一个窗口里：切到该窗口，不在当前窗口再打开。
@@ -52,8 +52,12 @@ impl App {
             Some(root) if root == target => self.show_files(),
             // 终端随原目录一起关掉（标签记入原目录的现场），有程序在运行时先确认。
             Some(_) => {
-                self.remember_session();
                 let request = CloseRequest::Switch(target);
+                if self.closing_pending() {
+                    self.request_close(request);
+                    return;
+                }
+                self.remember_session();
                 if !self.confirm_terminal_quit(request.clone()) {
                     self.request_close(request);
                 }

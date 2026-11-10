@@ -86,6 +86,9 @@ impl Backups {
     /// 打开目录的窗口。
     ///
     /// 子目录名是 `folder` 路径的 FNV-1a 哈希（16 位十六进制），空窗口使用 `empty`。
+    ///
+    /// shortcut: 同一实例里的多个空项目共用一个 `empty` 目录，只有取到锁的那个能写备份；
+    /// 需要每个空项目都能在异常中止后自动恢复时改为按项目编号分开。
     pub fn new(root: &Path, folder: Option<&Path>) -> Backups {
         let key = folder.map_or_else(|| "empty".to_owned(), folder_key);
         Backups {

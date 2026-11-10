@@ -114,6 +114,323 @@ fn the_project_list_shows_every_project_and_switches_on_click() {
 }
 
 #[test]
+fn modal_overlays_consume_project_list_clicks() {
+    let (mut winc, a, b, dir) = two_windows("projects-modal");
+    let app = winc.app(a);
+    app.renderer =
+        Some(Renderer::offscreen(640.0, 420.0, SCALE, app.palette.frame_bg, None, None).unwrap());
+    paint(app);
+    let row = app
+        .projects_hits
+        .iter()
+        .find(|(_, key)| *key == b)
+        .unwrap()
+        .0;
+    let outside = (row.x + 1.0, row.y + row.h / 2.0);
+    let inside = (row.x + row.w / 2.0, row.y + row.h / 2.0);
+    app.on_mouse_move(inside.0, inside.1);
+    paint(app);
+    let close = app
+        .projects_close
+        .iter()
+        .find(|(_, key)| *key == b)
+        .unwrap()
+        .0;
+    let close_point = (close.x + close.w / 2.0, close.y + close.h / 2.0);
+
+    app.open_settings();
+    assert!(app.settings_layout().card.contains(inside.0, inside.1));
+    click(app, inside);
+    click(app, close_point);
+    assert!(app.settings.open);
+    click(app, outside);
+    assert!(!app.settings.open);
+
+    app.git.status = Some(Default::default());
+    app.open_worktree_dialog();
+    assert!(app.form_dialog.is_some());
+    assert!(app.dialog_layout().card.contains(inside.0, inside.1));
+    click(app, inside);
+    click(app, close_point);
+    assert!(app.form_dialog.is_some());
+    click(app, outside);
+    assert!(app.form_dialog.is_none());
+    let (requests, _) = winc.settle_for_test();
+    assert!(requests.is_empty(), "{requests:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn project_scroll_reaches_the_last_close_button_and_clamps_after_removal() {
+    let mut winc = Winc::new(None, None);
+    let first = winc.add_detached(blank_app(false));
+    let keys: Vec<_> = (0..12)
+        .map(|_| {
+            winc.add_detached(App::new(
+                Editor::default(),
+                None,
+                Bench::from_env(),
+                Config::default(),
+            ))
+        })
+        .collect();
+    let last = *keys.last().unwrap();
+    let app = winc.app(first);
+    app.renderer =
+        Some(Renderer::offscreen(640.0, 180.0, SCALE, app.palette.frame_bg, None, None).unwrap());
+    paint(app);
+    let area = app.layout.projects;
+    let point = (area.x + 30.0, area.y + 15.0);
+    app.on_mouse_move(point.0, point.1);
+    app.on_wheel(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+        0.0, -1.0,
+    )));
+    assert_eq!(app.projects_scroll, 0.5);
+    assert!(app.projects_hits.is_empty());
+    paint(app);
+    assert_eq!(app.projects_scroll, 0.5);
+    assert!(
+        app.projects_hits
+            .iter()
+            .all(|(row, _)| row.y >= area.y && row.bottom() <= area.bottom())
+    );
+
+    app.on_wheel(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+        0.0, -25.0,
+    )));
+    paint(app);
+    assert!(
+        app.projects_hits
+            .iter()
+            .any(|(row, _)| row.y == area.y && row.h < crate::layout::PROJECT_ROW)
+    );
+    assert!(!matches!(
+        app.hover_at(point.0, area.y - 1.0),
+        Hover::Project(_) | Hover::ProjectClose(_)
+    ));
+
+    app.on_wheel(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+        0.0, -10000.0,
+    )));
+    paint(app);
+    app.renderer =
+        Some(Renderer::offscreen(640.0, 260.0, SCALE, app.palette.frame_bg, None, None).unwrap());
+    paint(app);
+    let area = app.layout.projects;
+    assert_eq!(
+        app.projects_scroll,
+        crate::layout::projects_max_scroll(13, area.h)
+    );
+    let (row, _) = *app
+        .projects_hits
+        .iter()
+        .find(|(_, key)| *key == last)
+        .unwrap();
+    assert!(row.h >= 18.0);
+    app.on_mouse_move(row.x + row.w / 2.0, row.y + row.h / 2.0);
+    paint(app);
+    let close = app
+        .projects_close
+        .iter()
+        .find(|(_, key)| *key == last)
+        .unwrap()
+        .0;
+    assert!(area.contains(close.x, close.y) && close.bottom() <= area.bottom());
+    click(app, (close.x + close.w / 2.0, close.y + close.h / 2.0));
+    assert_eq!(winc.settle_for_test().0, [Request::CloseProject(last)]);
+
+    for key in keys.iter().take(10) {
+        winc.app(*key).request_close_project();
+        winc.settle_for_test();
+    }
+    let app = winc.app(first);
+    paint(app);
+    assert_eq!(app.projects_scroll, 0.0);
+    assert_eq!(app.projects_hits.len(), 3);
+}
+
+#[test]
+fn sidebar_animation_does_not_paint_over_the_project_list() {
+    for dark in [false, true] {
+        let (mut winc, a, _, dir) = two_windows(if dark {
+            "projects-dark"
+        } else {
+            "projects-light"
+        });
+        let app = winc.app(a);
+        app.palette = Palette::for_dark(dark);
+        for width in [260.0, 640.0] {
+            app.renderer = Some(
+                Renderer::offscreen(width, 420.0, SCALE, app.palette.frame_bg, None, None).unwrap(),
+            );
+            for sidebar in [SidebarView::Files, SidebarView::Search, SidebarView::Commit] {
+                app.sidebar_view = sidebar;
+                let mut reference = None;
+                for shown in [1.0, 0.75, 0.5, 0.25, 0.05, 0.0] {
+                    app.layout = crate::layout::Layout::compute(
+                        width,
+                        420.0,
+                        190.0,
+                        260.0,
+                        shown,
+                        0,
+                        0,
+                        40.0,
+                        STATUS_HEIGHT,
+                    );
+                    let area = app.layout.projects;
+                    let mut renderer = app.renderer.take().unwrap();
+                    renderer.draw(|frame| view::draw(app, frame));
+                    let image = renderer.image().unwrap();
+                    let (x0, x1) = ((area.x * SCALE) as usize, (area.right() * SCALE) as usize);
+                    let (y0, y1) = ((area.y * SCALE) as usize, (area.bottom() * SCALE) as usize);
+                    let pixels: Vec<_> = (y0..y1)
+                        .flat_map(|y| {
+                            image.pixels
+                                [y * image.width as usize + x0..y * image.width as usize + x1]
+                                .iter()
+                                .copied()
+                        })
+                        .collect();
+                    if let Some(reference) = &reference {
+                        assert_eq!(
+                            &pixels, reference,
+                            "{width}, {sidebar:?}, {shown}, dark={dark}"
+                        );
+                    } else {
+                        reference = Some(pixels);
+                    }
+                    app.renderer = Some(renderer);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn overflowing_tree_names_stay_out_of_a_narrow_project_list() {
+    let (mut winc, a, _, dir) = two_windows("projects-tree-overflow");
+    let app = winc.app(a);
+    app.layout =
+        crate::layout::Layout::compute(260.0, 420.0, 190.0, 260.0, 0.05, 0, 0, 40.0, STATUS_HEIGHT);
+    let area = app.layout.projects;
+    app.mouse = (area.x + 20.0, app.layout.tree.y + 10.0);
+    let mut renderer =
+        Renderer::offscreen(260.0, 420.0, SCALE, app.palette.frame_bg, None, None).unwrap();
+    renderer.draw(|frame| view::draw(app, frame));
+    let before = renderer.image().unwrap().pixels.clone();
+    app.hover = Hover::TreeRow(0);
+    renderer.draw(|frame| view::draw(app, frame));
+    assert!(app.tree_overflow.is_some());
+    let image = renderer.image().unwrap();
+    let (x0, x1) = ((area.x * SCALE) as usize, (area.right() * SCALE) as usize);
+    let (y0, y1) = ((area.y * SCALE) as usize, (area.bottom() * SCALE) as usize);
+    for y in y0..y1 {
+        let start = y * image.width as usize + x0;
+        let end = y * image.width as usize + x1;
+        assert_eq!(&image.pixels[start..end], &before[start..end]);
+    }
+    app.tree_overflow = Some((Rect::new(area.x, app.layout.tree.y, area.w, 30.0), 0));
+    app.on_mouse_down(MouseButton::Right);
+    assert!(app.popup().is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn focusing_a_project_reveals_it_without_undoing_manual_scrolling() {
+    let mut winc = Winc::new(None, None);
+    let first = winc.add_detached(blank_app(false));
+    let mut last = first;
+    for _ in 0..12 {
+        last = winc.add_detached(App::new(
+            Editor::default(),
+            None,
+            Bench::from_env(),
+            Config::default(),
+        ));
+    }
+    let state = winc.app(first).take_shell_state();
+    let app = winc.app(last);
+    app.renderer =
+        Some(Renderer::offscreen(640.0, 180.0, SCALE, app.palette.frame_bg, None, None).unwrap());
+    app.put_shell_state(state, true);
+    paint(app);
+    assert!(app.projects_hits.iter().any(|(_, key)| *key == last));
+    let area = app.layout.projects;
+    app.on_mouse_move(area.x + 20.0, area.y + 20.0);
+    app.on_wheel(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+        0.0, 10000.0,
+    )));
+    paint(app);
+    assert_eq!(app.projects_scroll, 0.0);
+    assert!(!app.projects_hits.iter().any(|(_, key)| *key == last));
+    app.put_shell_state(state, true);
+    paint(app);
+    assert!(app.projects_hits.iter().any(|(_, key)| *key == last));
+}
+
+#[test]
+fn project_rows_are_inactive_until_redrawn_after_removal() {
+    let (mut winc, a, b, dir) = two_windows("projects-stale");
+    let c = winc.add_detached(blank_app(false));
+    let app = winc.app(a);
+    paint(app);
+    let old_row = app
+        .projects_hits
+        .iter()
+        .find(|(_, key)| *key == c)
+        .unwrap()
+        .0;
+    winc.app(b).request_close_project();
+    winc.settle_for_test();
+    let app = winc.app(a);
+    click(app, (old_row.x + 10.0, old_row.y + 10.0));
+    assert!(winc.settle_for_test().0.is_empty());
+    let app = winc.app(a);
+    paint(app);
+    assert_eq!(app.projects_hits.len(), 2);
+    assert!(app.projects_hits.iter().all(|(_, key)| *key != b));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn close_project_command_and_menu_preserve_confirmation_on_the_last_project() {
+    use crate::keymap::Action;
+    let mut winc = Winc::new(None, None);
+    let key = winc.add_detached(blank_app(false));
+    let app = winc.app(key);
+    app.new_file();
+    app.run(Command::Insert("unsaved".into()));
+    paint(app);
+    assert_eq!(app.layout.projects.w, 0.0);
+    app.open_project_menu();
+    assert!(menu_commands(app).contains(&(MenuCommand::CloseProject, true)));
+    app.run_menu_command(MenuCommand::CloseProject);
+    assert!(app.save_prompt.is_some());
+    app.answer_save_prompt(SaveChoice::Cancel);
+    assert_eq!(app.editor.documents.len(), 1);
+    app.open_palette();
+    app.picker_input.set_text(">close project");
+    app.picker_refresh();
+    assert_eq!(palette()[app.picker_hits[0]], Action::CloseProject);
+    app.picker_accept();
+    assert!(app.save_prompt.is_some());
+    app.answer_save_prompt(SaveChoice::Cancel);
+
+    let binding = *crate::keymap::current()
+        .iter()
+        .find(|b| b.action == Action::CloseProject)
+        .unwrap();
+    assert!(app.on_shortcut(binding.first));
+    assert!(app.on_shortcut(binding.second.unwrap()));
+    assert!(app.save_prompt.is_some());
+    app.answer_save_prompt(SaveChoice::Discard);
+    assert!(app.editor.documents.is_empty());
+    assert!(!app.quit_requested && !app.project_closed);
+}
+
+#[test]
 fn switching_projects_keeps_each_ones_editor_and_terminal_state() {
     let (mut winc, a, b, dir) = two_windows("windows-switch");
     winc.settle_for_test();
@@ -594,6 +911,28 @@ fn snapshot_project_list() {
         // 侧栏收起时列表仍在最左侧。
         app.set_sidebar(false);
         shoot(app, &format!("projects-narrow-{theme}"));
+
+        for index in 0..12 {
+            let path = dir.join(format!("project-with-a-long-name-{index:02}"));
+            std::fs::create_dir_all(&path).unwrap();
+            let mut editor = Editor::default();
+            editor.workspace = Some(winc_editor::Workspace::open(&path).unwrap());
+            winc.add_detached(App::new(editor, None, Bench::from_env(), Config::default()));
+        }
+        let app = winc.app(a);
+        app.renderer = Some(
+            Renderer::offscreen(640.0, 420.0, SCALE, app.palette.frame_bg, None, None).unwrap(),
+        );
+        paint(app);
+        let area = app.layout.projects;
+        app.on_mouse_move(area.x + 20.0, area.y + 20.0);
+        app.on_wheel(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+            0.0, -10000.0,
+        )));
+        paint(app);
+        let (row, _) = *app.projects_hits.last().unwrap();
+        app.on_mouse_move(row.x + row.w / 2.0, row.y + row.h / 2.0);
+        shoot(app, &format!("projects-scrolled-{theme}"));
         let _ = b;
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);

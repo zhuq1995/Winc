@@ -237,6 +237,19 @@ fn main() {
     }
 
     winc.add(key, app);
+    // 命令行给了多个目录时，其余目录各开一个项目；仍停在第一个项目上。
+    let folders: Vec<std::path::PathBuf> = args
+        .targets
+        .iter()
+        .filter(|target| target.path.is_dir())
+        .map(|target| target.path.clone())
+        .collect();
+    if folders.len() > 1 {
+        winc.open_folders(&folders);
+    }
+    if args.targets.is_empty() && !args.one_off() {
+        winc.restore_empty_project();
+    }
     winc.restore_windows(&others);
     // 指定了 `--new-instance` 的进程不接收之后启动的 winc 交来的目录和文件，这些仍交给原来
     // 运行着的 winc。
@@ -255,9 +268,11 @@ fn main() {
 ///
 /// 给出多个文件时，以第一个文件所在的目录作为项目；`文件:行` 形式的目标会跳到对应行
 /// （行号和列号从 0 起）。临时打开（`--wait`、`-`）时不打开项目，只打开给出的文件。
+/// 给出多个目录时，第一个开在这个项目里，其余各开一个项目。
 pub(crate) fn open_targets(editor: &mut Editor, args: &cli::Args) -> Vec<String> {
     let mut problems = Vec::new();
     let mut first_file = None;
+    let mut folder_opened = false;
     for target in &args.targets {
         if target.path.is_dir() {
             if args.one_off() {
@@ -265,13 +280,20 @@ pub(crate) fn open_targets(editor: &mut Editor, args: &cli::Args) -> Vec<String>
                 problems.push(winc_i18n::t!("cmd-cli-wait-folder", path = path));
                 continue;
             }
-            if let Err(e) = editor.open_folder(&target.path) {
-                let (path, error) = (target.path.display().to_string(), e.to_string());
-                problems.push(winc_i18n::t!(
-                    "cmd-cli-open-failed",
-                    path = path,
-                    error = error
-                ));
+            // 多个目录时只把第一个开在当前项目里，其余的由应用层各开一个项目。
+            if folder_opened {
+                continue;
+            }
+            match editor.open_folder(&target.path) {
+                Ok(()) => folder_opened = true,
+                Err(e) => {
+                    let (path, error) = (target.path.display().to_string(), e.to_string());
+                    problems.push(winc_i18n::t!(
+                        "cmd-cli-open-failed",
+                        path = path,
+                        error = error
+                    ));
+                }
             }
             continue;
         }

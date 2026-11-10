@@ -45,6 +45,9 @@ impl App {
     /// 隐藏窗口（macOS 上关闭窗口时）：应用留在程序坞中，点击图标时由 [`App::show_window`]
     /// 重新显示。
     pub(super) fn hide_window(&mut self) {
+        self.blur_terminal_tab();
+        self.window_focused = false;
+        self.update_foreground(false);
         if let Some(window) = &self.window {
             window.set_visible(false);
         }
@@ -91,20 +94,138 @@ impl App {
         self.window.is_some() && self.renderer.is_some()
     }
 
+    pub(in crate::app) fn take_shell_state(&mut self) -> crate::winc::ShellState {
+        self.note_window_frame();
+        let state = crate::winc::ShellState {
+            frame: self.window_frame,
+            controls: self.window_controls,
+            modifiers: self.modifiers,
+            option_side: self.option_side,
+            mouse: self.mouse,
+            cursor_inside: self.cursor_inside,
+            cursor_icon: self.cursor_icon,
+            dark: self.palette.dark,
+        };
+        // 切走等于离开窗口：开启了自动保存时先保存有修改的文件。
+        let ids: Vec<DocumentId> = self
+            .editor
+            .documents
+            .iter()
+            .filter(|doc| doc.is_dirty())
+            .map(|doc| doc.id)
+            .collect();
+        self.auto_save(&ids);
+        self.blur_terminal_tab();
+        self.window_focused = false;
+        self.set_recording(false);
+        self.drop_drags();
+        self.hover = Hover::None;
+        self.cursor_inside = false;
+        self.tooltip_since = None;
+        self.tooltip_shown = false;
+        self.preedit.clear();
+        self.field_preedit.clear();
+        self.ime_cursor = None;
+        self.last_ime_area = None;
+        state
+    }
+
+    pub(in crate::app) fn put_shell_state(
+        &mut self,
+        state: crate::winc::ShellState,
+        focused: bool,
+    ) {
+        self.window_frame = state.frame;
+        self.projects_keys.clear();
+        self.projects_reveal = true;
+        self.window_controls = state.controls;
+        self.modifiers = state.modifiers;
+        self.option_side = state.option_side;
+        self.mouse = state.mouse;
+        self.cursor_inside = state.cursor_inside;
+        self.cursor_icon = state.cursor_icon;
+        self.preedit.clear();
+        self.field_preedit.clear();
+        self.window_focused = focused;
+        let theme = match self.theme_choice {
+            ThemeChoice::Dark => Theme::Dark,
+            ThemeChoice::Light => Theme::Light,
+            ThemeChoice::Auto if state.dark => Theme::Dark,
+            ThemeChoice::Auto => Theme::Light,
+        };
+        self.set_theme(theme);
+        self.update_foreground(focused && !self.occluded);
+        if focused {
+            self.terminal_window_focused();
+        }
+        self.after_terminal_frame();
+    }
+
+    /// 后台项目需要窗口来继续显示提示。
+    pub(in crate::app) fn needs_prompt_window(&self) -> bool {
+        if self.window.is_some() || self.key.is_none() || !self.shared.others() {
+            return false;
+        }
+        #[cfg(test)]
+        if self.proxy.is_none() {
+            return false;
+        }
+        true
+    }
+
+    /// 只有当前窗口没有模态界面时才把它交给其他项目。
+    pub(crate) fn can_handoff_for_prompt(&self) -> bool {
+        if !self.has_shell()
+            || self.alert.is_some()
+            || self.form_dialog.is_some()
+            || self.save_prompt.is_some()
+            || self.save_as_picker.is_some()
+            || self.quit_confirming.is_some()
+        {
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        if self.window.as_deref().is_some_and(crate::macos::has_sheet) {
+            return false;
+        }
+        true
+    }
+
+    /// 窗口交接后继续所属项目的一个界面操作。
+    pub(crate) fn resume_pending_ui(&mut self) {
+        let Some(action) = self.pending_ui.pop_front() else {
+            return;
+        };
+        match action {
+            PendingUi::Save(prompt) => self.save_then_close(prompt),
+            PendingUi::Close(request) => self.resume_deferred_close(request),
+            PendingUi::Format {
+                task,
+                id,
+                save,
+                range,
+                save_id,
+            } => self.resume_format_approval(task, id, save, range, save_id),
+            PendingUi::RemoveWorktree(root, check) if self.git.root == root => {
+                self.confirm_remove_worktree(check);
+            }
+            PendingUi::RemoveWorktree(..) => {}
+        }
+    }
+
     /// 取出系统窗口和渲染资源，交给另一个项目（[`App::put_shell`]）。
     ///
     /// 编辑器、终端和后台任务都留在本项目里继续运行，只是不再绘制、不再收到窗口事件。
     pub(crate) fn take_shell(&mut self) -> Option<crate::winc::Shell> {
+        if !self.has_shell() {
+            return None;
+        }
+        let state = self.take_shell_state();
         let window = self.window.take()?;
         let renderer = self.renderer.take()?;
         window.set_ime_allowed(false);
-        self.hover = Hover::None;
-        self.drag = Drag::None;
-        self.tooltip_since = None;
-        self.tooltip_shown = false;
-        self.ime_cursor = None;
-        self.last_ime_area = None;
         Some(crate::winc::Shell {
+            state,
             window,
             renderer,
             #[cfg(target_os = "macos")]
@@ -133,13 +254,24 @@ impl App {
         }
         self.occluded = shell.occluded;
         self.window_hidden = false;
-        self.window_focused = window.has_focus();
+        let mut state = shell.state;
+        let theme = forced_theme(&self.theme_choice);
+        window.set_theme(theme);
+        if self.theme_choice == ThemeChoice::Auto
+            && let Some(theme) = theme.or_else(|| window.theme())
+        {
+            state.dark = theme == Theme::Dark;
+        }
+        self.put_shell_state(state, window.has_focus());
         window.set_ime_allowed(true);
         self.measure_fonts();
         self.sync_zoom();
         self.update_window_title();
         self.place_traffic_lights();
         self.relayout();
+        if self.cursor_inside {
+            self.update_cursor_icon();
+        }
         self.ensure_caret_visible();
         self.reset_blink();
         // 先画好一帧再显示，切换时不会先露出上一个项目的画面。
@@ -704,6 +836,9 @@ impl App {
         next
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 /// 返回窗口所在显示器相邻两帧的间隔。
 ///

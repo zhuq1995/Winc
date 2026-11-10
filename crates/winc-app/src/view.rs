@@ -56,6 +56,18 @@ use workspace::top_bar::{draw_top_bar, draw_window_controls};
 /// 绘制顺序为：先绘制侧栏、顶栏、编辑区、状态栏，再绘制查找条、跳转条、快速打开卡片、
 /// 提示条等浮层；设置浮层打开时覆盖整个窗口并直接返回，其余情况最后绘制悬停提示。
 pub fn draw(app: &mut App, frame: &mut Frame<'_>) {
+    if !app
+        .shared
+        .projects()
+        .iter()
+        .map(|project| project.key)
+        .eq(app.projects_keys.iter().copied())
+        || app.layout.projects.w <= 0.0
+    {
+        app.projects_hits.clear();
+        app.projects_close.clear();
+        app.projects_keys.clear();
+    }
     // 设置浮层出现、消失的动画期间，下方的窗口和卡片内容不变，用动画开始时保存的快照绘制。
     if settings::draw_cached(app, frame) || settings::draw_scrolling(app, frame) {
         return;
@@ -83,8 +95,8 @@ pub fn draw(app: &mut App, frame: &mut Frame<'_>) {
 
     draw_projects(app, frame);
 
-    if layout.sidebar.right() > 0.0 {
-        draw_sidebar(app, frame);
+    if layout.sidebar.w > 0.0 {
+        frame.within(layout.sidebar, |frame| draw_sidebar(app, frame));
     }
     // 这一帧没有绘制工具栏（侧栏收起或处于搜索视图）：收起动画直接结束，不需要额外一帧。
     if app.tree_tools.is_empty() && app.tree_more.is_none() {
@@ -103,10 +115,18 @@ pub fn draw(app: &mut App, frame: &mut Frame<'_>) {
     draw_status(app, frame);
     draw_island_corners(app, frame);
     draw_file_drop(app, frame);
-    draw_tree_overflow_closing(app, frame);
-    draw_tree_overflow(app, frame);
-    git::commit::draw_commit_overflow_closing(app, frame);
-    git::commit::draw_commit_overflow(app, frame);
+    let overflow_clip = Rect::new(
+        layout.projects.right(),
+        0.0,
+        (layout.window.right() - layout.projects.right()).max(0.0),
+        layout.window.h,
+    );
+    frame.within(overflow_clip, |frame| {
+        draw_tree_overflow_closing(app, frame);
+        draw_tree_overflow(app, frame);
+        git::commit::draw_commit_overflow_closing(app, frame);
+        git::commit::draw_commit_overflow(app, frame);
+    });
     git::changes::draw_change_popup(app, frame);
 
     if layout.search.h > 0.0 {

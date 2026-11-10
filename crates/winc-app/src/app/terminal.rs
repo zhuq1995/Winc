@@ -17,6 +17,8 @@ pub(crate) mod run;
 pub(crate) mod shells;
 pub(crate) mod strip;
 mod tab;
+#[cfg(test)]
+mod tests;
 
 use helper::*;
 
@@ -544,6 +546,11 @@ impl App {
             &[one] => (Some(one), 1),
             many => (None, many.len()),
         };
+        if self.needs_prompt_window() {
+            self.pending_ui
+                .push_back(crate::app::PendingUi::Close(request));
+            return true;
+        }
         let message = match (&request, name) {
             (CloseRequest::Quit, Some(name)) => t!("terminal-quit-confirm-one", name = name),
             (CloseRequest::Quit, None) => t!("terminal-quit-confirm-many", count = count),
@@ -882,7 +889,7 @@ impl App {
     }
 
     /// 要离开正在看的标签：告诉里面的程序失去了焦点（开了焦点上报时），否则它一直以为自己在前台。
-    fn blur_terminal_tab(&mut self) {
+    pub(in crate::app) fn blur_terminal_tab(&mut self) {
         let t = &mut self.terminal;
         if !std::mem::take(&mut t.focus_sent) {
             return;

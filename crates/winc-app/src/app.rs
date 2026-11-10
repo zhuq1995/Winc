@@ -112,6 +112,20 @@ use crate::layout::{
 use crate::theme::*;
 use crate::view;
 
+/// 等待窗口交给所属项目后再处理的界面操作。
+pub(crate) enum PendingUi {
+    Save(SavePrompt),
+    Close(CloseRequest),
+    Format {
+        task: winc_editor::format::Task,
+        id: DocumentId,
+        save: bool,
+        range: Option<winc_editor::format::FormatRange>,
+        save_id: Option<u64>,
+    },
+    RemoveWorktree(Option<PathBuf>, git::worktree::RemoveCheck),
+}
+
 /// 后台线程和系统回调（面板、菜单、提示框）送回事件循环的事件。
 #[derive(Debug)]
 pub enum UserEvent {
@@ -807,6 +821,11 @@ pub struct App {
     pub projects_hits: Vec<(Rect, crate::winc::WindowKey)>,
     /// 项目条目右端关闭按钮的可点击区域和编号。
     pub projects_close: Vec<(Rect, crate::winc::WindowKey)>,
+    /// 绘制项目列表时的条目顺序，用于识别过期的命中区域。
+    pub(crate) projects_keys: Vec<crate::winc::WindowKey>,
+    /// 项目列表的纵向滚动量，以及窗口交接后是否显示当前项目。
+    pub(crate) projects_scroll: f32,
+    pub(crate) projects_reveal: bool,
     /// 文件树工具栏各按钮的位置，绘制时填入，点击时使用。
     pub tree_tools: Vec<(Rect, TreeTool)>,
     /// 工具栏收起后「⋯」按钮的位置；所有按钮都放得下时为 `None`。
@@ -1064,6 +1083,12 @@ pub struct App {
     pub save_prompt: Option<SavePrompt>,
     /// 已选择「保存」、正在等待另存为面板：保存完成后继续处理余下的步骤。
     pub save_continuation: Option<SavePrompt>,
+    /// 正在等待另存为面板的文档。
+    pub(crate) save_as_picker: Option<DocumentId>,
+    /// 保存期间推迟处理的一次关闭请求。
+    pub(crate) deferred_close: Option<CloseRequest>,
+    /// 等待窗口交接的界面操作，按产生顺序处理。
+    pub(crate) pending_ui: std::collections::VecDeque<PendingUi>,
     /// 退出前的处理均已完成；当前一轮事件处理结束后退出。
     pub quit_requested: bool,
     /// 窗口已关闭（隐藏），应用仍在运行：macOS 上关闭窗口不退出应用，点击程序坞中的图标时

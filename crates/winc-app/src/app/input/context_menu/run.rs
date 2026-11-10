@@ -111,6 +111,7 @@ impl App {
                     }
                 }
                 MenuCommand::CloseFolder => self.close_folder(),
+                MenuCommand::CloseProject => self.request_close_project(),
                 _ => {}
             },
             MenuTarget::AddLanguage(task) => {

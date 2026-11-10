@@ -170,18 +170,13 @@ impl ApplicationHandler<UserEvent> for App {
         window.set_ime_allowed(true);
         #[cfg(target_os = "macos")]
         {
-            let proxy = self.proxy.clone();
             self.traffic_lights = crate::macos::TrafficLights::new(
                 &window,
                 // 这三个按钮在卡片顶部的顶栏里垂直居中：顶栏上方有 `ISLAND_MARGIN` 的留白，
                 // 按钮按高度为留白两倍加顶栏高度的区域居中。
                 f64::from(2.0 * crate::theme::ISLAND_MARGIN + crate::theme::TOP_BAR),
                 f64::from(crate::theme::TRAFFIC_LIGHT_LEFT),
-                move || {
-                    if let Some(proxy) = &proxy {
-                        let _ = proxy.send_event(UserEvent::TrafficLightsMoved);
-                    }
-                },
+                traffic_lights_moved(self.proxy.as_ref()),
             );
         }
         self.sync_zoom();
@@ -292,7 +287,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(focused) => {
                 self.window_focused = focused;
-                self.update_foreground(focused);
+                self.update_foreground(focused && !self.occluded);
+                self.after_terminal_frame();
                 // 离开窗口时停止录制按键，菜单项的快捷键随之恢复，不影响别的窗口和应用。
                 if !focused {
                     self.set_recording(false);
@@ -722,7 +718,21 @@ impl App {
     }
 }
 
+// 红绿灯随窗口转移，位置变化时由持有窗口的项目重新布局。
+#[cfg(any(target_os = "macos", all(test, windows)))]
+fn traffic_lights_moved(proxy: Option<&crate::winc::WindowProxy>) -> impl Fn() + 'static {
+    let proxy = proxy.map(crate::winc::WindowProxy::active);
+    move || {
+        if let Some(proxy) = &proxy {
+            let _ = proxy.send_event(UserEvent::TrafficLightsMoved);
+        }
+    }
+}
+
 /// 把 `at` 并入下一次唤醒的时间，取两者中较早的一个；`at` 为 `None` 时不变。
 fn earliest(wake: &mut Option<Instant>, at: Option<Instant>) {
     *wake = (*wake).into_iter().chain(at).min();
 }
+
+#[cfg(all(test, windows))]
+mod tests;

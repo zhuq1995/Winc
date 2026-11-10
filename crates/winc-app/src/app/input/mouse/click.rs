@@ -23,8 +23,31 @@ impl App {
             return;
         }
 
+        // 模态浮层接收所有鼠标按下，遮住的项目和其他控件不响应。
+        if self.form_dialog.is_some() || self.settings.open {
+            if button == MouseButton::Left {
+                self.reset_blink();
+                self.request_redraw();
+                if self.form_dialog.is_some() {
+                    self.click_form_dialog(x, y);
+                } else {
+                    self.click_settings(x, y);
+                }
+            }
+            return;
+        }
+
+        if l.projects.contains(x, y) && matches!(button, MouseButton::Middle | MouseButton::Right) {
+            return;
+        }
+        if button == MouseButton::Left && self.picker_open && l.projects.contains(x, y) {
+            self.close_picker();
+            return;
+        }
+
         // 项目列表：点条目切过去，点右端的 ✕ 关掉那个项目（先切过去，让它的确认显示在窗口里）。
         if button == MouseButton::Left
+            && !self.picker_open
             && let Some(target) = self.project_at(x, y)
         {
             match target {
@@ -138,16 +161,6 @@ impl App {
                 return;
             }
             self.changes.popup = None;
-        }
-
-        // 设置浮层位于最上层，打开时所有点击都先交给它。
-        if self.settings.open {
-            self.click_settings(x, y);
-            return;
-        }
-        if self.form_dialog.is_some() {
-            self.click_form_dialog(x, y);
-            return;
         }
 
         // 全屏查看的图位于编辑区上层，落在其范围内的点击只由查看器处理。

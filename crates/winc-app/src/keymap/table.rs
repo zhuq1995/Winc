@@ -366,6 +366,7 @@ pub fn bindings(os: Os) -> Vec<Binding> {
         t.one(PreviousTab, Global, key(ctrl, PageUp));
     }
     t.chord(CloseFolder, Global, chord_k, c(none, 'f'));
+    t.chord(CloseProject, Global, chord_k, c(none, 'q'));
     match os {
         Os::Mac => t.one(Quit, Global, c(cmd, 'q')),
         Os::Linux => t.one(Quit, Global, c(ctrl, 'q')),

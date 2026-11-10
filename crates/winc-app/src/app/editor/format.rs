@@ -1,6 +1,6 @@
 //! 格式化和修复文档（`⇧⌥F`、右键菜单、保存时）：在后台运行外部工具，结果返回时作为一次修改应用。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use ropey::Rope;
@@ -25,7 +25,7 @@ const SAVE_TIMEOUT: Duration = Duration::from_secs(3);
 const SHOW_PROGRESS: Duration = Duration::from_millis(500);
 
 /// 后台线程送回的结果：文档及其格式化结果。
-type Outcome = (DocumentId, Result<Formatted, FormatError>);
+type Outcome = (DocumentId, u64, Result<Formatted, FormatError>);
 
 /// 返回设置 `config` 中 `task`（格式化或修复）的各语言命令，键为语言 ID。
 pub(in crate::app) fn task_commands(config: &Config, task: Task) -> &BTreeMap<String, String> {
@@ -59,9 +59,13 @@ fn save_switch(config: &Config, task: Task) -> Option<bool> {
 pub struct FormatState {
     /// 查找并运行外部格式化工具的格式化器。
     pub formatter: Formatter,
-    /// 关闭标签或退出时选择了「保存」，正在为其中一个文件格式化：保存完成后继续处理其余文件。
+    /// 保存或另存为完成后继续处理的关闭请求。
     pub then_close: Option<SavePrompt>,
     running: Vec<Running>,
+    /// 保存前的任务及其编号，包含等待用户确认的任务。
+    saving: HashMap<DocumentId, u64>,
+    next_id: u64,
+    save_failed: bool,
     /// 保存前完成修复和格式化的文件，保存后在状态栏显示的提示（例如「使用 ruff 修复了 2 行」）。
     notes: Vec<(DocumentId, String)>,
     /// 后台线程送回结果的通道的发送端。
@@ -74,6 +78,8 @@ pub struct FormatState {
 struct Running {
     /// 正在处理的文档。
     id: DocumentId,
+    /// 区分同一文档先后运行的任务。
+    job: u64,
     /// 任务种类：格式化或修复。
     task: Task,
     /// 送去格式化时的内容。
@@ -100,10 +106,18 @@ impl FormatState {
             formatter,
             then_close: None,
             running: Vec::new(),
+            saving: HashMap::new(),
+            next_id: 0,
+            save_failed: false,
             notes: Vec::new(),
             sender,
             receiver,
         }
+    }
+
+    fn next_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
     }
 }
 
@@ -136,6 +150,8 @@ pub struct ToolAnswer {
     pub task: Task,
     /// 完成后是否继续保存。
     pub save: bool,
+    /// 保存流程编号，用于丢弃已取消的询问结果。
+    pub(in crate::app) save_id: Option<u64>,
     /// 只处理的区段（格式化选中部分时）。
     pub range: Option<FormatRange>,
     /// 记录用户选择的目录（见 `Approval::folder`）。
@@ -242,6 +258,11 @@ impl App {
     /// 保存时的修复和格式化：先修复（修复后可能需要重新排版），再格式化，全部完成（或无法执行）
     /// 后再保存。
     pub(in crate::app) fn format_then_save(&mut self, id: DocumentId) {
+        if self.format.saving.contains_key(&id) {
+            return;
+        }
+        let save_id = self.format.next_id();
+        self.format.saving.insert(id, save_id);
         if self.on_save(Task::Fix, id) {
             if let Err(e) = self.start(Task::Fix, id, true, None) {
                 self.save_step_done(Task::Fix, id, note_for(Task::Fix, e));
@@ -378,8 +399,10 @@ impl App {
         }
 
         let cancel = Cancel::default();
+        let job_id = self.format.next_id();
         self.format.running.push(Running {
             id,
+            job: job_id,
             task,
             sent: sent.clone(),
             save,
@@ -399,7 +422,7 @@ impl App {
         // 格式化工具最长运行 `TIMEOUT`（30 秒），在单独的线程上等待，不占用共用的线程池。
         winc_editor::background::spawn_blocking(move || {
             let result = formatter.run(job, &cancel);
-            if sender.send((id, result)).is_ok()
+            if sender.send((id, job_id, result)).is_ok()
                 && let Some(proxy) = proxy
             {
                 let _ = proxy.send_event(UserEvent::Formatted);
@@ -422,6 +445,17 @@ impl App {
         range: Option<FormatRange>,
         approval: Approval,
     ) -> Result<(), FormatError> {
+        if self.needs_prompt_window() {
+            let save_id = save.then(|| self.format.saving.get(&id).copied()).flatten();
+            self.pending_ui.push_back(PendingUi::Format {
+                task,
+                id,
+                save,
+                range,
+                save_id,
+            });
+            return Ok(());
+        }
         if self.window.is_some() {
             use crate::app::AlertButton;
 
@@ -457,11 +491,19 @@ impl App {
             };
             let detail = &approval.detail;
             let folder = approval.folder.clone();
+            let save_id = if save && self.format.saving.contains_key(&id) {
+                let save_id = self.format.next_id();
+                self.format.saving.insert(id, save_id);
+                Some(save_id)
+            } else {
+                None
+            };
             let asked = self.present_alert(&message, detail, buttons, None, move |i, _| {
                 let answer = ToolAnswer {
                     id,
                     task,
                     save,
+                    save_id,
                     range: range.clone(),
                     folder: folder.clone(),
                     run: (i != cancel).then_some(i == 0),
@@ -481,11 +523,39 @@ impl App {
         )))
     }
 
+    /// 窗口交接后重新检查文档、保存编号与授权状态。
+    pub(in crate::app) fn resume_format_approval(
+        &mut self,
+        task: Task,
+        id: DocumentId,
+        save: bool,
+        range: Option<FormatRange>,
+        save_id: Option<u64>,
+    ) {
+        if self.editor.document(id).is_none()
+            || (save && (save_id.is_none() || self.format.saving.get(&id).copied() != save_id))
+        {
+            return;
+        }
+        if let Err(error) = self.start(task, id, save, range) {
+            if save {
+                self.save_step_done(task, id, note_for(task, error));
+            } else {
+                self.task_failed(task, id, &error);
+            }
+        }
+    }
+
     /// 处理用户在提示框上对能否运行项目自带程序的回答 `answer`：记住该选择并继续格式化。
     ///
     /// 取消时只是本次不格式化，保存仍然进行。
     pub(in crate::app) fn answer_tool_choice(&mut self, answer: ToolAnswer) {
         let ToolAnswer { id, task, save, .. } = answer;
+        if save
+            && (answer.save_id.is_none() || answer.save_id != self.format.saving.get(&id).copied())
+        {
+            return;
+        }
         let Some(run) = answer.run else {
             if save {
                 self.save_step_done(task, id, None);
@@ -505,17 +575,27 @@ impl App {
 
     /// 收取后台线程送回的格式化结果。
     pub(in crate::app) fn poll_formatting(&mut self) {
-        while let Ok((id, result)) = self.format.receiver.try_recv() {
-            self.formatting_done(id, result);
+        while let Ok((id, job, result)) = self.format.receiver.try_recv() {
+            self.formatting_done(id, job, result);
         }
     }
 
     /// 处理文档 `id` 的格式化（修复）结果 `result`：应用修改并在状态栏提示。
     ///
     /// 作为保存流程一部分的任务，处理后继续保存流程。
-    fn formatting_done(&mut self, id: DocumentId, result: Result<Formatted, FormatError>) {
-        // 标签已关闭或任务已取消时，任务不在 `running` 中，丢弃结果。
-        let Some(index) = self.format.running.iter().position(|r| r.id == id) else {
+    fn formatting_done(
+        &mut self,
+        id: DocumentId,
+        job: u64,
+        result: Result<Formatted, FormatError>,
+    ) {
+        // 标签已关闭或任务已取消时，丢弃结果；同一文档可能已经开始了新的任务。
+        let Some(index) = self
+            .format
+            .running
+            .iter()
+            .position(|r| r.id == id && r.job == job)
+        else {
             return;
         };
         let running = self.format.running.remove(index);
@@ -645,24 +725,32 @@ impl App {
     /// 保存失败时只提示保存的错误。关闭标签或退出时的保存如果正在等待这次保存，保存成功后继续关闭；
     /// 保存失败则放弃整个关闭（与直接保存失败相同）。
     fn save_with_notes(&mut self, id: DocumentId) {
-        let closing = self.format.then_close.take();
         let (notes, others) = std::mem::take(&mut self.format.notes)
             .into_iter()
             .partition::<Vec<_>, _>(|(d, _)| *d == id);
         self.format.notes = others;
-        let Some(name) = self.editor.document(id).map(|d| d.name().into_owned()) else {
-            return;
-        };
-        if !self.save_document(id, None) {
+        let name = self.editor.document(id).map(|d| d.name().into_owned());
+        let saved = name.is_some() && self.save_document(id, None);
+        self.format.saving.remove(&id);
+        if !saved {
+            self.abort_format_save_close();
             return;
         }
         if !notes.is_empty() {
+            let name = name.expect("保存成功的文档有名称");
             let notes: Vec<String> = notes.into_iter().map(|(_, note)| note).collect();
             let notes = notes.join(t!("format-note-separator"));
             self.flash(t!("format-saved-with-notes", name = name, notes = notes));
         }
-        if let Some(prompt) = closing {
-            self.save_then_close(prompt);
+        if !self.format_save_pending() {
+            if let Some(prompt) = self.format.then_close.take() {
+                self.save_then_close(prompt);
+            }
+            if !self.closing_pending()
+                && let Some(request) = self.deferred_close.take()
+            {
+                self.resume_deferred_close(request);
+            }
         }
     }
 
@@ -707,6 +795,29 @@ impl App {
             self.format.running.remove(index).cancel.cancel();
         }
         self.format.notes.retain(|(d, _)| *d != id);
+        self.pending_ui.retain(
+            |action| !matches!(action, PendingUi::Format { id: pending, .. } if *pending == id),
+        );
+        if self.format.saving.remove(&id).is_some() {
+            self.abort_format_save_close();
+        }
+    }
+
+    pub(in crate::app) fn abort_format_save_close(&mut self) {
+        self.format.then_close = None;
+        self.deferred_close = None;
+        self.cancel_pending_quit();
+        self.format.save_failed = true;
+    }
+
+    /// 是否有保存前的格式化、修复或工具确认尚未完成。
+    pub(in crate::app) fn format_save_pending(&self) -> bool {
+        !self.format.saving.is_empty()
+    }
+
+    /// 收取保存失败的信号，供多项目退出流程取消退出。
+    pub(crate) fn take_format_save_failure(&mut self) -> bool {
+        std::mem::take(&mut self.format.save_failed)
     }
 
     /// 退出前停止所有格式化，避免工具进程残留。
@@ -715,6 +826,9 @@ impl App {
             running.cancel.cancel();
         }
         self.format.notes.clear();
+        self.format.saving.clear();
+        self.pending_ui
+            .retain(|action| !matches!(action, PendingUi::Format { .. }));
     }
 
     /// 文档 `id` 是否正在格式化（修复）。
@@ -818,6 +932,6 @@ fn note_for(task: Task, error: FormatError) -> Option<String> {
     }
 }
 
-// 只有 Unix 上的测试用到：这些测试用 sh 脚本代替格式化工具，Git 相关的测试也只在 Unix 上运行。
-#[cfg(all(test, unix))]
+// 测试使用可控的后台格式化结果。
+#[cfg(test)]
 mod tests;

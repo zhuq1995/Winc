@@ -341,6 +341,7 @@ fn project_tools_run_only_after_asking() {
         task: Task::Format,
         id,
         save: false,
+        save_id: None,
         range: None,
         folder: root.clone(),
         run: Some(true),
@@ -398,6 +399,7 @@ fn project_settings_win_but_run_only_after_asking() {
         task: Task::Format,
         id,
         save: false,
+        save_id: None,
         range: None,
         folder: root.join(".winc"),
         run: Some(true),
@@ -465,10 +467,12 @@ fn project_enabling_format_on_save_asks_first() {
     // 允许：记下来，格式化以后保存。
     let key = app.editor.root().unwrap().join(".winc/formatOnSave");
     app.run(Command::Insert("c".into()));
+    let save_id = app.save_id_for_test(id);
     app.answer_tool_choice(ToolAnswer {
         task: Task::Format,
         id,
         save: true,
+        save_id: Some(save_id),
         range: None,
         folder: key.clone(),
         run: Some(true),

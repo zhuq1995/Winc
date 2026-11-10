@@ -281,6 +281,32 @@ fn sidebar_slides_during_animation() {
 }
 
 #[test]
+fn sidebar_animation_stays_to_the_right_of_the_project_list() {
+    for width in [180.0, 320.0, 640.0, 1000.0] {
+        for step in 0..=100 {
+            let l = Layout::compute(
+                width,
+                420.0,
+                190.0,
+                260.0,
+                step as f32 / 100.0,
+                0,
+                0,
+                40.0,
+                STATUS_HEIGHT,
+            );
+            assert!(l.projects.right() <= width);
+            if l.sidebar.w > 0.0 {
+                assert!(l.sidebar.x >= l.projects.right());
+                assert!(l.sidebar.right() <= width);
+                assert_eq!(l.tree.x, l.sidebar.x);
+                assert_eq!(l.tree.w, l.sidebar.w);
+            }
+        }
+    }
+}
+
+#[test]
 fn dragging_the_splitter_keeps_the_sidebar_in_place() {
     // 拖动分隔条时宽度带小数（来自鼠标位置）。侧栏卡片的左边缘始终离窗口左边缘
     // `ISLAND_MARGIN`，右边缘与编辑区卡片相隔 `ISLAND_GAP`，都在整像素上；宽度逐步增大时编辑区

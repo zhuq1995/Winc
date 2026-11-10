@@ -309,7 +309,14 @@ impl App {
             return;
         }
 
-        if self.picker_open && l.picker.contains(x, y) {
+        if !self.picker_open && l.projects.contains(x, y) {
+            let max =
+                crate::layout::projects_max_scroll(self.shared.projects().len(), l.projects.h);
+            self.projects_scroll = (self.projects_scroll - dy).clamp(0.0, max);
+            self.projects_hits.clear();
+            self.projects_close.clear();
+            self.set_hover(Hover::None);
+        } else if self.picker_open && l.picker.contains(x, y) {
             // 滚轮只滚动列表，选中项不变。
             let rows = self.picker_hits.len();
             let max = (rows as f32 * PICKER_ROW - view::picker_span(self)).max(0.0);

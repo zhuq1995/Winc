@@ -7,7 +7,11 @@ impl App {
     pub(in crate::app) fn hover_at(&self, x: f32, y: f32) -> Hover {
         let l = &self.layout;
         // 窗口内的菜单盖在上面：下面的部件都不算悬停。
-        if self.popup().is_some() {
+        if self.popup().is_some()
+            || self.alert.is_some()
+            || self.settings.open
+            || self.form_dialog.is_some()
+        {
             return Hover::None;
         }
 
@@ -22,7 +26,9 @@ impl App {
         }
 
         // 项目列表在最左侧，压在其余部件之上：先判断它。
-        if let Some(target) = self.project_at(x, y) {
+        if !self.picker_open
+            && let Some(target) = self.project_at(x, y)
+        {
             return target;
         }
 
@@ -99,6 +105,9 @@ impl App {
     /// 只看位置，不看按下了什么键；设置浮层、右键、中键这些在调用方先处理。
     pub(super) fn target_at(&self, x: f32, y: f32) -> Target {
         let l = &self.layout;
+        if l.projects.contains(x, y) {
+            return Target::Blocked;
+        }
         // 窗口最外圈的细边改变窗口大小，压在一切之上；窗口按钮浮在顶栏右端。
         if let Some(direction) = self.resize_edge_at(x, y) {
             return Target::ResizeEdge(direction);

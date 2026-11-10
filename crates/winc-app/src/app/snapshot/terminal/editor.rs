@@ -1122,6 +1122,44 @@ fn the_program_hears_when_the_terminal_loses_focus() {
 }
 
 #[test]
+fn project_handoff_notifies_each_terminal_and_keeps_connections() {
+    let first_dir = sample_folder("terminal-handoff-first");
+    let second_dir = sample_folder("terminal-handoff-second");
+    let mut first = app_with(&first_dir.join("short.rs"), false);
+    let mut second = app_with(&second_dir.join("short.rs"), false);
+    show_terminal(&mut first, "\x1b[?1004h$ ");
+    show_terminal(&mut second, "\x1b[?1004h$ ");
+    let first_log = first.attach_recording_helper(&first_dir);
+    let second_log = second.attach_recording_helper(&second_dir);
+    first.window_focused = true;
+    first.after_terminal_frame();
+    assert_eq!(first.input_sent_to(&first_log, 1), b"\x1b[I");
+
+    let state = first.take_shell_state();
+    assert_eq!(first.input_sent_to(&first_log, 1), b"\x1b[I\x1b[O");
+    assert!(!first.window_focused && first.terminal_connected());
+    second.put_shell_state(state, true);
+    assert_eq!(second.input_sent_to(&second_log, 1), b"\x1b[I");
+    assert!(second.terminal_connected());
+    assert!(second.sent_to_helper(&second_log).iter().any(|message| {
+        matches!(message, ToHelper::Theme(theme) if theme.is_dark() == second.palette.dark)
+    }));
+
+    let state = second.take_shell_state();
+    first.put_shell_state(state, false);
+    assert_eq!(second.input_sent_to(&second_log, 1), b"\x1b[I\x1b[O");
+    assert_eq!(first.input_sent_to(&first_log, 1), b"\x1b[I\x1b[O");
+    first.window_focused = true;
+    first.after_terminal_frame();
+    assert_eq!(first.input_sent_to(&first_log, 1), b"\x1b[I\x1b[O\x1b[I");
+    assert!(first.terminal_connected() && second.terminal_connected());
+
+    drop((first, second));
+    std::fs::remove_dir_all(first_dir).unwrap();
+    std::fs::remove_dir_all(second_dir).unwrap();
+}
+
+#[test]
 fn code_sent_to_an_exited_shell_starts_it_again() {
     let dir = sample_folder("terminal-send-exited");
     let mut app = app_with(&dir.join("short.rs"), false);

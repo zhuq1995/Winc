@@ -127,6 +127,7 @@ impl App {
             NextTab => self.cycle_tab(true),
             PreviousTab => self.cycle_tab(false),
             CloseFolder => self.close_folder(),
+            CloseProject => self.request_close_project(),
             // 只有一个窗口，关闭窗口就是退出，未保存的内容按退出的流程备份或询问。
             CloseWindow => self.request_close_window(),
             CopyPath | CopyRelativePath | RevealInFinder => match self.shortcut_target() {

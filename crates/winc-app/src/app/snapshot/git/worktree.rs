@@ -239,6 +239,7 @@ fn worktrees_are_created_removed_and_pruned() {
     for dir in [trees.join(short), spare] {
         let i = at(&app, &dir);
         app.remove_worktree(i);
+        press_alert(&mut app, 0);
         assert!(!dir.exists());
     }
     assert_eq!(app.git.worktrees.len(), 3);
@@ -251,6 +252,7 @@ fn worktrees_are_created_removed_and_pruned() {
     assert!(menu_commands(&app).contains(&(MenuCommand::LocationRemove, true)));
     app.context_menu = None;
     app.remove_worktree(i);
+    press_alert(&mut app, 1);
     assert!(!feat.exists());
     assert_eq!(app.git.worktrees.len(), 2);
     assert!(app.git.branches.iter().all(|b| b.name != "feat/x"));

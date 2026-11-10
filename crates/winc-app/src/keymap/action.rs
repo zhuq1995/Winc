@@ -35,6 +35,7 @@ pub enum Action {
     NextTab,
     PreviousTab,
     CloseFolder,
+    CloseProject,
     CloseWindow,
     CopyPath,
     CopyRelativePath,
@@ -270,6 +271,7 @@ impl Action {
             NextTab => t!("cmd-next-tab"),
             PreviousTab => t!("cmd-previous-tab"),
             CloseFolder => t!("cmd-close-folder"),
+            CloseProject => t!("cmd-close-project"),
             CloseWindow => t!("cmd-close-window"),
             CopyPath => t!("cmd-copy-path"),
             CopyRelativePath => t!("cmd-copy-relative-path"),
@@ -474,6 +476,7 @@ impl Action {
             NextTab => "Open Next Editor",
             PreviousTab => "Open Previous Editor",
             CloseFolder => "Close Folder",
+            CloseProject => "Close Project",
             CloseWindow => "Close Window",
             CopyPath => "Copy Path",
             CopyRelativePath => "Copy Relative Path",
@@ -661,9 +664,9 @@ impl Action {
             | InstallShellCommand
             | UninstallShellCommand => Group::General,
             NewFile | OpenFile | OpenFolder | Save | SaveAs | CloseTab | CloseOtherTabs
-            | CloseAllTabs | ReopenClosed | NextTab | PreviousTab | CloseFolder | CloseWindow
-            | CopyPath | CopyRelativePath | RevealInFinder | CopyActivePath | CopyKeyPath
-            | RevealActiveFile | OpenInTerminal | Quit => Group::File,
+            | CloseAllTabs | ReopenClosed | NextTab | PreviousTab | CloseFolder | CloseProject
+            | CloseWindow | CopyPath | CopyRelativePath | RevealInFinder | CopyActivePath
+            | CopyKeyPath | RevealActiveFile | OpenInTerminal | Quit => Group::File,
             NewWindow | OpenRecent | CopyReference | CopyAbsoluteReference => Group::File,
             Undo
             | Redo
@@ -999,6 +1002,7 @@ pub const ACTIONS: &[Action] = {
         NextTab,
         PreviousTab,
         CloseFolder,
+        CloseProject,
         CloseWindow,
         CopyPath,
         CopyRelativePath,

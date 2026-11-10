@@ -427,7 +427,7 @@ impl App {
         if let Some(i) = self.git.repositories.iter().position(|r| *r == place.path) {
             self.git_switch_repository(i);
         } else {
-            self.switch_folder(&place.path);
+            self.open_folder(&place.path);
         }
     }
 

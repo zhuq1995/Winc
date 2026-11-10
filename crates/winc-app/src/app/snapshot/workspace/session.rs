@@ -271,7 +271,8 @@ fn switching_folders_keeps_each_folders_tabs() {
         [
             MenuCommand::OpenRecent(b_index),
             MenuCommand::OpenFolder,
-            MenuCommand::CloseFolder
+            MenuCommand::CloseFolder,
+            MenuCommand::CloseProject
         ]
     );
 
@@ -304,7 +305,7 @@ fn switching_folders_keeps_each_folders_tabs() {
         })
         .collect();
     let folder_icon = crate::app::input::context_menu::MenuIcon::Folder;
-    assert_eq!(icons, [Some(folder_icon), None, None]);
+    assert_eq!(icons, [Some(folder_icon), None, None, None]);
     let row = popup.row_rects[0];
     let image = app.renderer.as_ref().unwrap().image().unwrap();
     let scale = image.width as f32 / app.layout.window.w;

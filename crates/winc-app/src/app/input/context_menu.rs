@@ -119,6 +119,7 @@ pub enum MenuCommand {
     /// 项目菜单：打开 WSL 发行版中的目录。
     OpenWslFolder(usize),
     CloseFolder,
+    CloseProject,
     /// 提交视图「⋯」：新建工作树（输入新分支的名字）。
     NewWorktree,
     /// 位置选择器的操作菜单：在新窗口打开这个位置。
@@ -483,6 +484,7 @@ impl MenuCommand {
                 .get(i)
                 .map_or("", String::as_str),
             MenuCommand::CloseFolder => t!("cmd-close-folder"),
+            MenuCommand::CloseProject => t!("cmd-close-project"),
             MenuCommand::Cut => t!("cmd-cut"),
             MenuCommand::Copy => t!("cmd-copy"),
             MenuCommand::Paste => t!("cmd-paste"),
@@ -534,6 +536,7 @@ impl MenuCommand {
             MenuCommand::CloseAll => Action::CloseAllTabs,
             MenuCommand::OpenFolder => Action::OpenFolder,
             MenuCommand::CloseFolder => Action::CloseFolder,
+            MenuCommand::CloseProject => Action::CloseProject,
             MenuCommand::Cut => Action::Cut,
             MenuCommand::Copy => Action::Copy,
             MenuCommand::Paste => Action::Paste,

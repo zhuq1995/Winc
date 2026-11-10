@@ -115,8 +115,26 @@ impl App {
         Some(main.map_or_else(|| folder.name.clone(), worktree_name))
     }
 
+    /// 左侧项目列表里的名字：打开的目录名（用户主目录缩写为 `~`）。同一个仓库的工作树、不同
+    /// 位置下的同名目录由应用层补上上级目录区分（见 `Winc::refresh_shared`）。
+    pub(crate) fn project_label(&self) -> Option<String> {
+        let root = self.editor.root()?;
+        Some(crate::app::folder_label(root).0)
+    }
+
+    /// 项目重名时用的名字：上级目录加目录名。
+    pub(crate) fn project_label_with_parent(&self) -> Option<String> {
+        let root = self.editor.root()?;
+        let (name, parent) = crate::app::folder_label(root);
+        Some(if parent.is_empty() {
+            name
+        } else {
+            format!("{parent}/{name}")
+        })
+    }
+
     /// 打开第 `i` 个工作树：`new_window` 时在新窗口（已经开着就切到那个窗口），否则在当前窗口
-    /// 打开；`i` 是当前工作树时什么都不做。
+    /// 打开为新项目；`i` 是当前工作树时什么都不做。
     pub(in crate::app) fn open_worktree(&mut self, i: usize, new_window: bool) {
         if self.git.current_worktree() == Some(i) {
             return;
@@ -127,7 +145,7 @@ impl App {
         if new_window {
             self.open_in_new_window(&path);
         } else {
-            self.switch_folder(&path);
+            self.open_folder(&path);
         }
     }
 
@@ -330,7 +348,7 @@ impl App {
             | Then::Warn(_) => return,
             Then::Refresh => {}
             Then::Open(path, true) => self.open_in_new_window(&path),
-            Then::Open(path, false) => return self.switch_folder(&path),
+            Then::Open(path, false) => return self.open_folder(&path),
             Then::Rescan => return self.git_folder_changed(),
         }
         self.git_refresh();
@@ -398,8 +416,16 @@ impl App {
     /// 检查完了，确认移除：写明有多少没提交的改动（有改动时没有默认按钮，↩ 不会误删）；分支
     /// 已合并时可以勾选一起删除（默认勾上）。
     ///
-    /// 没有窗口时（测试中）直接移除，已合并的分支一起删。
-    pub(super) fn confirm_remove_worktree(&mut self, remove: RemoveCheck) {
+    /// 没有窗口时保留结果，窗口交接后再显示确认框。
+    pub(in crate::app) fn confirm_remove_worktree(&mut self, remove: RemoveCheck) {
+        if self.needs_prompt_window() {
+            self.pending_ui
+                .push_back(crate::app::PendingUi::RemoveWorktree(
+                    self.git.root.clone(),
+                    remove,
+                ));
+            return;
+        }
         let RemoveCheck {
             path,
             branch,
@@ -408,56 +434,49 @@ impl App {
         let deletable = branch.filter(|_| check.merged);
         let name = winc_editor::git::repo_name(&path);
         let message = t!("git-worktree-remove-confirm", name = name.as_str());
-        if self.window.is_some() {
-            let mut detail = t!("git-worktree-remove-confirm-detail").to_owned();
-            // 有没提交的改动、游离的提交时没有默认按钮（↩ 不会误删）。
-            let dirty = check.changed + check.untracked + check.unreachable > 0;
-            if check.unreachable > 0 {
-                detail.push_str("\n\n");
-                let count = check.unreachable;
-                detail.push_str(&t!("git-worktree-remove-unreachable", count = count));
-            }
-            if check.changed + check.untracked > 0 {
-                let mut parts = Vec::new();
-                if check.changed > 0 {
-                    parts.push(t!("git-worktree-modified-files", count = check.changed));
-                }
-                if check.untracked > 0 {
-                    parts.push(t!("git-worktree-untracked-files", count = check.untracked));
-                }
-                let files = parts.join(t!("git-worktree-files-separator"));
-                detail.push_str("\n\n");
-                detail.push_str(&t!("git-worktree-remove-uncommitted", files = files));
-            }
-            let remove = AlertButton {
-                destructive: true,
-                ..AlertButton::new(t!("git-worktree-remove-button"))
-            };
-            let cancel = AlertButton::cancel(t!("common-cancel"));
-            // 第一个按钮是默认按钮（↩）；「取消」绑的是 Esc，放在第一个就没有默认按钮。
-            let (buttons, removing) = if dirty {
-                (vec![cancel, remove], 1)
-            } else {
-                (vec![remove, cancel], 0)
-            };
-            let label = deletable
-                .as_ref()
-                .map(|b| t!("git-worktree-remove-delete-branch", branch = b.as_str()));
-            let checkbox = label.as_deref().map(|l| (l, true));
-            let shown =
-                self.present_alert(&message, &detail, buttons, checkbox, move |i, checked| {
-                    let branch = deletable.clone().filter(|_| checked);
-                    (i == removing).then(|| UserEvent::GitRemoveWorktree(path.clone(), branch))
-                });
-            // 窗口上已经挂着别的提示框：不再弹出，改为在状态栏说明。
-            if !shown {
-                self.flash(t!("git-worktree-close-dialog-first"));
-            }
-            return;
+        let mut detail = t!("git-worktree-remove-confirm-detail").to_owned();
+        // 有没提交的改动、游离的提交时没有默认按钮（↩ 不会误删）。
+        let dirty = check.changed + check.untracked + check.unreachable > 0;
+        if check.unreachable > 0 {
+            detail.push_str("\n\n");
+            let count = check.unreachable;
+            detail.push_str(&t!("git-worktree-remove-unreachable", count = count));
         }
-        // 没有窗口（测试中）时直接移除，已合并的分支与提示框上的默认选择一样一并删除。
-        let _ = message;
-        self.remove_worktree_now(&path, deletable);
+        if check.changed + check.untracked > 0 {
+            let mut parts = Vec::new();
+            if check.changed > 0 {
+                parts.push(t!("git-worktree-modified-files", count = check.changed));
+            }
+            if check.untracked > 0 {
+                parts.push(t!("git-worktree-untracked-files", count = check.untracked));
+            }
+            let files = parts.join(t!("git-worktree-files-separator"));
+            detail.push_str("\n\n");
+            detail.push_str(&t!("git-worktree-remove-uncommitted", files = files));
+        }
+        let remove = AlertButton {
+            destructive: true,
+            ..AlertButton::new(t!("git-worktree-remove-button"))
+        };
+        let cancel = AlertButton::cancel(t!("common-cancel"));
+        // 第一个按钮是默认按钮（↩）；「取消」绑的是 Esc，放在第一个就没有默认按钮。
+        let (buttons, removing) = if dirty {
+            (vec![cancel, remove], 1)
+        } else {
+            (vec![remove, cancel], 0)
+        };
+        let label = deletable
+            .as_ref()
+            .map(|b| t!("git-worktree-remove-delete-branch", branch = b.as_str()));
+        let checkbox = label.as_deref().map(|l| (l, true));
+        let shown = self.present_alert(&message, &detail, buttons, checkbox, move |i, checked| {
+            let branch = deletable.clone().filter(|_| checked);
+            (i == removing).then(|| UserEvent::GitRemoveWorktree(path.clone(), branch))
+        });
+        // 窗口上已经挂着别的提示框：不再弹出，改为在状态栏说明。
+        if !shown {
+            self.flash(t!("git-worktree-close-dialog-first"));
+        }
     }
 
     /// 移除工作树 `path`：目录移到废纸篓（和文件树的删除一样能找回），再在后台清掉 git 里这一个
