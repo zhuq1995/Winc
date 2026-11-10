@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/window-projects.md","reason":"项目和工作树的 Git 状态所有权、后台结果路由及窗口交接规则"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"底层 Git、差异缓存、列表身份及提交路径之间的状态契约"}
+{"file":".trellis/tasks/11-10-git-staging/research/current-git-flow.md","reason":"现有提交、选择算法、保存链、字节转换和测试入口"}
+{"file":".github/CONTRIBUTING.md","reason":"行为测试、视觉快照、双语文案和仓库检查要求"}
