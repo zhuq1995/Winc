@@ -12,7 +12,7 @@ use super::*;
 fn rebasing(name: &str) -> Option<(App, PathBuf)> {
     let dir = search_folder(name);
     let run = |args: &[&str]| {
-        Command::new("git")
+        crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(&dir)
             .args(args)
@@ -36,7 +36,7 @@ fn rebasing(name: &str) -> Option<(App, PathBuf)> {
     if git_unusable(&app) {
         return None;
     }
-    let oid = Command::new("git")
+    let oid = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(&dir)
         .args(["rev-parse", "HEAD~2"])
@@ -56,7 +56,7 @@ fn form(app: &App) -> &crate::app::git::rebase::RebaseForm {
 }
 
 fn subjects(dir: &Path) -> Vec<String> {
-    let output = Command::new("git")
+    let output = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(dir)
         .args(["log", "--format=%s"])
@@ -131,7 +131,7 @@ fn rewording_edits_the_message_and_enter_adds_a_line() {
     // ⌘回车开始变基。
     assert!(app.dialog_key(&Key::Named(NamedKey::Enter), "", true));
     assert!(app.form_dialog.is_none());
-    let message = Command::new("git")
+    let message = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(&dir)
         .args(["log", "-1", "--format=%B", "HEAD~2"])

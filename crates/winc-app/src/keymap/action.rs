@@ -199,6 +199,10 @@ pub enum Action {
     GitSync,
     /// 储藏工作区里的更改（输入说明）。
     GitStash,
+    /// 暂存当前仓库的全部更改，包括未跟踪且未被忽略的文件。
+    GitStageAll,
+    /// 取消暂存当前仓库的全部更改，工作区不变。
+    GitUnstageAll,
     GitFileHistory,
     GitBlame,
     ShowCommit,
@@ -417,6 +421,8 @@ impl Action {
             GitPush => t!("cmd-git-push"),
             GitSync => t!("cmd-git-sync"),
             GitStash => t!("cmd-git-stash"),
+            GitStageAll => t!("cmd-git-stage-all"),
+            GitUnstageAll => t!("cmd-git-unstage-all"),
             GitFileHistory => t!("cmd-git-file-history"),
             GitBlame => t!("cmd-git-blame"),
             ShowCommit => t!("cmd-show-commit"),
@@ -616,6 +622,8 @@ impl Action {
             GitPush => "Git: Push",
             GitSync => "Git: Sync",
             GitStash => "Git: Stash Changes…",
+            GitStageAll => "Git: Stage All Changes",
+            GitUnstageAll => "Git: Unstage All Changes",
             GitFileHistory => "Git: Show File History",
             GitBlame => "Git: Toggle Blame",
             ShowCommit => "Git: Commit",
@@ -782,6 +790,8 @@ impl Action {
             | GitPush
             | GitSync
             | GitStash
+            | GitStageAll
+            | GitUnstageAll
             | GitFileHistory
             | GitBlame
             | ShowCommit
@@ -885,6 +895,8 @@ impl Action {
             | Action::GitPush
             | Action::GitSync
             | Action::GitStash
+            | Action::GitStageAll
+            | Action::GitUnstageAll
             | Action::GitFileHistory
             | Action::GitBlame
             | Action::ShowCommit
@@ -1120,6 +1132,8 @@ pub const ACTIONS: &[Action] = {
         GitPush,
         GitSync,
         GitStash,
+        GitStageAll,
+        GitUnstageAll,
         GitFileHistory,
         GitBlame,
         GitRevertChange,

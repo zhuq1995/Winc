@@ -8,7 +8,7 @@ use super::*;
 
 /// 在 `dir` 中运行 `git args`，失败时 panic。
 fn sh(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = crate::test_util::quiet(Command::new("git"))
         .arg("-C")
         .arg(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])

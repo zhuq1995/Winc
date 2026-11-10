@@ -14,6 +14,7 @@ mod output;
 mod parse;
 mod rebase;
 mod remote;
+mod staging;
 mod sync;
 
 pub use output::output_text;
@@ -74,15 +75,6 @@ pub struct LastCommit {
     pub time: i64,
     /// 提交时间在本机时区的写法「2026-10-26 14:32」。
     pub local: String,
-}
-
-/// 只提交一部分改动的文件：提交成 `content`，工作区里的文件不变。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Partial {
-    /// 文件的路径。
-    pub path: PathBuf,
-    /// 要提交成的内容（工作区里的形式，换行符等与工作区文件相同）。
-    pub content: Vec<u8>,
 }
 
 /// 一个分支。

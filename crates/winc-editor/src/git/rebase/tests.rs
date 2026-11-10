@@ -64,7 +64,7 @@ fn repository(name: &str, names: &[&str]) -> Option<(Git, PathBuf)> {
 }
 
 fn run(root: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = crate::test_util::quiet(Command::new("git"))
         .arg("-C")
         .arg(root)
         .args(args)

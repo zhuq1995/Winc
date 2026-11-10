@@ -230,8 +230,10 @@ pub enum MenuCommand {
     GitOpenFile,
     /// 提交视图里的文件：回滚这一个文件（先确认）。
     GitRollbackFile,
-    /// 提交视图里多选时：勾上（`true`）或勾掉选中的各个文件。
-    CommitCheck(bool),
+    /// 提交视图里：暂存选中的各个文件。
+    CommitStage,
+    /// 提交视图里：取消暂存选中的各个文件。
+    CommitUnstage,
     /// 差异里的文字：把光标处的一处改动换回 `HEAD` 的样子。
     GitRevertHunk,
     /// 文件树、标签上的文件：打开它的 Git 历史。
@@ -282,6 +284,10 @@ pub enum MenuCommand {
     GitStashOp(crate::app::git::branch::StashOp, usize),
     /// 提交视图的「⋯」：在按目录排成树和平铺之间切换（排成树时打勾）。
     CommitTree,
+    /// 提交视图的「⋯」：暂存当前仓库的全部更改。
+    CommitStageAll,
+    /// 提交视图的「⋯」：取消暂存当前仓库的全部更改。
+    CommitUnstageAll,
     /// 提交视图的「⋯」：展开所有组和目录。
     CommitExpandAll,
     /// 提交视图的「⋯」：收起所有组。
@@ -363,8 +369,8 @@ impl MenuCommand {
             MenuCommand::CloseLeft => t!("menu-close-tabs-left"),
             MenuCommand::OpenFiles => t!("cmd-open-selected"),
             MenuCommand::CompareFiles => t!("menu-compare-selected"),
-            MenuCommand::CommitCheck(true) => t!("menu-commit-check"),
-            MenuCommand::CommitCheck(false) => t!("menu-commit-uncheck"),
+            MenuCommand::CommitStage => t!("menu-commit-stage"),
+            MenuCommand::CommitUnstage => t!("menu-commit-unstage"),
             MenuCommand::CloseSaved => t!("menu-close-saved-tabs"),
             MenuCommand::CloseAll => t!("cmd-close-all-tabs"),
             MenuCommand::RevealInTree => t!("menu-reveal-in-tree"),
@@ -420,6 +426,8 @@ impl MenuCommand {
             MenuCommand::ToggleBlame => t!("menu-git-blame"),
             MenuCommand::GitStash => t!("menu-git-stash"),
             MenuCommand::CommitTree => t!("menu-commit-tree"),
+            MenuCommand::CommitStageAll => t!("menu-commit-stage-all"),
+            MenuCommand::CommitUnstageAll => t!("menu-commit-unstage-all"),
             MenuCommand::CommitExpandAll => t!("menu-commit-expand-all"),
             MenuCommand::CommitCollapseAll => t!("menu-commit-collapse-all"),
             MenuCommand::GitShowOutput => t!("menu-git-show-output"),

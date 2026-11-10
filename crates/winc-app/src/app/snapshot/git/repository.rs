@@ -21,7 +21,7 @@ fn repo_with_remote(dir: &Path) -> Option<PathBuf> {
     let bare = dir.join("bare.git");
     let work = dir.join("work");
     let run = |at: &Path, args: &[&str]| {
-        Command::new("git")
+        crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(at)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -44,7 +44,11 @@ fn repo_with_remote(dir: &Path) -> Option<PathBuf> {
 }
 
 fn output_of(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git").arg("-C").arg(dir).args(args).output();
+    let output = crate::app::snapshot::quiet(Command::new("git"))
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output();
     String::from_utf8(output.unwrap().stdout).unwrap()
 }
 

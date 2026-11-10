@@ -748,7 +748,7 @@ fn the_new_worktree_dialog_builds_what_it_shows() {
     assert!(!made.join(".env").exists());
     assert_eq!(app.editor.root(), Some(made.as_path()));
     let head = |dir: &Path| {
-        let out = std::process::Command::new("git")
+        let out = crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(dir)
             .args(["rev-parse", "HEAD"])
@@ -757,7 +757,7 @@ fn the_new_worktree_dialog_builds_what_it_shows() {
         String::from_utf8(out.stdout).unwrap()
     };
     let base_oid = {
-        let out = std::process::Command::new("git")
+        let out = crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(&root)
             .args(["rev-parse", "base"])

@@ -587,7 +587,7 @@ fn a_failed_stash_reports_why_the_switch_failed() {
     std::fs::write(&file, "mine\n").unwrap();
     git_in(&root, &["commit", "-q", "-am", "mine"]);
     // 合并产生冲突，停在未完成的状态。
-    let _ = std::process::Command::new("git")
+    let _ = crate::app::snapshot::quiet(Command::new("git"))
         .args(["merge", "-q", "other"])
         .current_dir(&root)
         .output();

@@ -292,7 +292,10 @@ fn shoot_themes() {
                 .iter()
                 .position(|e| e.path == main);
             paint(&mut app);
-            app.press_commit(CommitTarget::File(index.unwrap()));
+            app.press_commit(CommitTarget::File {
+                group: CommitGroup::Changes,
+                index: index.unwrap(),
+            });
             // 在右侧双击选中一个词，光标位于右侧。
             paint(&mut app);
             let view = app.editor.active().unwrap().diff.as_deref().unwrap();
@@ -419,7 +422,7 @@ fn measure_git_costs() {
             .unwrap();
     let repo = std::env::temp_dir().join(format!("winc-measure-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
-    let cloned = Command::new("git")
+    let cloned = crate::app::snapshot::quiet(Command::new("git"))
         .args(["clone", "-q", "--local"])
         .arg(&source)
         .arg(&repo)

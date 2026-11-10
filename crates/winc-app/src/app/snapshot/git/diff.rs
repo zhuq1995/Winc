@@ -123,7 +123,7 @@ fn diff_right_side_edits_the_file_and_takes_hunks_from_the_left() {
     if git_unusable(&app) {
         return;
     }
-    app.fetch_changes(&file, Target::Open);
+    app.fetch_changes(&file, crate::app::git::Compare::Head, None, Target::Open);
     let tabs = app.editor.documents.len();
     assert_eq!(
         app.editor
@@ -297,7 +297,7 @@ fn shoot_diff_replace_fade() {
     let mut app = app_with(&dir, false);
     app.settings_toggle(Setting::GitModule);
     let file = app.git.root.clone().unwrap().join("src/main.rs");
-    app.fetch_changes(&file, Target::Open);
+    app.fetch_changes(&file, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     app.press_diff(DiffTarget::Revert(0));
     let doc = app.editor.active().unwrap().id;
@@ -386,7 +386,7 @@ fn shoot_git_diff() {
         let check = app
             .diff_hits
             .iter()
-            .find(|(_, t)| *t == DiffTarget::Include(1))
+            .find(|(_, t)| *t == DiffTarget::StageHunk(1))
             .unwrap()
             .0;
         app.on_mouse_move(check.x + 4.0, check.y + 4.0);
@@ -515,7 +515,7 @@ fn diff_text_clicks_and_cursors_work_like_the_editor() {
     if git_unusable(&app) {
         return;
     }
-    app.fetch_changes(&file, Target::Open);
+    app.fetch_changes(&file, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     // 第 `side` 侧第 `line` 行（从 0 起）第 `col` 列的窗口坐标；`gutter` 时是那一行的行号。
     let at = |app: &App, side: usize, line: usize, col: usize, gutter: bool| {
@@ -755,7 +755,7 @@ fn stepping_through_changes_marks_each_one_and_walks_the_files() {
         return;
     }
     app.git_refresh();
-    app.fetch_changes(&main, Target::Open);
+    app.fetch_changes(&main, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     let tabs = app.editor.documents.len();
     let title = |app: &App| app.editor.active().unwrap().title.clone().unwrap();
@@ -874,7 +874,7 @@ fn moving_to_a_change_clears_the_message_about_having_none() {
         return;
     }
     app.git_refresh();
-    app.fetch_changes(&main, Target::Open);
+    app.fetch_changes(&main, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     let focus = |app: &App| {
         let view = app.editor.active().unwrap().diff.as_deref().unwrap();
@@ -928,7 +928,7 @@ fn diff_navigation_keys_work_with_focus_in_the_commit_list() {
         return;
     }
     app.git_refresh();
-    app.fetch_changes(&main, Target::Open);
+    app.fetch_changes(&main, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     let f = |n: u8, mods: Mods| Stroke {
         key: KeyCode::F(n),
@@ -990,7 +990,7 @@ fn the_inline_layout_can_be_toggled_and_edits_only_new_lines() {
         return;
     }
     app.git_refresh();
-    app.fetch_changes(&main, Target::Open);
+    app.fetch_changes(&main, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     let view = |app: &App| {
         let doc = app.editor.active().unwrap();
@@ -1068,7 +1068,7 @@ fn the_inline_layout_can_be_toggled_and_edits_only_new_lines() {
     assert!(view(&app).1);
 
     // 新打开的差异沿用选择；切回并排也沿用。
-    app.fetch_changes(&main, Target::Open);
+    app.fetch_changes(&main, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     assert!(view(&app).1);
     assert!(app.run_action(Action::ToggleDiffLayout));
@@ -1103,7 +1103,7 @@ fn typing_at_the_read_caret_opens_the_file_and_edits_there() {
         return;
     }
     app.git_refresh();
-    app.fetch_changes(&main, Target::Open);
+    app.fetch_changes(&main, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     assert!(app.run_action(Action::NextDifference));
     let tabs = app.editor.documents.len();
@@ -1205,7 +1205,7 @@ fn diffs_follow_the_file_and_skip_binaries_and_stale_previews() {
         return;
     };
     let main = root.join("src/main.rs");
-    app.git_preview_changes(&main);
+    app.git_preview_changes(&commit_file(CommitGroup::Changes, &main));
     let id = app.editor.active().unwrap().id;
     let new_text = |app: &App| {
         let doc = app.editor.document(id).unwrap();
@@ -1244,13 +1244,18 @@ fn diffs_follow_the_file_and_skip_binaries_and_stale_previews() {
     let tabs = app.editor.documents.len();
     let seq = app.git.preview_seq;
     app.git.preview_seq += 1;
-    app.fetch_changes(&root.join("src/new.rs"), Target::Preview(seq));
+    app.fetch_changes(
+        &root.join("src/new.rs"),
+        crate::app::git::Compare::Head,
+        None,
+        Target::Preview(seq),
+    );
     assert_eq!(app.editor.documents.len(), tabs);
     assert_eq!(app.editor.active().unwrap().id, active);
 
     // 二进制文件不显示差异，在状态栏说明。
     std::fs::write(root.join("blob.bin"), [0u8, 1, 2, 0, 3]).unwrap();
-    app.git_preview_changes(&root.join("blob.bin"));
+    app.git_preview_changes(&commit_file(CommitGroup::Changes, &root.join("blob.bin")));
     assert!(
         app.status_message
             .as_deref()
@@ -1382,7 +1387,7 @@ fn word_wrap_applies_to_the_diff_view() {
     if git_unusable(&app) {
         return;
     }
-    app.fetch_changes(&file, Target::Open);
+    app.fetch_changes(&file, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     fn view(app: &App) -> &winc_editor::diff_view::DiffView {
         app.editor.active().unwrap().diff.as_deref().unwrap()
@@ -1477,7 +1482,7 @@ fn toggling_word_wrap_keeps_the_top_line_of_the_diff_in_place() {
     if git_unusable(&app) {
         return;
     }
-    app.fetch_changes(&file, Target::Open);
+    app.fetch_changes(&file, crate::app::git::Compare::Head, None, Target::Open);
     paint(&mut app);
     // 屏幕上右侧最上面的（行，段，行内偏移）。
     fn top(app: &App) -> (usize, usize, f32) {

@@ -8,7 +8,6 @@ git-push-no-remote = 此仓库未配置远程仓库
 git-file-outside-repository = 文件不在 Git 仓库中
 git-run-failed = Git 运行失败
 git-run-spawn-failed = 无法运行 Git（{ $error }）
-git-commit-partial-during-operation = { $operation }进行中，无法仅提交部分更改
 git-trust-config-unreadable = 无法读取仓库的配置
 git-trust-required = 此仓库配置了会在 Git 操作时自动运行的程序（{ $commands }），请先信任此仓库
 git-list-separator = 、
@@ -223,7 +222,6 @@ git-time-date-year = { $year }年{ $month }月{ $day }日
 
 git-commit-message-required = 请先填写提交信息
 git-commit-unresolved-conflicts = { $count } 个文件仍有未解决的冲突，请先解决
-git-commit-nothing-checked = 请先勾选要提交的文件
 git-commit-done = 已提交 { $oid }：{ $subject }
 git-commit-failed = 无法提交：{ $error }
 git-commit-done-in = 已在「{ $name }」中提交 { $oid }
@@ -241,7 +239,18 @@ git-commit-push-confirm-button = 提交并推送
 git-undo-commit-done = 已撤销提交 { $oid }，更改保留在暂存区
 git-undo-commit-done-in = 已在「{ $name }」中撤销提交 { $oid }
 git-undo-commit-failed = 无法撤销提交：{ $error }
-git-commit-partial-not-utf8 = 「{ $name }」不是 UTF-8 文本，无法仅提交部分更改
+git-stage-partial-not-utf8 = 「{ $name }」不是 UTF-8 文本，无法仅暂存部分更改
+git-stage-partial-bom = 「{ $name }」带有字节顺序标记，只支持整文件暂存
+git-stage-busy = 正在写暂存区，完成后再试
+git-stage-done = 已暂存 { $count } 个文件
+git-unstage-done = 已取消暂存 { $count } 个文件
+git-stage-done-in = 已暂存「{ $name }」里的 { $count } 个文件
+git-unstage-done-in = 已取消暂存「{ $name }」里的 { $count } 个文件
+git-stage-failed = 暂存失败：{ $error }
+git-stage-failed-in = 在「{ $name }」里暂存失败：{ $error }
+git-stage-save-pending = 「{ $name }」还在保存，暂存没有开始
+git-stage-unresolved = { $count } 个文件仍有冲突标记，处理后再暂存
+git-stage-selection-stale = 选中的改动已经变化，请重新选择
 git-abort-confirm = 要中止{ $operation }吗？
 git-abort-confirm-detail = 工作区将恢复到操作开始前的状态，已解决的冲突将被丢弃。
 git-abort-confirm-button = 中止{ $operation }
@@ -263,6 +272,7 @@ git-unusable = 无法使用 Git：{ $error }
 git-not-a-repository = 当前目录不是 Git 仓库
 git-no-file-in-tab = 当前标签页没有对应的文件
 git-diff-title = { $name } · 差异
+git-diff-title-staged = { $name } · 暂存区差异
 git-diff-submodule = 「{ $name }」是子模块，不显示差异
 git-diff-head-unreadable = 无法读取「{ $name }」在上次提交中的版本：{ $error }
 git-diff-too-large = 「{ $name }」过大，不显示差异
@@ -271,6 +281,10 @@ git-diff-identical = 「{ $name }」与上次提交时相同
 git-diff-line-endings-only = 「{ $name }」与上次提交时只有换行符不同
 git-diff-side-worktree-deleted = 工作区 · 已删除
 git-diff-side-head-missing = HEAD · 文件不存在
+git-diff-side-index = 暂存区
+git-diff-side-index-missing = 暂存区 · 文件不存在
+git-diff-side-staged = 暂存区
+git-diff-index-unreadable = 读不出「{ $name }」在暂存区里的内容：{ $error }
 
 ## 信任仓库的配置
 
@@ -496,10 +510,13 @@ git-change-popup-more-lines = 另有 { $count } 行未显示
 ## 提交视图的文件列表
 
 git-commit-group-changes = 更改
-git-commit-group-conflicts = 冲突
-git-commit-group-untracked = 未跟踪的文件
+git-commit-group-conflicts = 合并更改
+git-commit-group-staged = 已暂存的更改
+git-commit-nothing-to-commit = 没有可以提交的更改
+git-commit-stage-all-confirm = 暂存全部更改并提交？
+git-commit-stage-all-detail = 会暂存当前仓库「{ $name }」的全部更改，包括未跟踪且未被忽略的文件，然后提交。
+git-commit-stage-all-button = 暂存全部并提交
 git-commit-open-deleted = 文件已删除，无法打开
-git-commit-blocker-conflicts = { $count } 个文件仍有未解决的冲突
 git-log-files-changed = 更改了 { $count } 个文件
 git-log-file-binary = 二进制
 

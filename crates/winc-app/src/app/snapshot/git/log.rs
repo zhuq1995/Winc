@@ -525,7 +525,7 @@ fn log_commit_menu_checks_out_branches_picks_reverts_and_resets() {
         view.commits[row_of(app, subject)].oid.clone()
     };
     let head = |root: &Path| {
-        let out = Command::new("git")
+        let out = crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(root)
             .args(["log", "-1", "--format=%H %s"])
@@ -845,7 +845,7 @@ fn a_tag_can_be_created_on_a_commit_from_the_log() {
     app.edit_field(|f| f.insert("v9 .0"));
     assert_eq!(app.goto_input.as_ref().unwrap().text(), "v9.0");
     app.submit_prompt();
-    let out = Command::new("git")
+    let out = crate::app::snapshot::quiet(Command::new("git"))
         .arg("-C")
         .arg(&root)
         .args(["rev-list", "-n", "1", "v9.0"])

@@ -17,9 +17,9 @@ use winc_i18n::t;
 use crate::app::animation::stage;
 use crate::app::git::log::display_local;
 use crate::app::{
-    COMMIT_ROW, CommitGroup, CommitLabels, CommitName, CommitOverflow, CommitParts, CommitRow,
-    CommitRows, CommitTarget, Focus, LabelCause, LabelView, MESSAGE_LINE, MESSAGE_PAD, StashLine,
-    StashView, SyncState,
+    COMMIT_ROW, CommitFile, CommitGroup, CommitLabels, CommitName, CommitOverflow, CommitParts,
+    CommitRow, CommitRows, CommitTarget, Focus, LabelCause, LabelView, MESSAGE_LINE, MESSAGE_PAD,
+    StashLine, StashView, SyncState,
 };
 use crate::icons::Direction;
 use crate::view::workspace::sidebar::{
@@ -1060,7 +1060,7 @@ enum Slot {
 enum RowId<'a> {
     Group(CommitGroup),
     Dir(CommitGroup, &'a Path),
-    File(&'a Path),
+    File(CommitGroup, &'a Path),
 }
 
 /// 状态 `status` 下第 `row` 行的 [`RowId`]。
@@ -1068,7 +1068,8 @@ fn row_id<'a>(status: &'a Status, row: &'a CommitRow) -> RowId<'a> {
     match row {
         CommitRow::Group(group) => RowId::Group(*group),
         CommitRow::Dir { group, dir, .. } => RowId::Dir(*group, dir),
-        CommitRow::File { index, .. } => RowId::File(
+        CommitRow::File { group, index, .. } => RowId::File(
+            *group,
             status
                 .entries
                 .get(*index)
@@ -1156,11 +1157,35 @@ fn draw_row(
     } = *cx;
     let row = &rows[i];
     let focused = app.focus == Focus::CommitList;
-    let checkbox = |frame: &mut Frame<'_>, x: f32, cy: f32, state: Option<bool>| {
-        let border = p.text_dim.alpha(0.55);
-        let on_accent = p.text_on_accent;
-        icons::checkbox(frame, (x, cy), state, p.accent, border, on_accent, list);
-    };
+    // 正在写暂存区、提交或切换分支：＋／− 暂时不可用，按下不做任何事。
+    let busy = app.commit.staging || app.commit.busy || app.branch.running.is_some();
+    // 行首的 ＋／−：暂存或取消暂存。悬停时显示底色，按下执行；`stage` 为真时写「＋」。
+    let stage_button =
+        |frame: &mut Frame<'_>, x: f32, cy: f32, stage: bool, hovered: bool| -> Rect {
+            let box_ = Rect::new(x - 8.0, cy - 8.0, 16.0, 16.0);
+            if hovered {
+                frame.rect_clipped(box_, p.hover, RADIUS_ROW, list);
+            }
+            let band = Rect::new(box_.x, box_.y, box_.w, 16.0);
+            let baseline = baseline_in(band, app.mono_metrics.ascent, app.mono_metrics.descent);
+            let color = if busy {
+                p.text_dim
+            } else if hovered {
+                p.text
+            } else {
+                p.text_muted
+            };
+            frame.text(
+                FontKind::Ui,
+                app.fonts.ui_small,
+                x - app.cell / 2.0,
+                baseline,
+                if stage { "+" } else { "−" },
+                color,
+                list,
+            );
+            box_
+        };
     let band = Rect::new(list.x + 8.0, y, list.w - 16.0, COMMIT_ROW);
     // 鼠标停着的这一行名字放不下：写全名，状态字母让开；伸出侧栏时底色铺到侧栏边缘、右边是
     // 直角，和伸出去的那一段（`draw_commit_overflow`）连成一条。
@@ -1208,7 +1233,9 @@ fn draw_row(
             let hovered = matches!(
                 app.hover,
                 Hover::Commit(
-                    CommitTarget::Group(g) | CommitTarget::GroupCheck(g) | CommitTarget::GroupRevert(g)
+                    CommitTarget::Group(g)
+                        | CommitTarget::GroupStage(g)
+                        | CommitTarget::GroupRevert(g)
                 ) if g == group
             );
             if hovered {
@@ -1218,11 +1245,17 @@ fn draw_row(
             chevron(app, frame, (arrow_x(0), cy), (i, open), p.text_dim, list);
             let group_check = check_x(0);
             let members = rows.group(group);
-            let checks = app.commit.checks();
-            let state = rows.members_state(members, checks, || {
-                app.commit.members_state(status, members)
-            });
-            checkbox(frame, group_check, cy, state);
+            let stage_target = CommitTarget::GroupStage(group);
+            let button = stage_button(
+                frame,
+                group_check,
+                cy,
+                group.stages(),
+                app.hover == Hover::Commit(stage_target),
+            );
+            if !busy {
+                hits.push((button, stage_target));
+            }
             // 组标题：小一号的次要色字，右端一个写文件数的小圆角徽标。
             label(
                 frame,
@@ -1235,7 +1268,7 @@ fn draw_row(
             );
             // 悬停时右端的文件数换成「回滚」，回滚这一组里勾上的文件，位置和文件行悬停时的按钮
             // 相同。冲突组没有：回滚冲突的文件会丢掉解决到一半的内容。
-            let revert = (hovered && group != CommitGroup::Conflicts && state.is_some())
+            let revert = (hovered && group != CommitGroup::Conflicts && !members.is_empty())
                 .then(|| file_actions(band).1);
             match revert {
                 Some(rect) => {
@@ -1249,7 +1282,7 @@ fn draw_row(
                 None => draw_count_pill(app, frame, band, &members.len().to_string(), list),
             }
             let check = Rect::new(group_check - 8.0, y + 4.0, 16.0, 16.0);
-            hits.push((check.intersect(list), CommitTarget::GroupCheck(group)));
+            hits.push((check.intersect(list), stage_target));
             hits.push((band.intersect(list), CommitTarget::Group(group)));
         }
         CommitRow::Dir {
@@ -1262,7 +1295,7 @@ fn draw_row(
             let level = depth + 1;
             let hovered = matches!(
                 app.hover,
-                Hover::Commit(CommitTarget::Dir(r) | CommitTarget::DirCheck(r)) if r == i
+                Hover::Commit(CommitTarget::Dir(r) | CommitTarget::DirStage(r)) if r == i
             );
             // 多选时下面的文件都选中了：画成选中状态。
             let members = rows.dir(*group, dir);
@@ -1270,9 +1303,9 @@ fn draw_row(
             let is_selected = multi
                 && !members.is_empty()
                 && app.commit_marked_count() >= members.len()
-                && members
-                    .iter()
-                    .all(|&m| app.commit_is_selected(&status.entries[m].path));
+                && members.iter().all(|&m| {
+                    app.commit_is_selected(&CommitFile::new(*group, status.entries[m].path.clone()))
+                });
             let icon_x = check_x(level) + ICON;
             let text_x = icon_x + icons::FOLDER_WIDTH + LABEL_GAP;
             let room = (!wanted).then(|| (text_clip.right() - text_x).max(0.0));
@@ -1303,11 +1336,17 @@ fn draw_row(
                 list,
             );
             let dir_check = check_x(level);
-            let checks = app.commit.checks();
-            let state = rows.members_state(members, checks, || {
-                app.commit.members_state(status, members)
-            });
-            checkbox(frame, dir_check, cy, state);
+            let stage_target = CommitTarget::DirStage(i);
+            let button = stage_button(
+                frame,
+                dir_check,
+                cy,
+                group.stages(),
+                app.hover == Hover::Commit(stage_target),
+            );
+            if !busy {
+                hits.push((button, stage_target));
+            }
             // 目录和文件的图标在同一列（宽 `FOLDER_WIDTH`）里居中，名字从同一处开始，
             // 两种行排得整齐。
             icons::folder(frame, (icon_x, (cy - 6.0).round()), open, p.folder, list);
@@ -1334,22 +1373,28 @@ fn draw_row(
                 hits.push((spill, CommitTarget::Dir(i)));
             }
             let check = Rect::new(dir_check - 8.0, y + 4.0, 16.0, 16.0);
-            hits.push((check.intersect(list), CommitTarget::DirCheck(i)));
+            hits.push((check.intersect(list), stage_target));
             hits.push((band.intersect(list), CommitTarget::Dir(i)));
         }
-        CommitRow::File { index, depth } => {
+        CommitRow::File {
+            group,
+            index,
+            depth,
+        } => {
             let index = *index;
             let entry = &status.entries[index];
-            let is_selected = app.commit_is_selected(&entry.path);
-            let hovered = matches!(
-                app.hover,
+            let file = CommitFile::new(*group, entry.path.clone());
+            let is_selected = app.commit_is_selected(&file);
+            let hovered = match app.hover {
                 Hover::Commit(
-                    CommitTarget::File(i)
-                        | CommitTarget::Check(i)
-                        | CommitTarget::OpenFile(i)
-                        | CommitTarget::RevertFile(i)
-                ) if i == index
-            );
+                    CommitTarget::File { group: g, index: i }
+                    | CommitTarget::FileStage { group: g, index: i },
+                ) => i == index && g == *group,
+                Hover::Commit(CommitTarget::OpenFile(i) | CommitTarget::RevertFile(i)) => {
+                    i == index
+                }
+                _ => false,
+            };
             // 悬停时右端的状态字母替换为「打开文件」「回滚」两个按钮；文件名放不下而显示全名时，
             // 按钮跟在全名之后（见 `commit_overflow`）。
             let actions = match full {
@@ -1382,7 +1427,7 @@ fn draw_row(
             let room = (!wanted).then(|| (text_end - text_x).max(0.0));
             let parts = file_parts(app, frame, (&name, dir.as_deref()), room);
             let width = parts_width(app, frame, &parts, false);
-            let key = CommitName::File(entry.path.clone());
+            let key = CommitName::File(*group, entry.path.clone());
             let view = app
                 .commit
                 .names
@@ -1408,7 +1453,20 @@ fn draw_row(
                     retracting && text_x + view.width > text_clip.right(),
                 );
             }
-            checkbox(frame, file_check, cy, app.commit.file_state(entry));
+            let stage_target = CommitTarget::FileStage {
+                group: *group,
+                index,
+            };
+            let button = stage_button(
+                frame,
+                file_check,
+                cy,
+                group.stages(),
+                app.hover == Hover::Commit(stage_target),
+            );
+            if !busy {
+                hits.push((button, stage_target));
+            }
             // 未跟踪的整个目录在 Git 的输出里只有一项，画目录图标。文件图标在图标那一列里居中。
             if entry.is_dir {
                 icons::folder(frame, (icon_x, (cy - 6.0).round()), false, p.folder, list);
@@ -1473,12 +1531,22 @@ fn draw_row(
                 // 显示全名的这一行覆盖列表右边的滚动条（见 `draw_commit_overflow`）：行底色右边到
                 // 侧栏边缘的区域同样属于这一行，鼠标移入时全名保持显示。
                 let edge = Rect::new(band.right(), y, list.right() - band.right(), COMMIT_ROW);
-                hits.push((edge, CommitTarget::File(index)));
-                hits.push((spill, CommitTarget::File(index)));
+                let target = CommitTarget::File {
+                    group: *group,
+                    index,
+                };
+                hits.push((edge, target));
+                hits.push((spill, target));
             }
             let check = Rect::new(file_check - 8.0, y + 4.0, 16.0, 16.0);
-            hits.push((check.intersect(list), CommitTarget::Check(index)));
-            hits.push((band.intersect(list), CommitTarget::File(index)));
+            hits.push((check.intersect(list), stage_target));
+            hits.push((
+                band.intersect(list),
+                CommitTarget::File {
+                    group: *group,
+                    index,
+                },
+            ));
         }
     }
 }
@@ -1843,7 +1911,11 @@ fn row_text(app: &App, status: &Status, root: &Path, row: &CommitRow) -> Option<
             color: p.text,
             shade: Some(p.hover),
         }),
-        CommitRow::File { index, depth } => {
+        CommitRow::File {
+            group,
+            index,
+            depth,
+        } => {
             let entry = status.entries.get(*index)?;
             let name = entry
                 .path
@@ -1857,7 +1929,7 @@ fn row_text(app: &App, status: &Status, root: &Path, row: &CommitRow) -> Option<
                 .filter(|p| app.commit.flat() && !p.as_os_str().is_empty())
                 .map(|p| p.to_string_lossy().into_owned());
             let change = entry.shown();
-            let selected = app.commit_is_selected(&entry.path);
+            let selected = app.commit_is_selected(&CommitFile::new(*group, entry.path.clone()));
             Some(RowText {
                 offset: offset(file_column(app, *depth)),
                 name,
@@ -1885,12 +1957,12 @@ pub(in crate::view) fn commit_overflow(app: &App, frame: &mut Frame<'_>) -> Opti
     let rows = app.commit_rows();
     let row = match app.hover {
         Hover::Commit(
-            CommitTarget::Dir(r) | CommitTarget::DirCheck(r) | CommitTarget::Sticky(r, _),
+            CommitTarget::Dir(r) | CommitTarget::DirStage(r) | CommitTarget::Sticky(r, _),
         ) => r,
         // 鼠标移到跟在全名后面的按钮上时，仍保持全名显示。
         Hover::Commit(
-            CommitTarget::File(f)
-            | CommitTarget::Check(f)
+            CommitTarget::File { index: f, .. }
+            | CommitTarget::FileStage { index: f, .. }
             | CommitTarget::OpenFile(f)
             | CommitTarget::RevertFile(f),
         ) => rows
@@ -2085,7 +2157,10 @@ pub(in crate::view) fn draw_commit_overflow_closing(app: &App, frame: &mut Frame
         let radii = [0.0, RADIUS_ROW, RADIUS_ROW, 0.0];
         frame.rect_corners(rect, p.sidebar_bg, radii, rect);
         let selected = match &rows[row] {
-            CommitRow::File { index, .. } => app.commit_is_selected(&status.entries[*index].path),
+            CommitRow::File { group, index, .. } => app.commit_is_selected(&CommitFile::new(
+                *group,
+                status.entries[*index].path.clone(),
+            )),
             _ => false,
         };
         if let Some(color) = retracting_color(p, selected, focused, view.progress) {
@@ -2117,7 +2192,8 @@ pub(in crate::view) fn draw_commit_overflow_closing(app: &App, frame: &mut Frame
 fn name_key(status: &Status, row: &CommitRow) -> CommitName {
     match row {
         CommitRow::Dir { group, dir, .. } => CommitName::Dir(*group, dir.clone()),
-        CommitRow::File { index, .. } => CommitName::File(
+        CommitRow::File { group, index, .. } => CommitName::File(
+            *group,
             status
                 .entries
                 .get(*index)

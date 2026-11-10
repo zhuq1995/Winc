@@ -211,47 +211,42 @@ impl App {
         {
             return None;
         }
-        let path = match hit(&self.commit_hits, x, y)? {
-            CommitTarget::File(i) | CommitTarget::Check(i) => {
-                self.git.status.as_ref()?.entries.get(i)?.path.clone()
+        let file = match hit(&self.commit_hits, x, y)? {
+            CommitTarget::File { group, index } | CommitTarget::FileStage { group, index } => {
+                CommitFile::new(
+                    group,
+                    self.git.status.as_ref()?.entries.get(index)?.path.clone(),
+                )
             }
             // 目录：菜单作用于它下面的各个文件（都已在选区里时作用于整个选区）。
-            CommitTarget::Dir(row) | CommitTarget::DirCheck(row) => {
+            CommitTarget::Dir(row) | CommitTarget::DirStage(row) => {
                 let files = self.commit_dir_files(row);
                 let first = files.first()?.clone();
                 if !files.iter().all(|f| self.commit_is_selected(f)) {
                     self.select_commit_files(files);
                 }
                 self.focus = Focus::CommitList;
-                return Some(first);
+                return Some(first.path);
             }
             // 组标题的处理方式同目录：菜单作用于组内的各个文件，组收起时同样适用。
-            CommitTarget::Group(group) | CommitTarget::GroupCheck(group) => {
-                let files: Vec<PathBuf> = self
-                    .git
-                    .status
-                    .as_ref()?
-                    .entries
-                    .iter()
-                    .filter(|e| group.holds(e))
-                    .map(|e| e.path.clone())
-                    .collect();
+            CommitTarget::Group(group) | CommitTarget::GroupStage(group) => {
+                let files = self.commit_group_files(group);
                 let first = files.first()?.clone();
                 if !files.iter().all(|f| self.commit_is_selected(f)) {
                     self.select_commit_files(files);
                 }
                 self.focus = Focus::CommitList;
-                return Some(first);
+                return Some(first.path);
             }
             _ => return None,
         };
         // 点在选区里的文件上时菜单作用于选中的各个文件，否则只选这一个。
-        if !self.commit_is_selected(&path) {
+        if !self.commit_is_selected(&file) {
             self.commit.clear_selection();
-            self.commit.selected = Some(path.clone());
+            self.commit.selected = Some(file.clone());
         }
         self.focus = Focus::CommitList;
-        Some(path)
+        Some(file.path)
     }
 
     /// 返回右键点击处所在的编辑区文档；该位置不应弹出编辑区菜单时返回 `None`。
@@ -530,11 +525,15 @@ impl App {
                 document_language_menu(doc.path.is_some())
             }
             MenuTarget::CommitFile(_) if self.commit_multi_selected() => {
-                let any_exists = self.commit_selection().iter().any(|p| p.exists());
-                commit_selection_menu(any_exists)
+                let any_exists = self.commit_selection().iter().any(|f| f.path.exists());
+                let stage = (self.commit.selected.as_ref()).is_some_and(|f| f.group.stages());
+                commit_selection_menu(any_exists, stage)
             }
             MenuTarget::CommitFile(path) => {
-                commit_file_menu(path.exists(), self.relative_path(path).is_some())
+                let stage = (self.commit.selected.as_ref())
+                    .filter(|f| f.path == *path)
+                    .is_some_and(|f| f.group.stages());
+                commit_file_menu(path.exists(), self.relative_path(path).is_some(), stage)
             }
             MenuTarget::SearchResult(_, m) => {
                 search_result_menu(m.is_none(), self.global.replace_open)

@@ -16,55 +16,6 @@ fn line_button_hover(
     }
 }
 
-/// 绘制差异视图里的勾选框，线条风格，与旁边的「»」一致：边长 `size` 的圆角细框，勾上时
-/// 框和勾都是强调色，不铺底色；没勾时只有一圈淡色的框。
-///
-/// `hover` 是悬停时的底色。
-#[allow(clippy::too_many_arguments)]
-pub fn line_checkbox(
-    frame: &mut Frame<'_>,
-    center: (f32, f32),
-    size: f32,
-    on: bool,
-    hover: Option<Color>,
-    accent: Color,
-    border: Color,
-    clip: Rect,
-) {
-    line_button_hover(frame, center, hover, clip);
-    let rect = checkbox_rect(center, size);
-    let outline_color = if on { accent } else { border };
-    frame.stroke(&checkbox_outline(rect), 1.2, outline_color, clip);
-    if on {
-        let k = size / 12.0;
-        let (x, y) = (rect.x, rect.y);
-        let mark = [
-            Stroke::Line(x + 3.2 * k, y + 6.2 * k, x + 5.2 * k, y + 8.2 * k),
-            Stroke::Line(x + 5.2 * k, y + 8.2 * k, x + 8.9 * k, y + 4.0 * k),
-        ];
-        frame.stroke(&mark, MARK_STROKE, accent, clip);
-    }
-}
-
-/// 绘制只包含部分内容的勾选框：样式与 [`line_checkbox`] 勾上时相同，框内是一条横线。
-///
-/// `hover` 是悬停时的底色。
-pub fn line_checkbox_mixed(
-    frame: &mut Frame<'_>,
-    center: (f32, f32),
-    size: f32,
-    hover: Option<Color>,
-    accent: Color,
-    clip: Rect,
-) {
-    line_button_hover(frame, center, hover, clip);
-    let rect = checkbox_rect(center, size);
-    frame.stroke(&checkbox_outline(rect), 1.2, accent, clip);
-    let (inset, y) = (size * 0.25, rect.y + rect.h / 2.0);
-    let mark = [Stroke::Line(rect.x + inset, y, rect.right() - inset, y)];
-    frame.stroke(&mark, MARK_STROKE, accent, clip);
-}
-
 /// 绘制三栏合并右栏的「«」按钮：把右栏这一段采用到中间，样式与 [`line_replace`] 相同，方向相反。
 ///
 /// `hover` 是悬停时的底色。
@@ -108,7 +59,7 @@ pub fn line_replace(
     frame.stroke(lines.as_flattened(), MARK_STROKE, color, clip);
 }
 
-/// 勾选框（[`checkbox`]、[`line_checkbox`]）的方框：边长 `size`，以
+/// 勾选框（[`checkbox`]）的方框：边长 `size`，以
 /// `center` 为中心，左上角取整到整像素。
 fn checkbox_rect((cx, cy): (f32, f32), size: f32) -> Rect {
     Rect::new(

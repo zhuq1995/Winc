@@ -273,19 +273,26 @@ pub fn form_base_menu(branches: &[winc_editor::git::Branch]) -> Vec<MenuEntry> {
     menu
 }
 
-/// 返回提交视图里一个文件的菜单项：显示差异、打开文件，回滚，在文件树中显示、
+/// 返回提交视图里一个文件的菜单项：显示差异、打开文件，暂存或取消暂存，回滚，在文件树中显示、
 /// 在文件管理器中显示，复制路径。
 ///
 /// `exists` 表示文件还在磁盘上，删掉的文件不能打开、不能在文件管理器中显示；`in_workspace`
-/// 表示它在打开的目录里。
-pub fn commit_file_menu(exists: bool, in_workspace: bool) -> Vec<MenuEntry> {
+/// 表示它在打开的目录里；`stage` 表示这个文在「更改」里（菜单写「暂存」）。
+pub fn commit_file_menu(exists: bool, in_workspace: bool, stage: bool) -> Vec<MenuEntry> {
     use MenuCommand::*;
     use MenuEntry::{Item, Separator};
 
-    vec![
+    let mut menu = vec![
         Item(GitShowDiff, true),
         Item(GitOpenFile, exists),
         Separator,
+    ];
+    menu.push(if stage {
+        Item(CommitStage, true)
+    } else {
+        Item(CommitUnstage, true)
+    });
+    menu.extend([
         Item(GitRollbackFile, true),
         Separator,
         Item(RevealInTree, exists && in_workspace),
@@ -293,26 +300,31 @@ pub fn commit_file_menu(exists: bool, in_workspace: bool) -> Vec<MenuEntry> {
         Separator,
         Item(CopyPath, true),
         Item(CopyRelativePath, in_workspace),
-    ]
+    ]);
+    menu
 }
 
 /// 返回提交视图里选中了多个文件、右键点在其中一个上时的菜单项：打开（`any_exists`：有还在
-/// 磁盘上的）、勾选、取消勾选、回滚、复制路径、复制相对路径，都作用于选中的各个文件。
-pub fn commit_selection_menu(any_exists: bool) -> Vec<MenuEntry> {
+/// 磁盘上的）、暂存或取消暂存（`stage`：选区在「更改」里）、回滚、复制路径、复制相对路径，都
+/// 作用于选中的各个文件。
+pub fn commit_selection_menu(any_exists: bool, stage: bool) -> Vec<MenuEntry> {
     use MenuCommand::*;
     use MenuEntry::{Item, Separator};
 
-    vec![
-        Item(GitOpenFile, any_exists),
-        Separator,
-        Item(CommitCheck(true), true),
-        Item(CommitCheck(false), true),
+    let mut menu = vec![Item(GitOpenFile, any_exists), Separator];
+    menu.push(if stage {
+        Item(CommitStage, true)
+    } else {
+        Item(CommitUnstage, true)
+    });
+    menu.extend([
         Separator,
         Item(GitRollbackFile, true),
         Separator,
         Item(CopyPath, true),
         Item(CopyRelativePath, true),
-    ]
+    ]);
+    menu
 }
 
 /// 返回全局搜索结果里一行的菜单项：打开；文件行是复制路径、复制相对路径、在文件树中显示，

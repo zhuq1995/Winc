@@ -693,7 +693,7 @@ impl App {
         what: String,
         work: impl FnOnce(&Git, &Path) -> Result<(String, Then), String> + Send + 'static,
     ) {
-        if self.branch.running.is_some() {
+        if self.branch.running.is_some() || self.commit.staging {
             self.flash(t!("git-op-busy"));
             return;
         }

@@ -15,7 +15,7 @@ fn conflicted_repo(dir: &Path) -> bool {
         return false;
     }
     let git = |args: &[&str]| {
-        Command::new("git")
+        crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -153,7 +153,10 @@ fn files_with_conflict_markers_are_not_committed() {
     );
     // 仍有冲突标记时按钮不可用，按下也不会提交。
     let blocker = app.commit.blocker(&status);
-    assert_eq!(blocker.as_deref(), Some("1 个文件仍有未解决的冲突"));
+    assert_eq!(
+        blocker.as_deref(),
+        Some("1 个文件仍有未解决的冲突，请先解决")
+    );
     app.git_commit();
     app.git_refresh();
     assert_eq!(
@@ -218,7 +221,7 @@ fn three_way_app(name: &str) -> Option<(App, PathBuf)> {
 fn three_way_app_with(name: &str, base: &str, side: &str, main: &str) -> Option<(App, PathBuf)> {
     let dir = search_folder(name);
     let run = |args: &[&str]| {
-        Command::new("git")
+        crate::app::snapshot::quiet(Command::new("git"))
             .arg("-C")
             .arg(&dir)
             .args(args)

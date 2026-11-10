@@ -1,20 +1,25 @@
-//! Git 的提交视图（侧栏）：改动列表、勾选、回滚、储藏、提交信息、提交和修改上一次提交。
+//! Git 的提交视图（侧栏）：改动列表、暂存与取消暂存、回滚、储藏、提交信息、提交和修改上一次提交。
 //!
 //! 视图自上而下是标题行、分支行、说明条（合并、变基暂停时才有）、改动列表、储藏（有储藏时）、
 //! 上一次提交（未推送时可撤销），最下面是提交卡片（提交信息 2 至 8 行，「修改上次提交」和「提交
-//! ⌄」）；列表分「冲突」「更改」「未跟踪的文件」三组。提交只含勾选的文件（`git commit --only`），
-//! 冲突未解决时拒绝提交；选中文件时在预览标签里打开差异。绘制在 `view/git/commit.rs`，点击区域见
-//! `commit_hits`。
+//! ⌄」）；列表分「合并更改」「已暂存的更改」「更改」三组。提交读取真实 Git 暂存区，与终端里的
+//! `git add`、`git reset` 共享；文件行和组标题上的 ＋ 暂存、− 取消暂存。冲突未解决时拒绝提交；
+//! 选中文件时在预览标签里打开差异。绘制在 `view/git/commit.rs`，点击区域见 `commit_hits`。
+//!
+//! 同一个文件可以同时在「已暂存的更改」和「更改」里：两行是两个条目，差别在组，选区、差异标签
+//! 和后台请求都带上组，不会在两组之间用错基准。
 
 mod actions;
 pub(in crate::app) use actions::COMMITTED_SHOWN;
 pub(crate) use actions::SyncState;
 mod list;
+mod stage;
 mod stash;
+pub(crate) use stage::StagePick;
 pub(crate) use stash::{STASH_GAP, StashLine, StashView};
 mod state;
 
-use state::*;
+pub(crate) use super::Compare;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -26,7 +31,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use winc_editor::DocumentId;
-use winc_editor::git::{Entry, Git, Head, LastCommit, Operation, Partial, Status};
+use winc_editor::git::{Entry, Git, Head, LastCommit, Operation, Status};
 use winc_i18n::t;
 use winc_render::Rect;
 use winit::event::KeyEvent;
@@ -131,29 +136,29 @@ pub(crate) struct CommitOverflow {
 pub(crate) enum CommitName {
     /// 一个目录：同一个目录可以同时出现在几组里，连同组区分。
     Dir(CommitGroup, PathBuf),
-    /// 一个文件（`Status::entries` 里的路径）。
-    File(PathBuf),
+    /// 一个文件：同一个文件可以同时在两组里，连同组区分。
+    File(CommitGroup, PathBuf),
 }
 
 /// 改动列表里的一组。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommitGroup {
-    /// 已跟踪文件的改动和已暂存的新文件，默认勾上。
-    Changes,
     /// 合并、拣选、变基时有冲突的文件。
     ///
     /// 冲突须先于其他改动处理，因此单独成组并排在最上方，不与普通改动混排。
     Conflicts,
-    /// 未跟踪的文件（状态字母 U）：默认不勾，只有勾上才随提交加入仓库。
-    Untracked,
+    /// 已进入暂存区、未提交的改动：`HEAD` ↔ 暂存区。
+    Staged,
+    /// 未进入暂存区的改动（含未跟踪且未被忽略的文件）：暂存区 ↔ 文档或磁盘。
+    Changes,
 }
 
 impl CommitGroup {
     /// 各组在列表中自上而下的顺序。
     pub const ALL: [CommitGroup; CommitGroup::COUNT] = [
         CommitGroup::Conflicts,
+        CommitGroup::Staged,
         CommitGroup::Changes,
-        CommitGroup::Untracked,
     ];
     /// 组的个数。
     pub const COUNT: usize = 3;
@@ -163,9 +168,9 @@ impl CommitGroup {
     /// 组的标题。
     pub fn title(self) -> &'static str {
         match self {
-            CommitGroup::Changes => t!("git-commit-group-changes"),
             CommitGroup::Conflicts => t!("git-commit-group-conflicts"),
-            CommitGroup::Untracked => t!("git-commit-group-untracked"),
+            CommitGroup::Staged => t!("git-commit-group-staged"),
+            CommitGroup::Changes => t!("git-commit-group-changes"),
         }
     }
 
@@ -174,12 +179,52 @@ impl CommitGroup {
     }
 
     /// `entry` 是否属于这一组。
+    ///
+    /// 同一文件同时有两侧变化时两组各出现一次；冲突的文件只出现在「合并更改」里，整文件处理。
     pub fn holds(self, entry: &Entry) -> bool {
         match self {
             CommitGroup::Conflicts => entry.conflicted(),
-            CommitGroup::Changes => !entry.conflicted() && !entry.untracked(),
-            CommitGroup::Untracked => !entry.conflicted() && entry.untracked(),
+            CommitGroup::Staged => !entry.conflicted() && entry.staged.is_some(),
+            CommitGroup::Changes => !entry.conflicted() && entry.unstaged.is_some(),
         }
+    }
+
+    /// 这一组的条目对应的操作：`true` 是暂存，`false` 是取消暂存。
+    pub fn stages(self) -> bool {
+        !matches!(self, CommitGroup::Staged)
+    }
+
+    /// 这一组的差异比较：已暂存组看 `HEAD` ↔ 暂存区，其余看暂存区 ↔ 文档或磁盘或 `HEAD`。
+    pub fn compare(self) -> Compare {
+        match self {
+            CommitGroup::Staged => Compare::Staged,
+            CommitGroup::Changes => Compare::Working,
+            CommitGroup::Conflicts => Compare::Head,
+        }
+    }
+}
+
+/// 提交面板里的一个文件：所在的组和路径（相对仓库根目录的绝对路径）。
+///
+/// 同一路径可以同时在「已暂存的更改」和「更改」里，两边是不同的条目，差别就在组。行、选区、
+/// 差异标签和后台请求都用它（连同仓库根目录）标识一个条目，不用 `Status::entries` 的下标。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CommitFile {
+    /// 条目所在的组。
+    pub group: CommitGroup,
+    /// 文件的绝对路径。
+    pub path: PathBuf,
+}
+
+impl CommitFile {
+    /// 组成一个条目。
+    pub fn new(group: CommitGroup, path: PathBuf) -> CommitFile {
+        CommitFile { group, path }
+    }
+
+    /// 比较的基准（见 [`Compare`]）。
+    pub(crate) fn compare(&self) -> Compare {
+        self.group.compare()
     }
 }
 
@@ -199,8 +244,12 @@ pub enum CommitRow {
         label: String,
         depth: usize,
     },
-    /// 一个文件：它在 `Status::entries` 里的下标、缩进的层数。
-    File { index: usize, depth: usize },
+    /// 一个文件：所在的组、它在 `Status::entries` 里的下标、缩进的层数。
+    File {
+        group: CommitGroup,
+        index: usize,
+        depth: usize,
+    },
 }
 
 impl CommitRow {
@@ -220,8 +269,8 @@ impl CommitRow {
     }
 }
 
-/// 排好的改动列表：各行，和每组、每个目录下面有哪些文件（画勾选框、点勾选框时用，不必每行
-/// 把所有改动翻一遍）。
+/// 排好的改动列表：各行，和每组、每个目录下面有哪些文件（组标题的计数、目录行的操作、多选
+/// 时用，不必每行把所有改动翻一遍）。
 ///
 /// 按状态和收起、平铺的样子排一次，缓存到它们变了为止（见 [`App::commit_rows`]）；解引用成
 /// 各行。
@@ -229,20 +278,13 @@ impl CommitRow {
 pub(crate) struct CommitRows {
     rows: Vec<CommitRow>,
     /// 各组、各目录下面的文件（`Status::entries` 的下标）：一组、一个目录（收起的也算）下面的
-    /// 文件在这里连成一段，它里面的目录是其中的一小段。
+    /// 文件在这里连成一段，它里面的目录是其中的一小段。同一个下标可以在两组里各出现一次。
     members: Vec<usize>,
     /// 每组的文件在 `members` 里的那一段（下标是 `CommitGroup as usize`）。
     groups: [Range<usize>; CommitGroup::COUNT],
     /// 列表里每个目录行的文件在 `members` 里的那一段：下标同上，键是相对仓库根目录的目录。
     dirs: [HashMap<PathBuf, Range<usize>>; CommitGroup::COUNT],
-    /// 组、目录行的勾选框（见 [`CommitRows::members_state`]）：（勾选的版本，按那一段在
-    /// `members` 里的位置记下的结果）。
-    states: RefCell<MemberStates>,
 }
-
-/// [`CommitRows::members_state`] 的缓存：勾选的版本，以及按那一段在 `members` 里的
-/// （起点，长度）记下的勾选状态。
-type MemberStates = (u64, HashMap<(usize, usize), Option<bool>>);
 
 impl CommitRows {
     /// 组 `group` 里的文件（`Status::entries` 的下标）。
@@ -257,40 +299,15 @@ impl CommitRows {
             .map_or(&[], |r| &self.members[r.clone()])
     }
 
-    /// `members`（本表的 [`Self::group`]、[`Self::dir`] 给出的一段）的勾选状态，含义同
-    /// [`CommitState::members_state`]；`checks` 是勾选的版本（[`CommitState::checks`]）。
-    ///
-    /// 组、目录下面可能有上万个文件，每帧都要画它们的勾选框：按位置记下结果，勾选变了、或者
-    /// 重新排了各行（换成另一张表）时才重新算。
-    pub fn members_state(
-        &self,
-        members: &[usize],
-        checks: u64,
-        compute: impl FnOnce() -> Option<bool>,
-    ) -> Option<bool> {
-        if members.is_empty() {
-            return compute();
-        }
-        let offset = (members.as_ptr() as usize - self.members.as_ptr() as usize)
-            / std::mem::size_of::<usize>();
-        let mut states = self.states.borrow_mut();
-        if states.0 != checks {
-            *states = (checks, HashMap::new());
-        }
-        *states
-            .1
-            .entry((offset, members.len()))
-            .or_insert_with(compute)
-    }
-
     /// 排下一层已经排好序的文件 `files`（下标、相对路径）：每个一行，深 `depth` 层。
-    fn push_files(&mut self, files: &[(usize, &Path)], depth: usize) {
+    fn push_files(&mut self, group: CommitGroup, files: &[(usize, &Path)], depth: usize) {
         self.members.extend(files.iter().map(|&(index, _)| index));
-        self.rows.extend(
-            files
-                .iter()
-                .map(|&(index, _)| CommitRow::File { index, depth }),
-        );
+        self.rows
+            .extend(files.iter().map(|&(index, _)| CommitRow::File {
+                group,
+                index,
+                depth,
+            }));
     }
 }
 
@@ -384,9 +401,9 @@ pub enum CommitTarget {
     More,
     /// 组标题行：收起或展开。
     Group(CommitGroup),
-    /// 组标题的勾选框：整组勾上或取消。
-    GroupCheck(CommitGroup),
-    /// 悬停组标题时右端的「回滚」按钮：回滚这一组里勾上的文件（先确认）。
+    /// 组标题上的 ＋／−：暂存或取消暂存这一组里的文件。
+    GroupStage(CommitGroup),
+    /// 悬停组标题时右端的「回滚」按钮：回滚这一组里的文件（先确认）。
     GroupRevert(CommitGroup),
     /// 储藏一组的标题：收起或展开。
     Stashes,
@@ -404,14 +421,15 @@ pub enum CommitTarget {
     ///
     /// 参数是它在绘制时的行号（[`App::commit_rows`] 的下标）。
     Dir(usize),
-    /// 目录的勾选框：目录下的文件全部勾上或取消。
+    /// 目录行上的 ＋／−：暂存或取消暂存这个目录在所在组里的文件。
     ///
     /// 参数同 [`CommitTarget::Dir`]。
-    DirCheck(usize),
-    /// 文件的勾选框，参数是 `Status::entries` 的下标。
-    Check(usize),
-    /// 文件那一行：选中并预览差异；双击打开文件。
-    File(usize),
+    DirStage(usize),
+    /// 文件行上的 ＋／−：暂存或取消暂存整文件。参数是所在的组和它在 `Status::entries` 里的
+    /// 下标（同一个文件可以在两组里各有一行）。
+    FileStage { group: CommitGroup, index: usize },
+    /// 文件那一行：选中并预览它所在组的差异；双击打开文件。
+    File { group: CommitGroup, index: usize },
     /// 悬停文件行时右端的「打开文件」按钮，参数同 [`CommitTarget::File`]。
     OpenFile(usize),
     /// 悬停文件行时右端的「回滚」按钮，参数同 [`CommitTarget::File`]。
@@ -571,18 +589,8 @@ pub(crate) struct CommitState {
     draft: Option<String>,
     /// 各位置写了一半的提交信息：切换仓库、工作树时不丢。
     drafts: HashMap<PathBuf, String>,
-    /// 勾选（`excluded`）每变一次加 1，见 [`CommitRows::members_state`]。
-    checks: u64,
-    /// 用户取消勾选的文件；其余已跟踪的文件都勾着。
-    excluded: HashSet<PathBuf>,
-    /// 用户勾上的未跟踪文件；其余未跟踪的文件都不勾。
-    included: HashSet<PathBuf>,
     /// 这次合并（拣选、还原）的提交信息草稿已经填进去过了：用户清空以后不再填。
     pub(super) prefilled: bool,
-    /// 勾上的文件里取消勾选的各块改动（[`winc_core::diff::hunk_key`]）：这些文件只提交其余的改动。
-    skipped: HashMap<PathBuf, Vec<Skip>>,
-    /// 上一次见到的 `HEAD`：变了（切换分支、在其他窗口提交）时按块的勾选作废，记下的行号对不上了。
-    head: Option<String>,
     /// 收起的组（下标是 `CommitGroup as usize`）。
     collapsed: [bool; CommitGroup::COUNT],
     /// 平铺显示（不按目录排成树）：每个文件一行，名字后面淡色写所在目录。默认平铺；用标题行的
@@ -612,15 +620,21 @@ pub(crate) struct CommitState {
     /// 各行名字随鼠标展开、收回的过渡，和文件树的名字一样。
     pub(crate) names: crate::app::TreeLabels<CommitName>,
     /// 选中的文件；多选时是当前行（键盘从这里移动，预览的是它）。
-    pub selected: Option<PathBuf>,
-    /// 多选时选中的各个文件；为空时只有 `selected` 算选中。
-    marked: HashSet<PathBuf>,
+    pub selected: Option<CommitFile>,
+    /// 多选时选中的各个文件（总在同一个组里）；为空时只有 `selected` 算选中。
+    marked: HashSet<CommitFile>,
     /// 按 ⇧ 扩展选区的起点。
-    anchor: Option<PathBuf>,
+    anchor: Option<CommitFile>,
     /// 预览差异的标签；选中别的文件时在该标签里换内容。
     pub(super) preview: Option<DocumentId>,
     /// 是否正在提交或回滚。
     pub busy: bool,
+    /// 是否正在写暂存区（见 [`App::stage_files`]）。写期间相关按钮置灰。
+    pub staging: bool,
+    /// 最近一次暂存请求的序号：结果只清除发起它的那次请求的状态。
+    stage_seq: u64,
+    /// 后台交回来的暂存结果。
+    stage_results: (Sender<stage::Staged>, Receiver<stage::Staged>),
     /// 最近一次成功提交的短提交号及其提示的截止时刻。
     ///
     /// 截止前按钮显示「✓ 已提交 abc1234」。
@@ -655,18 +669,6 @@ pub(crate) struct CommitState {
 }
 
 impl CommitState {
-    /// 勾选的版本：勾选每变一次加 1。
-    pub(crate) fn checks(&self) -> u64 {
-        self.checks
-    }
-
-    /// 清掉所有勾选，回到默认（提交完成以后）。
-    pub(super) fn reset_checks(&mut self) {
-        self.excluded.clear();
-        self.included.clear();
-        self.checks += 1;
-    }
-
     /// 清掉选中的文件和多选（换目录时）。
     pub(crate) fn clear_selection(&mut self) {
         self.selected = None;
@@ -689,16 +691,11 @@ impl Default for CommitState {
             amend: false,
             draft: None,
             drafts: HashMap::new(),
-            excluded: HashSet::new(),
-            included: HashSet::new(),
-            skipped: HashMap::new(),
-            head: None,
             prefilled: false,
             collapsed: [false; CommitGroup::COUNT],
             flat: true,
             collapsed_dirs: Default::default(),
             layout: 0,
-            checks: 0,
             rows: RefCell::new(None),
             scroll: 0.0,
             motion: None,
@@ -711,6 +708,9 @@ impl Default for CommitState {
             anchor: None,
             preview: None,
             busy: false,
+            staging: false,
+            stage_seq: 0,
+            stage_results: channel(),
             committed: None,
             refreshed: None,
             labels: CommitLabels::default(),
@@ -1044,15 +1044,17 @@ impl App {
         })
     }
 
-    /// 提交按钮要写明的范围：勾上的文件数；分支就写在上方的分支行里。
+    /// 提交按钮要写明的范围：已暂存的文件数；分支就写在上方的分支行里。
     ///
-    /// 修改提交、合并或变基暂停时按钮另有说法，没有勾选时也不写范围，都返回 `None`。
+    /// 修改提交、合并或变基暂停时按钮另有说法，暂存区为空时也不写范围，都返回 `None`。
     pub(crate) fn commit_scope(&self) -> Option<usize> {
         let status = self.git.status.as_ref()?;
         if self.commit.amend || status.operation.is_some() {
             return None;
         }
-        let count = self.commit.checked_entries(status).count();
+        let count = (status.entries.iter())
+            .filter(|e| !e.conflicted() && e.staged.is_some())
+            .count();
         (count > 0).then_some(count)
     }
 
@@ -1241,12 +1243,12 @@ impl App {
         // 按下标找文件的目标，状态在绘制以后变过就不处理：下标可能已经指向别的文件。
         let indexed = matches!(
             target,
-            CommitTarget::Check(_)
-                | CommitTarget::File(_)
+            CommitTarget::FileStage { .. }
+                | CommitTarget::File { .. }
                 | CommitTarget::OpenFile(_)
                 | CommitTarget::RevertFile(_)
                 | CommitTarget::Dir(_)
-                | CommitTarget::DirCheck(_)
+                | CommitTarget::DirStage(_)
                 | CommitTarget::Stash(_)
                 | CommitTarget::StashFile(_)
                 | CommitTarget::StashApply(_)
@@ -1276,14 +1278,15 @@ impl App {
                     self.toggle_commit_row(row);
                 }
             }
-            CommitTarget::GroupCheck(group) => {
+            CommitTarget::GroupStage(group) => {
                 let Some(status) = self.git.status.as_ref() else {
                     return;
                 };
-                let on = self.commit.group_state(status, group) != Some(true);
-                for entry in status.entries.iter().filter(|e| group.holds(e)) {
-                    self.commit.set_checked(entry, on);
-                }
+                let files: Vec<CommitFile> = (status.entries.iter())
+                    .filter(|e| group.holds(e))
+                    .map(|e| CommitFile::new(group, e.path.clone()))
+                    .collect();
+                self.stage_files(files);
             }
             CommitTarget::GroupRevert(group) => self.ask_rollback(group),
             CommitTarget::Stashes => self.toggle_stashes(),
@@ -1324,33 +1327,25 @@ impl App {
                 self.toggle_commit_dir_recursively(row);
             }
             CommitTarget::Dir(row) => self.toggle_commit_row(row),
-            CommitTarget::DirCheck(row) => {
-                let rows = self.commit_rows();
-                let (Some(CommitRow::Dir { group, dir, .. }), Some(status)) =
-                    (rows.get(row), self.git.status.as_ref())
-                else {
-                    return;
-                };
-                let members = rows.dir(*group, dir);
-                let on = self.commit.members_state(status, members) != Some(true);
-                for &i in members {
-                    self.commit.set_checked(&status.entries[i], on);
-                }
+            CommitTarget::DirStage(row) => {
+                let files = self.commit_dir_files(row);
+                self.stage_files(files);
             }
-            CommitTarget::Check(i) => self.toggle_commit_check(i),
-            CommitTarget::File(i) => {
-                let Some(path) = self.commit_entry(i).map(|e| e.path.clone()) else {
+            CommitTarget::FileStage { group, index } => self.stage_commit_file(group, index),
+            CommitTarget::File { group, index } => {
+                let Some(path) = self.commit_entry(index).map(|e| e.path.clone()) else {
                     return;
                 };
+                let file = CommitFile::new(group, path.clone());
                 self.focus = Focus::CommitList;
                 // ⌘ 单击加选或取消，⇧ 单击选到这一行：只改选区，不换预览。
                 if self.command_held() {
-                    self.toggle_commit_selected(path);
+                    self.toggle_commit_selected(file);
                     self.request_redraw();
                     return;
                 }
                 if self.modifiers.shift_key() {
-                    self.select_commit_range(path);
+                    self.select_commit_range(file);
                     self.request_redraw();
                     return;
                 }
@@ -1360,7 +1355,7 @@ impl App {
                     self.open_path(&path);
                     self.focus = Focus::Editor;
                 } else {
-                    self.select_commit_file(path);
+                    self.select_commit_file(file);
                 }
             }
             CommitTarget::Sticky(row, level) => {
@@ -1450,9 +1445,13 @@ impl App {
         let mut entries = branch_menu(
             &self.git.remote_list,
             self.git.status.as_ref().and_then(|s| s.operation),
-            self.branch.running.is_some(),
+            self.branch.running.is_some() || self.commit.staging,
         );
+        let idle = !self.commit.busy && !self.commit.staging && self.branch.running.is_none();
         entries.extend([
+            MenuEntry::Separator,
+            MenuEntry::Item(MenuCommand::CommitStageAll, idle),
+            MenuEntry::Item(MenuCommand::CommitUnstageAll, idle),
             MenuEntry::Separator,
             MenuEntry::Item(MenuCommand::CommitTree, true),
             MenuEntry::Item(MenuCommand::CommitExpandAll, !all_expanded),
@@ -1471,11 +1470,13 @@ impl App {
     ) -> Vec<crate::app::input::context_menu::MenuEntry> {
         use crate::app::input::context_menu::{MenuCommand, MenuEntry};
         let status = self.git.status.as_ref();
-        let idle = !self.commit.busy && status.is_none_or(|s| s.operation.is_none());
-        let clean = status.is_some_and(|s| s.entries.is_empty());
+        let idle = !self.commit.busy
+            && !self.commit.staging
+            && status.is_none_or(|s| s.operation.is_none());
+        let nothing = status.is_some_and(|s| s.entries.is_empty());
         let mut entries = vec![MenuEntry::Item(
             MenuCommand::CommitPush,
-            idle && (!clean || self.commit.amend),
+            idle && (!nothing || self.commit.amend),
         )];
         // 正在淡出的「修改上次提交」视为已移入菜单。
         let leaving = matches!(self.commit.amend_motion, Some((false, _)));
@@ -1496,13 +1497,15 @@ impl App {
         self.request_redraw();
     }
 
-    /// 提交勾上的文件，成功以后继续推送。
+    /// 提交暂存区的内容，成功以后继续推送。
     pub(in crate::app) fn git_commit_and_push(&mut self) {
+        let before = self.commit.push_after;
         self.commit.push_after = true;
         self.git_commit();
-        // 没有真的开始提交（没写信息、没勾文件），就不留着「之后推送」。
-        if !self.commit.busy {
-            self.commit.push_after = false;
+        // 没有真的开始提交（没写信息、没有可提交的内容），就不留着「之后推送」；正在等用户确认
+        // 「暂存全部并提交」时留着，确认以后提交完成再推送。
+        if !self.commit.busy && self.alert.is_none() {
+            self.commit.push_after = before;
         }
     }
 
@@ -1523,6 +1526,8 @@ impl App {
         match command {
             MenuCommand::CommitTree => self.toggle_commit_layout(),
             MenuCommand::GitShowOutput => self.show_git_output(),
+            MenuCommand::CommitStageAll => self.stage_all(true),
+            MenuCommand::CommitUnstageAll => self.stage_all(false),
             MenuCommand::CommitExpandAll | MenuCommand::CommitCollapseAll => {
                 // 「全部展开」连收起的目录一起展开。
                 self.commit
@@ -1534,7 +1539,8 @@ impl App {
         self.request_redraw();
     }
 
-    /// 提交视图里一个文件的右键菜单选了 `command`。
+    /// 提交视图里一个文件的右键菜单选了 `command`。`path` 是菜单指向的文件，它所在的组取自选区
+    /// （同一路径可以同时出现在两组里）。
     pub(in crate::app) fn run_commit_file_command(
         &mut self,
         command: crate::app::input::context_menu::MenuCommand,
@@ -1543,7 +1549,8 @@ impl App {
         use crate::app::input::context_menu::MenuCommand;
         // 选中了多个文件时（菜单只有这几项）作用于选中的各个文件。
         if self.commit_multi_selected() {
-            let paths = self.commit_selection();
+            let files = self.commit_selection();
+            let paths: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
             match command {
                 MenuCommand::GitOpenFile => {
                     for path in paths.iter().filter(|p| p.is_file()) {
@@ -1552,19 +1559,8 @@ impl App {
                     self.focus = Focus::Editor;
                 }
                 MenuCommand::GitRollbackFile => self.confirm_rollback(paths),
-                MenuCommand::CommitCheck(on) => {
-                    let Some(status) = self.git.status.as_ref() else {
-                        return;
-                    };
-                    let entries: Vec<_> = status
-                        .entries
-                        .iter()
-                        .filter(|e| paths.contains(&e.path))
-                        .cloned()
-                        .collect();
-                    for entry in &entries {
-                        self.commit.set_checked(entry, on);
-                    }
+                MenuCommand::CommitStage | MenuCommand::CommitUnstage => {
+                    self.stage_files(files);
                 }
                 MenuCommand::CopyPath => self.copy_paths(&paths, false),
                 MenuCommand::CopyRelativePath => self.copy_paths(&paths, true),
@@ -1572,8 +1568,9 @@ impl App {
             }
             return;
         }
+        let file = self.commit_file_of(&path);
         match command {
-            MenuCommand::GitShowDiff => self.select_commit_file(path),
+            MenuCommand::GitShowDiff => self.select_commit_file(file),
             MenuCommand::GitOpenFile => {
                 if path.is_file() {
                     self.open_path(&path);
@@ -1581,6 +1578,9 @@ impl App {
                 }
             }
             MenuCommand::GitRollbackFile => self.confirm_rollback(vec![path]),
+            MenuCommand::CommitStage | MenuCommand::CommitUnstage => {
+                self.stage_files(vec![file]);
+            }
             MenuCommand::CopyPath | MenuCommand::CopyRelativePath => {
                 self.copy_path(&path, command == MenuCommand::CopyRelativePath);
             }
@@ -1592,6 +1592,37 @@ impl App {
             _ => {}
         }
         self.request_redraw();
+    }
+
+    /// `file` 在提交视图里比较用的内容：所在的组连同路径。
+    ///
+    /// 组取自选区；选区不在这个文件上时按状态推出它所在的组（冲突、未暂存优先）。
+    pub(crate) fn compare_of(&self, file: &CommitFile) -> (Compare, Option<PathBuf>) {
+        let from = self
+            .git
+            .status
+            .as_ref()
+            .and_then(|s| s.entries.iter().find(|e| e.path == file.path))
+            .and_then(|e| e.from.clone());
+        (file.compare(), from)
+    }
+
+    /// 路径 `path` 对应的提交视图条目（组取自选区，没有选区时按状态推）。
+    fn commit_file_of(&self, path: &Path) -> CommitFile {
+        if let Some(file) = self.commit.selected.as_ref().filter(|f| f.path == path) {
+            return file.clone();
+        }
+        let entry = self
+            .git
+            .status
+            .as_ref()
+            .and_then(|s| s.entries.iter().find(|e| e.path == path));
+        let group = match entry {
+            Some(entry) if entry.conflicted() => CommitGroup::Conflicts,
+            Some(entry) if entry.unstaged.is_some() => CommitGroup::Changes,
+            _ => CommitGroup::Staged,
+        };
+        CommitFile::new(group, path.to_path_buf())
     }
 
     /// 提交信息里的按键：`⌘↩` 提交；`↑` `↓` 在行之间移动，已在第一行（最后一行）时翻阅此前的

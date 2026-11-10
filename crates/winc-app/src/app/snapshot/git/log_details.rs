@@ -461,7 +461,11 @@ fn refreshing_the_log_updates_the_repository_state_and_reports_it() {
     show_all_log(&mut app);
     paint(&mut app);
     let git = |args: &[&str]| {
-        let run = Command::new("git").arg("-C").arg(&root).args(args).output();
+        let run = crate::app::snapshot::quiet(Command::new("git"))
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output();
         assert!(run.unwrap().status.success());
     };
     git(&["branch", "made-elsewhere"]);
