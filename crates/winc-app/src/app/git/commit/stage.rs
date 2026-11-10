@@ -382,7 +382,7 @@ impl App {
         let sender = self.commit.stage_results.0.clone();
         self.run_git_job(move |git, root| {
             let result = git.and_then(|git| match job {
-                Job::Whole { stage: true, paths } => git.stage(root, &paths),
+                Job::Whole { stage: true, paths } => git.stage(root, &paths).map(|_| ()),
                 Job::Whole {
                     stage: false,
                     paths,
