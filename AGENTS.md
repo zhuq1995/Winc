@@ -25,7 +25,8 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 本仓库是 `DEEIX-AI/Winc` 的 fork，自有功能与上游更新长期并存。以下规则适用于所有改动。
 
-- `origin` 是自己的 fork，`upstream` 是原项目；只从 `upstream/main` 拉更新。
+- `origin` 是自己的 fork，`upstream` 是原项目；常规更新只从 `upstream/main` 拉。
+- `upstream/dev` 的提交已合入 `dev`：从 `dev` 新建 `merge/upstream-dev`，合并、解决冲突、跑测试后 `--no-ff` 合回 `dev`，再删试验分支。
 - 同步：`git fetch upstream && git merge upstream/main`。禁止对 `dev` rebase 或 force push。
 - 分支布局：`mirror` 只跟 `upstream/main`，是只读基线，不在上面提交；`dev` 是集成线，只接收上游合并与功能分支；私有开发在 `feat/*` 上进行，完成后 `git merge --no-ff` 回 `dev`。
 - `feat/*` 生命周期控制在一周内；长期不回流的私有分支等于第二条分叉，冲突成本随上游提交线性增加。
