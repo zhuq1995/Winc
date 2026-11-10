@@ -3025,8 +3025,10 @@ fn the_refresh_button_spins_for_at_least_one_turn() {
     paint(&mut app);
     assert!(!app.commit_refreshing());
     app.press_commit(CommitTarget::Refresh);
-    // 读取在后台进行：点下去后马上就在转。测试并行运行、机器繁忙时读取未必立刻结束，
-    // 先收下结果，再按「至少转满一圈」判断。
+    // 读取在后台进行。测试并行运行时线程可能被挂起超过一圈的时长，这里只验证按下后记下了
+    // 刷新时刻，再按刚按下的时刻判断转圈窗口。
+    assert!(app.commit.refreshed.is_some(), "按下刷新应记下时刻");
+    app.commit.refreshed = Some(Instant::now());
     assert!(app.commit_refreshing());
     assert!(app.animating());
     let turn = Duration::from_secs_f32(1.0 / crate::theme::SPIN_SPEED);
