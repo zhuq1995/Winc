@@ -13,7 +13,8 @@
 ```rust
 // winc-editor/src/git/staging.rs
 impl Git {
-    fn stage(&self, root: &Path, paths: &[PathBuf]) -> Result<(), String>;
+    // git.rs；返回 git 的输出摘要
+    fn stage(&self, root: &Path, paths: &[PathBuf]) -> Result<String, String>;
     fn unstage(&self, root: &Path, paths: &[PathBuf]) -> Result<(), String>;
     fn index_content(&self, root: &Path, path: &Path, cancel: &Cancel)
         -> Result<Option<Vec<u8>>, String>;
@@ -26,6 +27,21 @@ pub fn commit(&self, root: &Path, message: &str, amend: bool) -> Result<String, 
 ```
 
 `content` 是工作区形式的目标 index 内容：调用方用 `winc_core::diff::pick_changes` 从当前 index 内容与磁盘内容组合得到。
+
+## 3. 上游合并提示
+
+合并 `upstream/dev` 时以下位置按 fork 的暂存模型解决，不要退回上游的内存勾选：
+
+| 位置 | fork 取值 |
+| --- | --- |
+| `DiffTarget` | `StageHunk`／`StageLine`（上游 `Include`／`IncludeLine` 是旧模型） |
+| `app/diff.rs` | `stage_diff_hunk`／`stage_diff_line`／`diff_commit_file` |
+| `view/diff.rs` | `stage` 分支画 ＋／−，不画勾选框 |
+| `view/git/commit.rs` | `stage_button` 画 ＋／−；浏览历史差异时（`commit.browse`）两者都不画、不记录命中 |
+| `Git::stage` | `git.rs` 中的 `Result<String, String>`；`staging.rs` 不重复定义 |
+| 格式化结果 | 保留 `job` 编号，`poll_formatting`／`formatting_done`／`wait_formatting` 三处一致 |
+
+上游新增的 `CommitState::browse`／`with_log_list`／日志差异文件列表整体保留，只把行身份换成 `(组, 路径)`。
 
 ## 3. 契约
 
@@ -93,7 +109,7 @@ command.args(["commit", "--file=-", "--cleanup=whitespace"]);
 
 ```rust
 // 错误：部分暂存失败后整文件暂存。
-if stage_partial(..).is_err() { git.stage(root, &[path])?; }
+if stage_partial(..).is_err() { git.stage(root, &[path]).map(|_| ())?; }
 
 // 正确：返回原因，刷新后让用户重新选择。
 stage_partial(root, &path, &content)?;
