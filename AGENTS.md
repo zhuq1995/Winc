@@ -29,8 +29,10 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 - 同步：`git fetch upstream && git merge upstream/main`。禁止对 `dev` rebase 或 force push。
 - 分支布局：`mirror` 只跟 `upstream/main`，是只读基线，不在上面提交；`dev` 是集成线，只接收上游合并与功能分支；私有开发在 `feat/*` 上进行，完成后 `git merge --no-ff` 回 `dev`。
 - `feat/*` 生命周期控制在一周内；长期不回流的私有分支等于第二条分叉，冲突成本随上游提交线性增加。
-- Trellis 工具文件（`.trellis/`、`.agents/`、`.pi/`、`.gitattributes`）不进入 `dev`，也不进入 `feat/*` 的提交：它们保持未跟踪，本机可用即可。`chore/trellis-tooling` 只保存这份工具的备份，永远不合入 `dev`。
-- 提交时用显式路径（`git add crates AGENTS.md`），不要用 `git add -A`，避免把未跟踪的 Trellis 文件带进代码提交。
+- Trellis 工具文件（`.trellis/`、`.agents/`、`.pi/`）只在 `chore/trellis-tooling` 分支上做版本管理，永远不合入 `dev`。该分支检出在 `../Winc-trellis` worktree（稀疏检出，只含工具路径）；主线工作区的 `.trellis`、`.agents`、`.pi` 是指向它的 junction。
+- 工具配置、任务、journal 的改动在 `../Winc-trellis` 里 `git add` 并提交、推送到 `origin/chore/trellis-tooling`；不要在主线工作区提交这些路径。
+- 主线用 `.git/info/exclude` 忽略三个工具目录；提交代码用显式路径（`git add crates AGENTS.md`），不要用 `git add -A`。
+- junction 只在 Windows 上有效。换机器或重新 clone 后按上面步骤重建 worktree 和目录联接，`git worktree list` 可确认现状。
 - 合并前先提交本地改动，保持工作区干净；冲突只在 `dev`（或功能分支）上解决一次。
 - fork 自有代码放在新文件、新模块里；上游文件优先加调用点，不改写函数体。禁止全仓格式化、批量改名、移动上游模块——这些会让之后每次合并都冲突。
 - 上游高频文件：`crates/winc-app/src/winc.rs`、`app.rs`、`app/lifecycle/*`、`layout.rs`、`app/input/*`、`view/workspace/*`。改这些文件时在提交说明里写清触碰的上游函数，便于合并时定位。
