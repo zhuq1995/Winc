@@ -51,7 +51,7 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 1. `git switch -c merge/upstream-dev dev`，`git merge --no-ff --no-commit upstream/dev`。
 2. 逐文件解决冲突，取舍见下表；每解决一个 `git add <文件>`，`git diff --name-only --diff-filter=U` 为空后继续。
 3. `cargo fmt --all`；`cargo clippy --workspace --all-targets` 无警告。
-4. `PATH="/c/Program Files/Git/cmd:$PATH" cargo test -p winc-app -p winc-editor -p winc-i18n --no-fail-fast` 全绿。
+4. `PATH="/c/Program Files/Git/cmd:$PATH" cargo test --workspace --no-fail-fast` 全绿；已知基线失败只有 `winc-pty --test windows` 的伪控制台用例。
 5. 在试验分支提交合并，提交说明列出冲突取舍与触碰的上游高频文件；`git switch dev && git merge --no-ff merge/upstream-dev`，推送 `origin/dev`，删除试验分支。
 6. 合并带来的规范变化写进 `.trellis/spec/backend/*`（在 `../Winc-trellis` 提交推送）；本节的取舍表随之下沉。
 
@@ -65,6 +65,8 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 | --- | --- |
 | 提交列表勾选框（`Include`／`IncludeLine`、`toggle_diff_*`、`reset_checks`） | fork 的 ＋／− 暂存：`DiffTarget::StageHunk`／`StageLine`、`stage_diff_*`、`commit.staging` 互斥 |
 | `Git::stage` 签名 | 只保留 `git.rs` 中的 `Result<String, String>`，`staging.rs` 不重复定义；调用点补 `.map(|_| ())` |
+| 每帧命中区域 | 采纳上游 `App::hits`（`hits.commit`、`hits.tree_tools` 等）；项目列表的 `projects_hits`／`projects_close`／`projects_keys` 是自有字段，留在 `App` 上 |
+| 字段分组 | 采纳上游 `tree`／`sidebar`／`picker`／`find`／`closing`；`deferred_close`（推迟的关闭请求）与 `closing.confirming`（终端确认）是两个概念，保持分开 |
 | 提交视图行身份 | `(CommitGroup, 路径)`；上游的 `browse`／`with_log_list` 保留，浏览历史差异时隐藏暂存控件并跳过其命中区域 |
 | 格式化结果 | 保留 fork 的 `job` 编号，`poll_formatting`／`formatting_done`／`wait_formatting` 三处一致 |
 | 项目栏与窗口生命周期 | fork 的单窗口逻辑优先（`layout.projects`、`traffic_lights_moved`、`Target::Blocked` 等），采纳上游新增分支与文案 |
