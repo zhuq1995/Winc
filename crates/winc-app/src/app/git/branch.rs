@@ -39,15 +39,18 @@ pub enum BranchOp {
     Delete,
     /// 和当前分支比较：打开日志，列出从当前分支到它改了的文件。
     Compare,
+    /// 把分支名复制到剪贴板，不改仓库。
+    CopyName,
 }
 
 impl BranchOp {
-    /// 操作菜单的各组，顺序就是菜单里的顺序：切换和新建、比较、合到当前分支、删除。
-    const GROUPS: [&[BranchOp]; 4] = [
+    /// 操作菜单的各组，顺序就是菜单里的顺序：切换和新建、比较、合到当前分支、删除、复制分支名。
+    const GROUPS: [&[BranchOp]; 5] = [
         &[BranchOp::Checkout, BranchOp::NewWorktree, BranchOp::NewFrom],
         &[BranchOp::Compare],
         &[BranchOp::Merge, BranchOp::Rebase],
         &[BranchOp::Rename, BranchOp::Delete],
+        &[BranchOp::CopyName],
     ];
 
     /// 菜单里的文字：不写分支名。菜单是从这个分支的那一行弹出来的，另一边总是当前分支。
@@ -61,6 +64,7 @@ impl BranchOp {
             BranchOp::Rename => t!("git-branch-rename"),
             BranchOp::Delete => t!("git-branch-delete"),
             BranchOp::Compare => t!("git-branch-compare-with-current"),
+            BranchOp::CopyName => t!("git-branch-copy-name"),
         }
     }
 }
@@ -261,10 +265,10 @@ pub(crate) fn stash_menu(stashes: &[Stash], busy: bool) -> Vec<MenuEntry> {
 
 /// 分支选择器里第 `index` 个分支的操作菜单：按 `BranchOp::GROUPS` 分组，组之间有分隔线。
 ///
-/// `branches` 是本地分支在前、远程分支在后的列表，当前分支只能重命名：从当前分支新建分支、工作树
-/// 在分支选择器的底部；`held` 是被别的工作树
-/// 签出的本地分支，它们的「签出」是切到那个工作树，不能删除；`stale` 是被目录已经不在的工作树
-/// 占着的分支，git 仍然不允许签出、删除，要先清理。
+/// `branches` 是本地分支在前、远程分支在后的列表，当前分支只能重命名、复制分支名：从当前分支
+/// 新建分支、工作树在分支选择器的底部；`held` 是被别的工作树签出的本地分支，它们的「签出」是切到
+/// 那个工作树，不能删除；`stale` 是被目录已经不在的工作树占着的分支，git 仍然不允许签出、删除，
+/// 要先清理。
 pub(crate) fn branch_ops(
     index: usize,
     branches: &[Branch],
@@ -283,7 +287,7 @@ pub(crate) fn branch_ops(
             .copied()
             .filter(|op| match op {
                 // 当前分支不能签出、合并、变基、删除自己。
-                _ if branch.current => matches!(op, BranchOp::Rename),
+                _ if branch.current => matches!(op, BranchOp::Rename | BranchOp::CopyName),
                 // 已经在其他工作树里签出着、又是当前分支（`origin/main` 在 `main` 上）：
                 // 不能再签出该分支。
                 BranchOp::NewWorktree => {
@@ -303,6 +307,8 @@ pub(crate) fn branch_ops(
                     BranchOp::Delete => !busy && !elsewhere && !gone,
                     BranchOp::Checkout if elsewhere => true,
                     BranchOp::Checkout if gone => false,
+                    // 复制分支名不碰仓库，忙的时候也能点。
+                    BranchOp::CopyName => true,
                     _ => !busy,
                 };
                 MenuEntry::Item(GitBranch(op, index), enabled)
@@ -490,6 +496,7 @@ impl App {
             BranchOp::Rename => self.open_rename_prompt(name),
             BranchOp::Delete => self.confirm_delete_branch(name),
             BranchOp::Compare => self.git_compare_branch(&name),
+            BranchOp::CopyName => self.set_clipboard(name, false),
         }
     }
 

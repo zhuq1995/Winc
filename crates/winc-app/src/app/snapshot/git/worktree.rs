@@ -84,6 +84,7 @@ fn worktrees_show_in_the_location_picker_and_the_branch_menu() {
     let commands = menu_commands(&app);
     assert!(commands.contains(&(MenuCommand::LocationNewWindow, true)));
     assert!(commands.contains(&(MenuCommand::LocationRemove, true)));
+    assert!(commands.contains(&(MenuCommand::LocationCopyName, true)));
     app.open_context_menu(
         MenuTarget::Location(places[0].path.clone(), Some(0)),
         (0.0, 0.0),
@@ -108,6 +109,7 @@ fn worktrees_show_in_the_location_picker_and_the_branch_menu() {
     let checkout = MenuCommand::GitBranch(BranchOp::Checkout, feat);
     assert!(commands.contains(&(checkout, true)));
     assert!(commands.contains(&(MenuCommand::GitBranch(BranchOp::Delete, feat), false)));
+    assert!(commands.contains(&(MenuCommand::GitBranch(BranchOp::CopyName, feat), true)));
     assert!(app.menu_label(checkout).title.starts_with("切换到工作树「"));
     // 切换在当前窗口完成，和位置选择器、分支选择器一样。
     app.context_menu = None;

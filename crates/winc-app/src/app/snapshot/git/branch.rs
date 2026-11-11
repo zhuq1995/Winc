@@ -66,8 +66,8 @@ fn branch_menu_creates_switches_pushes_and_deletes() {
             .filter(|entry| matches!(entry, MenuEntry::Item(..)))
             .count()
     };
-    assert_eq!(ops(&app, "featurex"), 1);
-    assert_eq!(ops(&app, "main"), 8);
+    assert_eq!(ops(&app, "featurex"), 2);
+    assert_eq!(ops(&app, "main"), 9);
 
     // 检出 main，再删除 featurex。
     let main = index_of(&app, "main");

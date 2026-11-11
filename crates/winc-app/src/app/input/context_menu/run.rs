@@ -212,6 +212,10 @@ impl App {
             MenuTarget::Location(path, worktree) => match command {
                 MenuCommand::LocationNewWindow => self.open_in_new_window(&path),
                 MenuCommand::LocationReveal => self.reveal_in_file_manager(&path),
+                MenuCommand::LocationCopyName => {
+                    let name = winc_editor::git::repo_name(&path);
+                    self.set_clipboard(name, false);
+                }
                 MenuCommand::LocationPrune => {
                     self.close_picker();
                     self.prune_worktrees();

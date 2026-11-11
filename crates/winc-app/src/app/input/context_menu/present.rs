@@ -615,6 +615,7 @@ impl App {
                 let mut menu = vec![
                     MenuEntry::Item(MenuCommand::LocationNewWindow, true),
                     MenuEntry::Item(MenuCommand::LocationReveal, true),
+                    MenuEntry::Item(MenuCommand::LocationCopyName, true),
                 ];
                 if worktree.is_some_and(|i| i > 0) {
                     menu.push(MenuEntry::Separator);
