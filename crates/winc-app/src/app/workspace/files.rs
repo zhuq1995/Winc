@@ -735,7 +735,7 @@ impl App {
         {
             use crate::macos::{Panel, show_panel};
 
-            let Some(window) = self.window.clone() else {
+            let Some(window) = self.window.handle.clone() else {
                 self.on_picked(kind, None);
                 return;
             };

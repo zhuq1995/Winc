@@ -62,6 +62,8 @@ fn hiding_records_untitled_backup_in_the_workspace_session() {
     let root = std::env::temp_dir().join(format!("winc-hide-backup-{}", std::process::id()));
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
+    // `Workspace::open` 存的是规范化后的根：macOS 的临时目录经过 `/var` 符号链接。
+    let workspace = winc_config::files::canonicalize(&workspace).unwrap();
     let mut editor = Editor::default();
     editor.open_folder(&workspace).unwrap();
     editor.new_untitled();

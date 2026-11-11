@@ -190,7 +190,12 @@ impl App {
             return false;
         }
         #[cfg(target_os = "macos")]
-        if self.window.as_deref().is_some_and(crate::macos::has_sheet) {
+        if self
+            .window
+            .handle
+            .as_deref()
+            .is_some_and(crate::macos::has_sheet)
+        {
             return false;
         }
         true
