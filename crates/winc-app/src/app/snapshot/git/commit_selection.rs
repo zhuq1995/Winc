@@ -37,7 +37,8 @@ fn command_and_shift_clicks_pick_several_files_in_one_group() {
             .position(|e| e.path == file.path)
             .unwrap();
         let row = app
-            .commit_hits
+            .hits
+            .commit
             .iter()
             .find(|(_, t)| {
                 *t == CommitTarget::File {
@@ -77,7 +78,8 @@ fn command_and_shift_clicks_pick_several_files_in_one_group() {
             .iter()
             .position(|e| e.path == file.path)
             .unwrap();
-        app.commit_hits
+        app.hits
+            .commit
             .iter()
             .find(|(_, t)| {
                 *t == CommitTarget::File {
@@ -264,7 +266,8 @@ fn arrow_keys_fold_the_selected_changes_folders_and_backspace_reverts_it() {
         Some(commit_file(CommitGroup::Changes, &main))
     );
     let header = app
-        .commit_hits
+        .hits
+        .commit
         .iter()
         .find(|(_, t)| *t == CommitTarget::Group(CommitGroup::Changes))
         .unwrap()

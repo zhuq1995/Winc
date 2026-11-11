@@ -130,14 +130,14 @@ fn quit_activates_each_project_and_keeps_the_original_for_restore() {
 
     assert!(!winc.settle().1);
     assert_eq!(winc.active_key(), Some(third));
-    assert!(winc.app(third).save_prompt.is_some());
-    assert!(winc.app(second).save_prompt.is_none());
+    assert!(winc.app(third).closing.prompt.is_some());
+    assert!(winc.app(second).closing.prompt.is_none());
 
     // 取消时，正在询问的项目保持活动，整个退出流程停止。
-    winc.app(third).save_prompt = None;
+    winc.app(third).closing.prompt = None;
     assert!(!winc.settle().1);
     assert_eq!(winc.active_key(), Some(third));
-    assert!(!winc.app(first).quit_requested);
+    assert!(!winc.app(first).closing.quit_requested);
     assert!(winc.quitting.is_none());
 
     winc.activate(first);
@@ -145,7 +145,7 @@ fn quit_activates_each_project_and_keeps_the_original_for_restore() {
     assert!(!winc.settle().1);
     for key in [third, second] {
         assert_eq!(winc.active_key(), Some(key));
-        assert!(winc.app(key).save_prompt.take().is_some());
+        assert!(winc.app(key).closing.prompt.take().is_some());
         winc.app(key)
             .editor
             .active_mut()
@@ -168,15 +168,15 @@ fn closed_quit_origin_still_asks_remaining_projects() {
     let second = winc.add_detached(dirty_app());
     winc.app(first).request_close_project();
     winc.app(first).request_quit();
-    assert!(winc.app(first).project_closed && winc.app(first).quit_requested);
+    assert!(winc.app(first).project_closed && winc.app(first).closing.quit_requested);
 
     assert!(!winc.settle().1);
     assert_eq!(winc.keys(), [second]);
     assert_eq!(
-        winc.app(second).save_prompt.as_ref().unwrap().request,
+        winc.app(second).closing.prompt.as_ref().unwrap().request,
         CloseRequest::Quit
     );
-    winc.app(second).save_prompt = None;
+    winc.app(second).closing.prompt = None;
     assert!(!winc.settle().1);
     assert!(winc.quitting.is_none());
     assert!(winc.app(second).editor.active().unwrap().is_dirty());
@@ -191,19 +191,19 @@ fn cancelling_quit_keeps_independent_save_continuations() {
         let closing = winc.add_detached(dirty_app());
         let id = winc.app(closing).editor.active().unwrap().id;
         winc.app(closing).request_close_project();
-        let mut prompt = winc.app(closing).save_prompt.take().unwrap();
+        let mut prompt = winc.app(closing).closing.prompt.take().unwrap();
         prompt.deferred = Some(CloseRequest::Quit);
-        winc.app(closing).save_continuation = Some(prompt);
+        winc.app(closing).closing.continuation = Some(prompt);
         winc.app(closing).save_as_picker = Some(id);
 
         let saving = winc.add_detached(dirty_app());
         let saving_id = winc.app(saving).editor.active().unwrap().id;
         winc.app(saving).request_quit();
-        let prompt = winc.app(saving).save_prompt.take().unwrap();
+        let prompt = winc.app(saving).closing.prompt.take().unwrap();
         if formatted {
             winc.app(saving).format.then_close = Some(prompt);
         } else {
-            winc.app(saving).save_continuation = Some(prompt);
+            winc.app(saving).closing.continuation = Some(prompt);
             winc.app(saving).save_as_picker = Some(saving_id);
         }
         let starter = winc.add_detached(test_app());
@@ -211,12 +211,12 @@ fn cancelling_quit_keeps_independent_save_continuations() {
         winc.app(starter).request_quit();
         assert!(!winc.settle().1);
         assert_eq!(winc.active_key(), Some(canceller));
-        winc.app(canceller).save_prompt = None;
+        winc.app(canceller).closing.prompt = None;
         assert!(!winc.settle().1);
         assert!(winc.quitting.is_none());
 
         let app = winc.app(closing);
-        let prompt = app.save_continuation.as_ref().unwrap();
+        let prompt = app.closing.continuation.as_ref().unwrap();
         assert_eq!(prompt.request, CloseRequest::CloseProject);
         assert_eq!(prompt.dirty, [id]);
         assert!(prompt.deferred.is_none());
@@ -229,7 +229,7 @@ fn cancelling_quit_keeps_independent_save_continuations() {
             app.format.then_close.as_ref().unwrap()
         } else {
             assert_eq!(app.save_as_picker, Some(saving_id));
-            app.save_continuation.as_ref().unwrap()
+            app.closing.continuation.as_ref().unwrap()
         };
         assert_eq!(prompt.request, CloseRequest::Tabs(Vec::new()));
         assert_eq!(prompt.dirty, [saving_id]);
@@ -248,23 +248,23 @@ fn cancelling_quit_neutralizes_other_pending_quit_dialogs() {
     let id = winc.app(prompt).editor.active().unwrap().id;
     winc.app(prompt).request_quit();
     let terminal = winc.add_detached(test_app());
-    winc.app(terminal).quit_confirming = Some(CloseRequest::Quit);
+    winc.app(terminal).closing.confirming = Some(CloseRequest::Quit);
     let starter = winc.add_detached(test_app());
     let canceller = winc.add_detached(dirty_app());
     winc.app(starter).request_quit();
     assert!(!winc.settle().1);
     assert_eq!(winc.active_key(), Some(canceller));
-    winc.app(canceller).save_prompt = None;
+    winc.app(canceller).closing.prompt = None;
     assert!(!winc.settle().1);
 
     let app = winc.app(prompt);
-    let pending = app.save_prompt.as_ref().unwrap();
+    let pending = app.closing.prompt.as_ref().unwrap();
     assert_eq!(pending.request, CloseRequest::Tabs(Vec::new()));
     assert_eq!(pending.dirty, [id]);
     assert!(app.editor.document(id).unwrap().is_dirty());
     assert!(!app.quit_pending());
     assert_eq!(
-        winc.app(terminal).quit_confirming,
+        winc.app(terminal).closing.confirming,
         Some(CloseRequest::Tabs(Vec::new()))
     );
     assert!(!winc.app(terminal).quit_pending());
@@ -283,7 +283,7 @@ fn stale_quit_targets_are_skipped() {
     });
     assert!(winc.settle().1);
     assert_eq!(winc.active_key(), Some(active));
-    assert!(winc.app(active).quit_requested);
+    assert!(winc.app(active).closing.quit_requested);
 }
 
 #[test]
@@ -376,11 +376,11 @@ fn two_blank_projects_with_drafts_do_not_share_a_backup_lock() {
 
     winc.app(first).request_quit();
     assert!(!winc.settle().1);
-    assert!(winc.app(first).quit_requested);
-    assert!(winc.app(second).save_prompt.is_some());
-    winc.app(second).save_prompt = None;
+    assert!(winc.app(first).closing.quit_requested);
+    assert!(winc.app(second).closing.prompt.is_some());
+    winc.app(second).closing.prompt = None;
     assert!(!winc.settle().1);
-    assert!(!winc.app(first).quit_requested);
+    assert!(!winc.app(first).closing.quit_requested);
     assert!(winc.app(first).editor.active().unwrap().is_dirty());
     assert!(winc.app(second).editor.active().unwrap().is_dirty());
     drop(winc);
@@ -583,7 +583,7 @@ fn empty_backups_are_not_recovered_while_another_instance_holds_the_lock() {
     blank.config.hot_exit = Some(true);
     blank.backup.root = Some(backup_root.clone());
     blank.request_quit();
-    assert!(blank.quit_requested);
+    assert!(blank.closing.quit_requested);
 
     let folder = root.join("project");
     std::fs::create_dir_all(&folder).unwrap();

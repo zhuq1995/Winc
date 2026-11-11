@@ -57,6 +57,8 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 合并提交前确认上游新功能没有被冲突解决丢掉：逐个检查 `git log --oneline <旧dev>..upstream/dev` 中的 `feat:` 提交在合并结果里有对应实现与测试。
 
+合并的总原则：冲突处以自有化功能为主，不因上游改动丢掉单窗口项目列表、真实暂存区、格式化保存编号等行为。上游提供了同一功能时反过来——用上游实现替换自有实现，删掉 fork 版本，避免两份代码并存。
+
 冲突取舍：
 
 | 上游改动 | fork 取值 |

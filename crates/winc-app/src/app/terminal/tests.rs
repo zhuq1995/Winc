@@ -13,16 +13,16 @@ fn handoff_and_hiding_clear_terminal_focus_without_removing_tabs() {
     app.terminal.tabs.push(TermTab::new(1, Size::default()));
     app.terminal.open = true;
     app.terminal.focus_sent = true;
-    app.window_focused = true;
+    app.window.focused = true;
 
     let state = app.take_shell_state();
-    assert!(!app.terminal.focus_sent && !app.window_focused);
+    assert!(!app.terminal.focus_sent && !app.window.focused);
     assert_eq!(app.terminal.tabs.len(), 1);
 
     app.put_shell_state(state, false);
     app.terminal.focus_sent = true;
-    app.window_focused = true;
+    app.window.focused = true;
     app.request_close(CloseRequest::CloseWindow);
-    assert!(!app.terminal.focus_sent && !app.window_focused);
+    assert!(!app.terminal.focus_sent && !app.window.focused);
     assert_eq!(app.terminal.tabs.len(), 1);
 }

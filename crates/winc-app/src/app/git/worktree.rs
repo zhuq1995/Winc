@@ -396,7 +396,7 @@ impl App {
 
     /// 要移除的工作树在另一个窗口里开着：请用户先关闭那个窗口，可以直接切过去。
     fn ask_close_worktree_window(&mut self, name: &str, path: &Path) {
-        if self.window.is_some() {
+        if self.window.handle.is_some() {
             let message = t!("git-worktree-open-elsewhere", name = name);
             let detail = t!("git-worktree-open-elsewhere-detail");
             let buttons = vec![

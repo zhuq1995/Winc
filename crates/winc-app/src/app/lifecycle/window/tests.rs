@@ -22,8 +22,8 @@ fn shell_handoff_preserves_frame_controls_modifiers_and_clears_preedit() {
         scale: 1.5,
         maximized: false,
     };
-    first.window_frame = Some(frame);
-    first.window_controls = true;
+    first.window.frame = Some(frame);
+    first.window.controls = true;
     first.modifiers = ModifiersState::SHIFT | ModifiersState::ALT;
     first.option_side = (false, true);
     first.mouse = (30.0, 40.0);
@@ -33,7 +33,7 @@ fn shell_handoff_preserves_frame_controls_modifiers_and_clears_preedit() {
     first.field_preedit = "输入".into();
 
     let state = first.take_shell_state();
-    assert!(!first.window_focused);
+    assert!(!first.window.focused);
     assert!(!first.cursor_inside);
     assert!(first.preedit.is_empty() && first.field_preedit.is_empty());
 
@@ -41,15 +41,15 @@ fn shell_handoff_preserves_frame_controls_modifiers_and_clears_preedit() {
     second.preedit = "旧组字".into();
     second.field_preedit = "旧输入".into();
     second.put_shell_state(state, true);
-    assert_eq!(second.window_frame, Some(frame));
-    assert!(second.window_controls);
+    assert_eq!(second.window.frame, Some(frame));
+    assert!(second.window.controls);
     assert_eq!(
         second.modifiers,
         ModifiersState::SHIFT | ModifiersState::ALT
     );
     assert_eq!(second.option_side, (false, true));
     assert_eq!(second.mouse, (30.0, 40.0));
-    assert!(second.cursor_inside && second.window_focused);
+    assert!(second.cursor_inside && second.window.focused);
     assert_eq!(second.cursor_icon, CursorIcon::Text);
     assert!(second.preedit.is_empty() && second.field_preedit.is_empty());
 
@@ -57,10 +57,10 @@ fn shell_handoff_preserves_frame_controls_modifiers_and_clears_preedit() {
     second.option_side = (false, false);
     let state = second.take_shell_state();
     first.put_shell_state(state, false);
-    assert_eq!(first.window_frame, Some(frame));
+    assert_eq!(first.window.frame, Some(frame));
     assert_eq!(first.modifiers, ModifiersState::empty());
     assert_eq!(first.option_side, (false, false));
-    assert!(!first.window_focused);
+    assert!(!first.window.focused);
 }
 
 #[test]

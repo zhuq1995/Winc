@@ -464,7 +464,7 @@ impl App {
             });
             return Ok(());
         }
-        if self.window.is_some() {
+        if self.window.handle.is_some() {
             use crate::app::AlertButton;
 
             let message = if approval.on_save {
