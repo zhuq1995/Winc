@@ -34,7 +34,7 @@ fn closing_one_project_keeps_the_other_and_the_last_one_shows_the_start_page() {
     winc.app(a).request_close_project();
     let (_, exit) = winc.settle_for_test();
     assert_eq!(winc.keys(), [a]);
-    assert!(!exit && !winc.app(a).quit_requested);
+    assert!(!exit && !winc.app(a).closing.quit_requested);
     assert!(winc.app(a).editor.workspace.is_none() && winc.app(a).editor.documents.is_empty());
     assert!(!winc.app(a).project_closed, "最后一个项目留在开始页上");
     let _ = std::fs::remove_dir_all(&dir);
@@ -51,7 +51,7 @@ fn closing_a_project_without_a_folder_asks_about_unsaved_files() {
     winc.app(b).new_file();
     winc.app(b).run(Command::Insert("笔记".into()));
     winc.app(b).request_close_project();
-    assert!(winc.app(b).save_prompt.is_some() && !winc.app(b).project_closed);
+    assert!(winc.app(b).closing.prompt.is_some() && !winc.app(b).project_closed);
     winc.app(b).answer_save_prompt(SaveChoice::Cancel);
     winc.settle_for_test();
     assert_eq!(winc.keys(), [a, b], "取消了就留着");
@@ -64,7 +64,7 @@ fn closing_a_project_without_a_folder_asks_about_unsaved_files() {
         .into(),
     ));
     winc.app(a).request_close_project();
-    assert!(winc.app(a).save_prompt.is_none());
+    assert!(winc.app(a).closing.prompt.is_none());
     winc.settle_for_test();
     assert_eq!(
         winc.keys(),
@@ -264,7 +264,7 @@ fn sidebar_animation_does_not_paint_over_the_project_list() {
                 Renderer::offscreen(width, 420.0, SCALE, app.palette.frame_bg, None, None).unwrap(),
             );
             for sidebar in [SidebarView::Files, SidebarView::Search, SidebarView::Commit] {
-                app.sidebar_view = sidebar;
+                app.sidebar.view = sidebar;
                 let mut reference = None;
                 for shown in [1.0, 0.75, 0.5, 0.25, 0.05, 0.0] {
                     app.layout = crate::layout::Layout::compute(
@@ -322,7 +322,7 @@ fn overflowing_tree_names_stay_out_of_a_narrow_project_list() {
     let before = renderer.image().unwrap().pixels.clone();
     app.hover = Hover::TreeRow(0);
     renderer.draw(|frame| view::draw(app, frame));
-    assert!(app.tree_overflow.is_some());
+    assert!(app.tree.overflow.is_some());
     let image = renderer.image().unwrap();
     let (x0, x1) = ((area.x * SCALE) as usize, (area.right() * SCALE) as usize);
     let (y0, y1) = ((area.y * SCALE) as usize, (area.bottom() * SCALE) as usize);
@@ -331,7 +331,7 @@ fn overflowing_tree_names_stay_out_of_a_narrow_project_list() {
         let end = y * image.width as usize + x1;
         assert_eq!(&image.pixels[start..end], &before[start..end]);
     }
-    app.tree_overflow = Some((Rect::new(area.x, app.layout.tree.y, area.w, 30.0), 0));
+    app.tree.overflow = Some((Rect::new(area.x, app.layout.tree.y, area.w, 30.0), 0));
     app.on_mouse_down(MouseButton::Right);
     assert!(app.popup().is_none());
     let _ = std::fs::remove_dir_all(&dir);
@@ -407,15 +407,15 @@ fn close_project_command_and_menu_preserve_confirmation_on_the_last_project() {
     app.open_project_menu();
     assert!(menu_commands(app).contains(&(MenuCommand::CloseProject, true)));
     app.run_menu_command(MenuCommand::CloseProject);
-    assert!(app.save_prompt.is_some());
+    assert!(app.closing.prompt.is_some());
     app.answer_save_prompt(SaveChoice::Cancel);
     assert_eq!(app.editor.documents.len(), 1);
     app.open_palette();
-    app.picker_input.set_text(">close project");
+    app.picker.input.set_text(">close project");
     app.picker_refresh();
-    assert_eq!(palette()[app.picker_hits[0]], Action::CloseProject);
+    assert_eq!(palette()[app.picker.hits[0]], Action::CloseProject);
     app.picker_accept();
-    assert!(app.save_prompt.is_some());
+    assert!(app.closing.prompt.is_some());
     app.answer_save_prompt(SaveChoice::Cancel);
 
     let binding = *crate::keymap::current()
@@ -424,10 +424,10 @@ fn close_project_command_and_menu_preserve_confirmation_on_the_last_project() {
         .unwrap();
     assert!(app.on_shortcut(binding.first));
     assert!(app.on_shortcut(binding.second.unwrap()));
-    assert!(app.save_prompt.is_some());
+    assert!(app.closing.prompt.is_some());
     app.answer_save_prompt(SaveChoice::Discard);
     assert!(app.editor.documents.is_empty());
-    assert!(!app.quit_requested && !app.project_closed);
+    assert!(!app.closing.quit_requested && !app.project_closed);
 }
 
 #[test]
@@ -484,7 +484,7 @@ fn quitting_one_window_quits_all_of_them() {
     winc.set_active(a);
     winc.app(a).request_quit();
     let (_, exit) = winc.settle_for_test();
-    assert!(winc.app(b).quit_requested, "其他窗口也请它退出");
+    assert!(winc.app(b).closing.quit_requested, "其他窗口也请它退出");
     assert!(exit, "都退了才结束事件循环");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -500,17 +500,20 @@ fn cancelling_in_one_window_calls_the_whole_quit_off() {
 
     winc.app(a).request_quit();
     let (_, exit) = winc.settle_for_test();
-    assert!(!exit && winc.app(b).save_prompt.is_some(), "第二个窗口在问");
-    assert!(winc.app(a).quit_requested);
+    assert!(
+        !exit && winc.app(b).closing.prompt.is_some(),
+        "第二个窗口在问"
+    );
+    assert!(winc.app(a).closing.quit_requested);
 
     winc.app(b).answer_save_prompt(SaveChoice::Cancel);
     let (_, exit) = winc.settle_for_test();
     assert!(!exit);
     assert!(
-        !winc.app(a).quit_requested,
+        !winc.app(a).closing.quit_requested,
         "取消了：已经同意退出的窗口照常开着"
     );
-    assert!(!winc.app(b).quit_requested);
+    assert!(!winc.app(b).closing.quit_requested);
 
     // 再退一次，这次不保存：都退了。
     winc.app(a).request_quit();
@@ -572,7 +575,7 @@ fn opening_another_folder_asks_for_a_new_project() {
 }
 
 #[test]
-fn dropped_on_the_dock_icon_open_in_the_window_that_has_them_or_a_blank_one() {
+fn dropped_on_the_dock_icon_open_in_the_window_that_has_them_or_the_current_one() {
     let (mut winc, a, b, dir) = two_windows("windows-dock");
     winc.settle_for_test();
     let src = winc_config::files::canonicalize(dir.join("src")).unwrap();
@@ -585,18 +588,18 @@ fn dropped_on_the_dock_icon_open_in_the_window_that_has_them_or_a_blank_one() {
     // 开着它所在目录的窗口收下。
     assert_eq!(winc.window_for_test(&[target(&src.join("main.rs"))]), Ok(a));
 
-    // 其他目录的文件：没有窗口开着该目录，第二个窗口停在开始页上，就在该窗口里打开文件
-    // 所在的目录，不再新建窗口。
+    // 项目外的文件：交给当前窗口，窗口打开的目录不变，也不打开文件所在的目录。
     let elsewhere = winc_config::files::canonicalize(&dir).unwrap();
-    winc.set_active(a);
-    assert_eq!(
-        winc.window_for_test(&[target(&elsewhere.join("a.txt"))]),
-        Ok(b)
-    );
-    assert_eq!(winc.app(b).editor.root(), Some(elsewhere.as_path()));
+    let file = elsewhere.join("a.txt");
+    for (key, root) in [(a, Some(src.clone())), (b, None)] {
+        winc.set_active(key);
+        assert_eq!(winc.window_for_test(&[target(&file)]), Ok(key));
+        winc.app(key).open_files(&[target(&file)]);
+        assert_eq!(winc.app(key).editor.root(), root.as_deref());
+    }
     winc.settle_for_test();
 
-    // 两个窗口都开着目录：要新建窗口打开别的目录。
+    // 目录不交给已有标签的窗口：没有空着的窗口时新建窗口打开。
     let other = search_folder("windows-dock-other");
     let other = winc_config::files::canonicalize(&other).unwrap();
     assert_eq!(
@@ -760,17 +763,17 @@ fn a_window_busy_with_another_question_is_asked_again_after_it() {
     winc.app(b).run(Command::Insert("x".into()));
     let tab = winc.app(b).editor.active.unwrap();
     winc.app(b).close_tab(tab);
-    assert!(winc.app(b).save_prompt.is_some(), "在问关标签要不要保存");
+    assert!(winc.app(b).closing.prompt.is_some(), "在问关标签要不要保存");
 
     winc.set_active(a);
     winc.app(a).request_quit();
     let (_, exit) = winc.settle_for_test();
-    assert!(!exit && !winc.app(b).quit_requested, "先等它问完");
+    assert!(!exit && !winc.app(b).closing.quit_requested, "先等它问完");
 
     // 关标签那件事答完：再请它退出，标签已关、没有要问的，整个退出完成。
     winc.app(b).answer_save_prompt(SaveChoice::Discard);
     let (_, exit) = winc.settle_for_test();
-    assert!(exit && winc.app(b).quit_requested);
+    assert!(exit && winc.app(b).closing.quit_requested);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -819,7 +822,7 @@ fn a_drawn_title_bar_has_window_buttons_and_resize_edges() {
     let app = winc.app(a);
     paint(app);
     assert_eq!(app.layout.controls, Rect::default(), "默认用系统的标题栏");
-    app.window_controls = true;
+    app.window.controls = true;
     app.relayout();
     paint(app);
     let controls = app.layout.controls;
@@ -859,9 +862,9 @@ fn a_drawn_title_bar_has_window_buttons_and_resize_edges() {
     let (_, exit) = winc.settle_for_test();
     assert_eq!(winc.keys(), [a, b]);
     if cfg!(target_os = "macos") {
-        assert!(!exit && winc.app(a).window_hidden);
+        assert!(!exit && winc.app(a).window.hidden);
     } else {
-        assert!(winc.app(a).quit_requested && winc.app(b).quit_requested && exit);
+        assert!(winc.app(a).closing.quit_requested && winc.app(b).closing.quit_requested && exit);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -876,14 +879,49 @@ fn the_title_bar_setting_applies_at_once() {
     let app = winc.app(a);
     app.sync_title_bar();
     app.relayout();
-    assert!(app.window_controls && app.layout.controls.w > 0.0);
+    assert!(app.window.controls && app.layout.controls.w > 0.0);
     assert!(!app.switch_on(Setting::SystemTitleBar));
     app.settings_toggle(Setting::SystemTitleBar);
     assert_eq!(app.config.ui_native_title_bar, Some(true));
-    assert!(!app.window_controls);
+    assert!(!app.window.controls);
     assert_eq!(app.layout.controls, Rect::default());
     app.settings_toggle(Setting::SystemTitleBar);
-    assert!(app.window_controls && app.layout.controls.w > 0.0);
+    assert!(app.window.controls && app.layout.controls.w > 0.0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 各窗口共用同一张背景图层：第二个窗口直接采用已有的，不再生成。
+#[test]
+fn windows_share_one_background_layer() {
+    let (mut winc, a, b, dir) = two_windows("windows-wallpaper");
+    let image = dir.join("bg.png");
+    let red = winc_render::Image {
+        pixels: vec![0xffff_0000; 64 * 48],
+        width: 64,
+        height: 48,
+    };
+    write_png(&image, &red).unwrap();
+    for key in [a, b] {
+        winc.app(key).config.ui_background_image = Some(image.to_string_lossy().into_owned());
+    }
+    paint(winc.app(a));
+    winc.app(a).wait_for_wallpaper();
+    paint(winc.app(a));
+    let layer = |app: &App| app.renderer.as_ref().unwrap().wallpaper().cloned();
+    let first = layer(winc.app(a)).expect("第一个窗口的图层");
+
+    paint(winc.app(b));
+    assert!(!winc.app(b).wallpaper.is_busy());
+    let second = layer(winc.app(b)).expect("第二个窗口的图层");
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    drop(second);
+
+    // 两个窗口都取消后，图层释放。
+    for key in [a, b] {
+        winc.app(key).config.ui_background_image = None;
+        paint(winc.app(key));
+    }
+    assert_eq!(std::sync::Arc::strong_count(&first), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

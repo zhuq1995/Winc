@@ -118,7 +118,7 @@ fn switching_folders_in_a_wait_session_preserves_the_waited_tab_and_cancel() {
         [crate::winc::Request::OpenFolder(second.clone())]
     );
     assert!(winc.open_folder_for_test(&second));
-    assert!(winc.app(key).save_prompt.is_some());
+    assert!(winc.app(key).closing.prompt.is_some());
     winc.app(key).answer_save_prompt(SaveChoice::Cancel);
     assert_eq!(winc.app(key).editor.root(), Some(first.as_path()));
     assert!(winc.app(key).editor.document(id).unwrap().is_dirty());

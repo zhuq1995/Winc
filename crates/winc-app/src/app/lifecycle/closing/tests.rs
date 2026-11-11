@@ -36,20 +36,24 @@ fn hiding_a_dirty_window_keeps_documents_and_explicit_quit_still_prompts() {
     } else {
         app.request_close(CloseRequest::CloseWindow);
     }
-    assert!(app.window_hidden);
-    assert!(!app.window_focused);
-    assert!(!app.quit_requested && app.save_prompt.is_none() && app.quit_confirming.is_none());
+    assert!(app.window.hidden);
+    assert!(!app.window.focused);
+    assert!(
+        !app.closing.quit_requested
+            && app.closing.prompt.is_none()
+            && app.closing.confirming.is_none()
+    );
     assert!(app.editor.active().unwrap().is_dirty());
     assert_eq!(app.terminal.tabs.len(), 1);
     assert!(app.terminal_busy() && app.settings.open);
 
     app.request_quit();
     assert_eq!(
-        app.save_prompt.as_ref().unwrap().request,
+        app.closing.prompt.as_ref().unwrap().request,
         CloseRequest::Quit
     );
     app.answer_save_prompt(SaveChoice::Cancel);
-    assert!(app.window_hidden && !app.quit_requested);
+    assert!(app.window.hidden && !app.closing.quit_requested);
     assert!(app.editor.active().unwrap().is_dirty());
 }
 
@@ -77,7 +81,7 @@ fn hiding_records_untitled_backup_in_the_workspace_session() {
     let backups =
         winc_editor::backup::Backups::new(app.backup.root.as_ref().unwrap(), Some(&workspace));
     assert_eq!(backups.read_all().len(), 1);
-    assert!(app.window_hidden && app.editor.active().unwrap().is_dirty());
+    assert!(app.window.hidden && app.editor.active().unwrap().is_dirty());
 
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
@@ -110,23 +114,23 @@ fn close_requests_do_not_interrupt_a_pending_save_as() {
         CloseRequest::Tabs(vec![id]),
     ] {
         app.request_close(request);
-        let prompt = app.save_continuation.as_ref().unwrap();
+        let prompt = app.closing.continuation.as_ref().unwrap();
         assert_eq!(prompt.request, CloseRequest::Tabs(vec![id]));
         assert_eq!(prompt.dirty, [id]);
-        assert!(app.save_prompt.is_none());
+        assert!(app.closing.prompt.is_none());
         assert!(app.editor.document(id).unwrap().is_dirty());
-        assert!(!app.project_closed && !app.quit_requested);
+        assert!(!app.project_closed && !app.closing.quit_requested);
     }
 
     app.request_quit();
     app.request_close_project();
-    assert!(app.save_prompt.is_none());
+    assert!(app.closing.prompt.is_none());
     assert_eq!(
-        app.save_continuation.as_ref().unwrap().request,
+        app.closing.continuation.as_ref().unwrap().request,
         CloseRequest::Tabs(vec![id])
     );
     app.on_picked(Pick::SaveAs(id), None);
-    assert!(app.save_continuation.is_none());
+    assert!(app.closing.continuation.is_none());
     assert!(app.editor.document(id).unwrap().is_dirty());
     assert!(!app.closing_pending());
 }
@@ -143,7 +147,12 @@ fn closing_a_project_finishes_the_original_save_as_before_removal() {
     assert!(!winc.settle_for_test().1);
     assert_eq!(winc.keys(), [first, second]);
     assert_eq!(
-        winc.app(first).save_continuation.as_ref().unwrap().request,
+        winc.app(first)
+            .closing
+            .continuation
+            .as_ref()
+            .unwrap()
+            .request,
         CloseRequest::CloseProject
     );
 
@@ -156,11 +165,11 @@ fn closing_a_project_finishes_the_original_save_as_before_removal() {
     assert_eq!(winc.keys(), [second]);
     assert!(winc.app(second).editor.active().unwrap().is_dirty());
     assert!(
-        winc.app(second).save_prompt.is_some(),
+        winc.app(second).closing.prompt.is_some(),
         "关闭项目后的退出请求应交给剩余项目"
     );
     assert_eq!(
-        winc.app(second).save_prompt.as_ref().unwrap().request,
+        winc.app(second).closing.prompt.as_ref().unwrap().request,
         CloseRequest::Quit
     );
     winc.app(second).answer_save_prompt(SaveChoice::Cancel);
@@ -186,7 +195,12 @@ fn hot_exit_cannot_close_a_project_while_save_as_is_pending() {
     assert!(!winc.settle_for_test().1);
     assert_eq!(winc.keys(), [first, second]);
     assert_eq!(
-        winc.app(first).save_continuation.as_ref().unwrap().request,
+        winc.app(first)
+            .closing
+            .continuation
+            .as_ref()
+            .unwrap()
+            .request,
         CloseRequest::Tabs(vec![id])
     );
     assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
@@ -212,9 +226,14 @@ fn quitting_waits_for_another_projects_save_as() {
     winc.set_active(second);
     winc.app(second).request_quit();
     assert!(!winc.settle_for_test().1);
-    assert!(winc.app(first).save_prompt.is_none());
+    assert!(winc.app(first).closing.prompt.is_none());
     assert_eq!(
-        winc.app(first).save_continuation.as_ref().unwrap().request,
+        winc.app(first)
+            .closing
+            .continuation
+            .as_ref()
+            .unwrap()
+            .request,
         CloseRequest::Tabs(vec![id])
     );
 
@@ -243,13 +262,13 @@ fn cancelling_save_as_keeps_the_document_and_quit_can_be_cancelled() {
     ));
     winc.app(second).request_quit();
     assert!(!winc.settle_for_test().1);
-    assert!(winc.app(first).save_prompt.is_none());
+    assert!(winc.app(first).closing.prompt.is_none());
 
     winc.app(first).on_picked(Pick::SaveAs(id), None);
     assert!(!winc.settle_for_test().1);
     assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
     assert!(!winc.app(first).closing_pending());
-    assert!(!winc.app(second).quit_requested);
+    assert!(!winc.app(second).closing.quit_requested);
     assert_eq!(winc.keys(), [first, second]);
 }
 
@@ -258,7 +277,7 @@ fn ordinary_save_as_prevents_project_close_until_the_picker_returns() {
     let (mut app, id) = dirty_app();
     app.pick(Pick::SaveAs(id));
     app.request_close_project();
-    assert!(app.save_prompt.is_none());
+    assert!(app.closing.prompt.is_none());
     assert!(app.editor.document(id).unwrap().is_dirty());
     assert!(!app.project_closed);
     assert!(app.closing_pending());
@@ -268,7 +287,7 @@ fn ordinary_save_as_prevents_project_close_until_the_picker_returns() {
     assert!(app.editor.document(id).unwrap().is_dirty());
     app.request_close_project();
     assert_eq!(
-        app.save_prompt.as_ref().unwrap().request,
+        app.closing.prompt.as_ref().unwrap().request,
         CloseRequest::CloseProject
     );
 }
@@ -287,7 +306,7 @@ fn quitting_waits_for_an_ordinary_save_as_in_another_project() {
     ));
     winc.app(second).request_quit();
     assert!(!winc.settle_for_test().1);
-    assert!(winc.app(first).save_prompt.is_none());
+    assert!(winc.app(first).closing.prompt.is_none());
     assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
 
     let path = std::env::temp_dir().join(format!(
@@ -319,7 +338,7 @@ fn cancelling_an_ordinary_save_as_during_quit_keeps_the_document() {
     assert!(!winc.settle_for_test().1);
     assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
     assert!(!winc.app(first).closing_pending());
-    assert!(!winc.app(second).quit_requested);
+    assert!(!winc.app(second).closing.quit_requested);
 }
 
 #[test]
@@ -337,12 +356,12 @@ fn sequential_save_as_cancellation_keeps_the_remaining_project_open() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "draft");
     assert_eq!(app.save_as_picker, Some(second));
     assert_eq!(
-        app.save_continuation.as_ref().unwrap().request,
+        app.closing.continuation.as_ref().unwrap().request,
         CloseRequest::CloseProject
     );
     app.request_quit();
     app.on_picked(Pick::SaveAs(second), None);
-    assert!(!app.closing_pending() && !app.project_closed && !app.quit_requested);
+    assert!(!app.closing_pending() && !app.project_closed && !app.closing.quit_requested);
     assert!(!app.editor.document(first).unwrap().is_dirty());
     assert!(app.editor.document(second).unwrap().is_dirty());
     std::fs::remove_file(path).unwrap();
@@ -368,13 +387,15 @@ fn cancelling_or_failing_save_as_for_quit_cancels_the_whole_quit() {
         winc.app(second).request_quit();
         assert!(!winc.settle_for_test().1);
         assert!(winc.app(first).quit_pending());
-        assert!(winc.app(first).save_prompt.is_none());
+        assert!(winc.app(first).closing.prompt.is_none());
 
         winc.app(first).on_picked(Pick::SaveAs(id), path);
         assert!(!winc.settle_for_test().1);
         assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
         assert!(!winc.app(first).closing_pending());
-        assert!(!winc.app(first).quit_requested && !winc.app(second).quit_requested);
+        assert!(
+            !winc.app(first).closing.quit_requested && !winc.app(second).closing.quit_requested
+        );
         assert_eq!(winc.keys(), [first, second]);
     }
     std::fs::remove_file(parent).unwrap();
@@ -395,7 +416,7 @@ fn save_as_started_after_project_agrees_to_quit_blocks_exit() {
     let second = winc.add_detached(dirty_app().0);
     winc.app(first).request_quit();
     assert!(!winc.settle_for_test().1);
-    assert!(winc.app(second).save_prompt.is_some());
+    assert!(winc.app(second).closing.prompt.is_some());
     winc.app(first).pick(Pick::SaveAs(id));
     assert_eq!(winc.app(first).save_as_picker, Some(id));
     winc.app(second).answer_save_prompt(SaveChoice::Discard);
@@ -435,8 +456,8 @@ fn cancelling_a_late_save_as_cancels_quit_and_keeps_dirty_documents() {
     assert!(!winc.settle_for_test().1);
     winc.app(first).on_picked(Pick::SaveAs(id), None);
     assert!(!winc.settle_for_test().1);
-    assert!(winc.app(first).save_prompt.is_none());
-    assert!(!winc.app(first).quit_requested && !winc.app(second).quit_requested);
+    assert!(winc.app(first).closing.prompt.is_none());
+    assert!(!winc.app(first).closing.quit_requested && !winc.app(second).closing.quit_requested);
     assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
 }
 
@@ -462,21 +483,21 @@ fn waited_tab_stays_open_while_another_document_is_being_saved_as() {
     app.close_tab(0);
     app.finish_waiting();
     assert!(app.editor.document(waited).is_some());
-    assert!(!app.quit_requested);
+    assert!(!app.closing.quit_requested);
 
     app.on_picked(Pick::SaveAs(saving), None);
     assert!(app.editor.document(waited).is_some());
-    assert!(!app.quit_requested);
+    assert!(!app.closing.quit_requested);
     app.close_tab(0);
     app.finish_waiting();
     assert!(app.editor.document(waited).is_none());
     assert!(app.editor.document(saving).unwrap().is_dirty());
     assert_eq!(
-        app.save_prompt.as_ref().unwrap().request,
+        app.closing.prompt.as_ref().unwrap().request,
         CloseRequest::Quit
     );
     app.answer_save_prompt(SaveChoice::Cancel);
-    assert!(!app.quit_requested);
+    assert!(!app.closing.quit_requested);
 }
 
 #[test]
@@ -490,7 +511,7 @@ fn another_save_picker_cannot_consume_the_pending_continuation() {
     app.on_picked(Pick::SaveAs(other), None);
     assert_eq!(app.save_as_picker, Some(id));
     assert_eq!(
-        app.save_continuation.as_ref().unwrap().request,
+        app.closing.continuation.as_ref().unwrap().request,
         CloseRequest::Tabs(vec![id])
     );
     app.on_picked(Pick::SaveAs(id), None);
@@ -518,7 +539,7 @@ fn direct_close_and_quit_wait_for_ordinary_save_as() {
                 }
             }
             assert!(!winc.settle_for_test().1);
-            assert!(winc.app(first).save_prompt.is_none());
+            assert!(winc.app(first).closing.prompt.is_none());
             assert_eq!(winc.app(first).quit_pending(), quit);
             let target = root.join(format!("{quit}-{outcome}.txt"));
             let path = match outcome {
@@ -531,9 +552,9 @@ fn direct_close_and_quit_wait_for_ordinary_save_as() {
                 assert_eq!(std::fs::read_to_string(&target).unwrap(), "draft");
                 assert!(!winc.settle_for_test().1);
                 if quit {
-                    assert!(winc.app(first).quit_requested);
+                    assert!(winc.app(first).closing.quit_requested);
                     assert_eq!(
-                        winc.app(second).save_prompt.as_ref().unwrap().request,
+                        winc.app(second).closing.prompt.as_ref().unwrap().request,
                         CloseRequest::Quit
                     );
                     winc.app(second).answer_save_prompt(SaveChoice::Cancel);
@@ -547,7 +568,7 @@ fn direct_close_and_quit_wait_for_ordinary_save_as() {
                 assert_eq!(winc.keys(), [first, second]);
                 assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
                 assert!(!winc.app(first).closing_pending());
-                assert!(!winc.app(first).quit_requested);
+                assert!(!winc.app(first).closing.quit_requested);
             }
         }
     }
@@ -573,7 +594,12 @@ fn direct_close_and_quit_wait_for_save_as_from_tab_close() {
                 winc.app(first).request_close_project();
             }
             assert_eq!(
-                winc.app(first).save_continuation.as_ref().unwrap().request,
+                winc.app(first)
+                    .closing
+                    .continuation
+                    .as_ref()
+                    .unwrap()
+                    .request,
                 CloseRequest::Tabs(vec![id])
             );
             assert!(!winc.settle_for_test().1);
@@ -589,9 +615,9 @@ fn direct_close_and_quit_wait_for_save_as_from_tab_close() {
                 assert_eq!(std::fs::read_to_string(&target).unwrap(), "draft");
                 if quit {
                     assert!(winc.app(first).editor.document(id).is_none());
-                    assert!(winc.app(first).quit_requested);
+                    assert!(winc.app(first).closing.quit_requested);
                     assert_eq!(
-                        winc.app(second).save_prompt.as_ref().unwrap().request,
+                        winc.app(second).closing.prompt.as_ref().unwrap().request,
                         CloseRequest::Quit
                     );
                 } else {
@@ -601,7 +627,7 @@ fn direct_close_and_quit_wait_for_save_as_from_tab_close() {
                 assert_eq!(winc.keys(), [first, second]);
                 assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
                 assert!(!winc.app(first).closing_pending());
-                assert!(!winc.app(first).quit_requested);
+                assert!(!winc.app(first).closing.quit_requested);
             }
         }
     }
@@ -625,7 +651,7 @@ fn cancelling_global_quit_clears_quit_deferred_by_another_project() {
     winc.app(second).request_quit();
     assert!(!winc.settle_for_test().1);
     assert_eq!(
-        winc.app(third).save_prompt.as_ref().unwrap().request,
+        winc.app(third).closing.prompt.as_ref().unwrap().request,
         CloseRequest::Quit
     );
     winc.app(third).answer_save_prompt(SaveChoice::Cancel);
@@ -636,8 +662,8 @@ fn cancelling_global_quit_clears_quit_deferred_by_another_project() {
     winc.app(first)
         .on_picked(Pick::SaveAs(id), Some(path.clone()));
     assert!(!winc.settle_for_test().1);
-    assert!(!winc.app(first).quit_requested);
-    assert!(winc.app(third).save_prompt.is_none());
+    assert!(!winc.app(first).closing.quit_requested);
+    assert!(winc.app(third).closing.prompt.is_none());
     std::fs::remove_file(path).unwrap();
 }
 
@@ -661,7 +687,7 @@ fn cancelling_or_failing_project_save_as_cancels_deferred_quit() {
         assert_eq!(winc.keys(), [first, second]);
         assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
         assert!(!winc.app(first).closing_pending());
-        assert!(!winc.app(first).quit_requested);
+        assert!(!winc.app(first).closing.quit_requested);
     }
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -688,14 +714,14 @@ fn deferred_tab_close_preserves_wait_until_that_tab_closes() {
     app.close_tab(0);
     app.finish_waiting();
     assert!(app.editor.document(waited).is_some());
-    assert!(!app.quit_requested);
+    assert!(!app.closing.quit_requested);
 
     let path = std::env::temp_dir().join(format!("winc-wait-deferred-{}.txt", std::process::id()));
     app.on_picked(Pick::SaveAs(saving), Some(path.clone()));
     assert!(app.editor.document(waited).is_none());
     assert!(app.editor.document(saving).is_some());
     app.finish_waiting();
-    assert!(app.quit_requested);
+    assert!(app.closing.quit_requested);
     std::fs::remove_file(path).unwrap();
 }
 
@@ -714,10 +740,10 @@ fn deferred_quit_waits_for_each_save_in_a_close_sequence() {
     app.on_picked(Pick::SaveAs(first), Some(root.join("first.txt")));
     assert_eq!(app.save_as_picker, Some(second));
     assert!(app.quit_pending());
-    assert!(!app.quit_requested);
+    assert!(!app.closing.quit_requested);
     app.on_picked(Pick::SaveAs(second), Some(root.join("second.txt")));
     assert!(app.editor.documents.is_empty());
-    assert!(app.quit_requested);
+    assert!(app.closing.quit_requested);
     assert_eq!(
         std::fs::read_to_string(root.join("first.txt")).unwrap(),
         "draft"
@@ -737,13 +763,13 @@ fn deferred_project_close_rechecks_terminal_confirmation() {
     let mut terminal = crate::app::terminal::TermTab::new(1, Default::default());
     terminal.process = "vim".into();
     app.terminal.tabs.push(terminal);
-    app.quit_confirming = Some(CloseRequest::CloseProject);
+    app.closing.confirming = Some(CloseRequest::CloseProject);
 
     let path =
         std::env::temp_dir().join(format!("winc-deferred-terminal-{}.txt", std::process::id()));
     app.on_picked(Pick::SaveAs(id), Some(path.clone()));
     assert!(app.editor.document(id).is_some());
-    assert_eq!(app.quit_confirming, Some(CloseRequest::CloseProject));
+    assert_eq!(app.closing.confirming, Some(CloseRequest::CloseProject));
     app.handle_event(UserEvent::TerminalQuit(false));
     assert!(app.editor.document(id).is_some());
     assert!(!app.project_closed);
@@ -762,13 +788,13 @@ fn deferred_close_preserves_the_other_tab_during_save_as() {
     let path = std::env::temp_dir().join(format!("winc-deferred-tab-{}.txt", std::process::id()));
     app.on_picked(Pick::SaveAs(saving), Some(path.clone()));
     assert_eq!(
-        app.save_prompt.as_ref().unwrap().request,
+        app.closing.prompt.as_ref().unwrap().request,
         CloseRequest::Tabs(vec![other])
     );
     app.answer_save_prompt(SaveChoice::Discard);
     assert!(app.editor.document(other).is_none());
     assert!(app.editor.document(saving).is_some());
-    assert!(!app.quit_requested);
+    assert!(!app.closing.quit_requested);
     std::fs::remove_file(path).unwrap();
 }
 

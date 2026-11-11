@@ -116,12 +116,12 @@ impl App {
     /// 退出还没有结果：正在询问、保存或等待终端确认。
     /// 应用层据此判断一次 ⌘Q 是还在进行还是被取消了。
     pub(crate) fn closing_pending(&self) -> bool {
-        self.save_prompt.is_some()
-            || self.save_continuation.is_some()
+        self.closing.prompt.is_some()
+            || self.closing.continuation.is_some()
             || self.save_as_picker.is_some()
             || self.format.then_close.is_some()
             || self.format_save_pending()
-            || self.quit_confirming.is_some()
+            || self.closing.confirming.is_some()
             || self
                 .pending_ui
                 .iter()
@@ -135,11 +135,11 @@ impl App {
                 p.request == CloseRequest::Quit || p.deferred == Some(CloseRequest::Quit)
             })
         };
-        quits(&self.save_prompt)
-            || quits(&self.save_continuation)
+        quits(&self.closing.prompt)
+            || quits(&self.closing.continuation)
             || quits(&self.format.then_close)
             || self.deferred_close == Some(CloseRequest::Quit)
-            || self.quit_confirming == Some(CloseRequest::Quit)
+            || self.closing.confirming == Some(CloseRequest::Quit)
             || self.pending_ui.iter().any(|action| match action {
                 PendingUi::Save(prompt) => {
                     prompt.request == CloseRequest::Quit
@@ -152,13 +152,13 @@ impl App {
 
     /// 取消退出意图，保留正在进行的保存和其他关闭操作。
     pub(crate) fn cancel_pending_quit(&mut self) {
-        self.quit_requested = false;
+        self.closing.quit_requested = false;
         if self.deferred_close == Some(CloseRequest::Quit) {
             self.deferred_close = None;
         }
         // 空标签列表让已发出的询问或保存完成，但不再执行退出。
-        if self.quit_confirming == Some(CloseRequest::Quit) {
-            self.quit_confirming = Some(CloseRequest::Tabs(Vec::new()));
+        if self.closing.confirming == Some(CloseRequest::Quit) {
+            self.closing.confirming = Some(CloseRequest::Tabs(Vec::new()));
         }
         self.pending_ui.retain_mut(|action| match action {
             PendingUi::Save(prompt) => {
@@ -174,8 +174,8 @@ impl App {
             _ => true,
         });
         for prompt in [
-            &mut self.save_prompt,
-            &mut self.save_continuation,
+            &mut self.closing.prompt,
+            &mut self.closing.continuation,
             &mut self.format.then_close,
         ]
         .into_iter()
@@ -221,10 +221,11 @@ impl App {
             CloseRequest::CloseWindow => return,
         };
         let pending = if let Some(prompt) = self
-            .save_continuation
+            .closing
+            .continuation
             .as_mut()
             .or(self.format.then_close.as_mut())
-            .or(self.save_prompt.as_mut())
+            .or(self.closing.prompt.as_mut())
         {
             if prompt.request == request
                 || prompt.request == CloseRequest::Quit
@@ -319,6 +320,10 @@ impl App {
         }
         // 后台在存的大文件先存完：要不要问、备份哪些，都按存完以后的样子算。
         self.wait_for_saves();
+        // 已经在询问时（例如提示框打开期间再次按 `⌘Q`）不再询问第二次。
+        if self.closing.prompt.is_some() {
+            return;
+        }
 
         // 退出、关闭开着目录的项目时先写入备份，已备份的文档不再询问（热退出），下次启动或再次
         // 打开该目录时恢复。没开目录的项目关闭后，这些备份没有恢复的时机，因此逐个询问。
@@ -368,7 +373,7 @@ impl App {
             self.pending_ui.push_back(PendingUi::Close(request));
             return;
         }
-        self.save_prompt = Some(SavePrompt {
+        self.closing.prompt = Some(SavePrompt {
             request,
             dirty,
             deferred: None,
@@ -378,9 +383,9 @@ impl App {
 
     /// 弹出保存提示框。
     ///
-    /// 没有窗口（测试中）时只保留 `save_prompt`，等待测试代码直接回答。
+    /// 没有窗口（测试中）时只保留 `Closing::prompt`，等待测试代码直接回答。
     fn show_save_prompt(&mut self) {
-        let Some(prompt) = &self.save_prompt else {
+        let Some(prompt) = &self.closing.prompt else {
             return;
         };
         let names: Vec<String> = prompt
@@ -418,7 +423,7 @@ impl App {
         };
 
         // 没有窗口（测试中）时不弹出，由测试直接回答（`answer_save_prompt`）。
-        if self.window.is_none() {
+        if self.window.handle.is_none() {
             return;
         }
         self.show_window();
@@ -435,13 +440,13 @@ impl App {
         });
         // 窗口上已有其他面板，提示框没有弹出：放弃这次询问，不关闭任何内容。
         if !shown {
-            self.save_prompt = None;
+            self.closing.prompt = None;
         }
     }
 
     /// 处理提示框上的选择 `choice`：取消则不做任何事，不保存则直接关闭，保存则先保存再关闭。
     pub(in crate::app) fn answer_save_prompt(&mut self, choice: SaveChoice) {
-        let Some(prompt) = self.save_prompt.take() else {
+        let Some(prompt) = self.closing.prompt.take() else {
             return;
         };
 
@@ -479,7 +484,7 @@ impl App {
             };
 
             if doc.path.is_none() {
-                self.save_continuation = Some(prompt);
+                self.closing.continuation = Some(prompt);
                 self.pick(Pick::SaveAs(id));
                 return;
             }
@@ -508,7 +513,7 @@ impl App {
             // 退出时不关闭标签：退出前还需要把标签记入现场。
             CloseRequest::Quit => {
                 self.quit_backups();
-                self.quit_requested = true;
+                self.closing.quit_requested = true;
             }
             CloseRequest::CloseWindow => self.close_window_now(),
             CloseRequest::CloseProject => self.close_project_now(),
@@ -615,8 +620,8 @@ impl App {
         if self.editor.documents.is_empty() {
             // 最后一个标签关闭后，查找条和跳转条随之关闭。「只显示匹配的行」也必须关闭，
             // 否则之后打开其他文件并查找下一个时，该文件会因残留的筛选状态而被隐藏一部分行。
-            self.search_open = false;
-            self.filter_lines = false;
+            self.find.open = false;
+            self.find.filter_lines = false;
             let goto_open = self.goto_input.take().is_some();
 
             // 文件树中输入名字同样使用 `Focus::Prompt`；只有跳转条打开时，该焦点才属于跳转条。
@@ -671,6 +676,21 @@ impl App {
 
         self.flash(t!("workspace-reopen-tab-none"));
     }
+}
+
+/// 关闭与退出流程的状态：进行中的保存确认、终端确认，以及是否已可以退出。
+#[derive(Default)]
+pub struct Closing {
+    /// 正在询问「要保存修改吗」。
+    pub(crate) prompt: Option<SavePrompt>,
+    /// 已选择「保存」、正在等待另存为面板：保存完成后继续处理余下的步骤。
+    pub(crate) continuation: Option<SavePrompt>,
+    /// 正在确认是否结束终端中运行的程序时，确认后要执行的关闭（退出或关闭窗口）。
+    ///
+    /// 为 `Some` 期间，退出流程尚未得出结果（见 [`crate::winc`]）。
+    pub(crate) confirming: Option<CloseRequest>,
+    /// 退出前的处理均已完成；当前一轮事件处理结束后退出。
+    pub(crate) quit_requested: bool,
 }
 
 #[cfg(test)]

@@ -305,7 +305,7 @@ fn background_confirmations_follow_the_window(
         h.winc.active_for_test() == Some(owner) && h.winc.app(owner).alert.is_some()
     });
     assert_eq!(
-        harness.winc.app(owner).quit_confirming,
+        harness.winc.app(owner).closing.confirming,
         Some(CloseRequest::CloseProject)
     );
     harness
@@ -338,7 +338,7 @@ fn background_confirmations_follow_the_window(
             .iter()
             .any(|p| matches!(p, PendingUi::Close(CloseRequest::Quit)))
     });
-    assert!(!harness.winc.app(owner).quit_requested);
+    assert!(!harness.winc.app(owner).closing.quit_requested);
     harness
         .winc
         .app(other)
@@ -350,14 +350,14 @@ fn background_confirmations_follow_the_window(
         h.winc.active_for_test() == Some(owner) && h.winc.app(owner).alert.is_some()
     });
     assert_eq!(
-        harness.winc.app(owner).quit_confirming,
+        harness.winc.app(owner).closing.confirming,
         Some(CloseRequest::Quit)
     );
     harness
         .winc
         .app(owner)
         .alert_key(&Key::Named(NamedKey::Escape), false);
-    assert!(!harness.winc.app(owner).quit_requested);
+    assert!(!harness.winc.app(owner).closing.quit_requested);
     assert!(harness.winc.app(owner).terminal_busy());
 
     let app = harness.winc.app(owner);
@@ -397,7 +397,7 @@ fn background_confirmations_follow_the_window(
             .any(|p| matches!(p, PendingUi::Close(_)))
     });
     assert_eq!(std::fs::read_to_string(saved_as).unwrap(), "first draft");
-    assert!(harness.winc.app(owner).save_prompt.is_none());
+    assert!(harness.winc.app(owner).closing.prompt.is_none());
     assert_eq!(harness.winc.active_for_test(), Some(other));
     harness
         .winc
@@ -408,14 +408,15 @@ fn background_confirmations_follow_the_window(
         .unwrap();
     pump_until(event_loop, harness, |h| {
         h.winc.active_for_test() == Some(owner)
-            && h.winc.app(owner).save_prompt.is_some()
+            && h.winc.app(owner).closing.prompt.is_some()
             && h.winc.app(owner).alert.is_some()
     });
     assert_eq!(
         harness
             .winc
             .app(owner)
-            .save_prompt
+            .closing
+            .prompt
             .as_ref()
             .unwrap()
             .request,
@@ -450,14 +451,14 @@ fn background_confirmations_follow_the_window(
     pump_until(event_loop, harness, |h| h.events > previous_events);
     assert_eq!(harness.winc.active_for_test(), Some(owner));
     assert!(harness.winc.app(owner).alert.is_some());
-    assert!(harness.winc.app(owner).save_prompt.is_none());
+    assert!(harness.winc.app(owner).closing.prompt.is_none());
     harness
         .winc
         .app(owner)
         .alert_key(&Key::Named(NamedKey::Escape), false);
     proxy.send_event(UserEvent::TrafficLightsMoved).unwrap();
     pump_until(event_loop, harness, |h| {
-        h.winc.app(owner).save_prompt.is_some()
+        h.winc.app(owner).closing.prompt.is_some()
     });
     harness
         .winc
@@ -466,8 +467,8 @@ fn background_confirmations_follow_the_window(
     proxy.send_event(UserEvent::TrafficLightsMoved).unwrap();
     let previous_events = harness.events;
     pump_until(event_loop, harness, |h| h.events > previous_events);
-    assert!(!harness.winc.app(owner).quit_requested);
-    assert!(!harness.winc.app(other).quit_requested);
+    assert!(!harness.winc.app(owner).closing.quit_requested);
+    assert!(!harness.winc.app(other).closing.quit_requested);
     assert!(
         harness
             .winc

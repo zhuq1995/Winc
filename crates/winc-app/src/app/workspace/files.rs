@@ -21,6 +21,8 @@ pub enum Pick {
     SaveAs(DocumentId),
     /// 新建工作树对话框「位置」右端的目录按钮：选工作树放在哪个目录下面。
     WorktreeFolder,
+    /// 设置中选择窗口的背景图片。
+    BackgroundImage,
 }
 
 /// 无法打开的文件在编辑区中给出的操作。
@@ -54,8 +56,6 @@ pub struct TabHit {
 /// 标签栏的滚动位置，以及绘制时记录的几何信息，供点击和滚轮使用。
 #[derive(Debug, Default)]
 pub struct TabBar {
-    /// 各标签的位置，按绘制顺序排列。
-    pub hits: Vec<TabHit>,
     /// 标签的可见范围；放不下全部标签时，右侧为新建按钮和「⌄」留出位置。
     pub view: Rect,
     /// 新建按钮的矩形。
@@ -135,7 +135,7 @@ impl App {
         }
 
         // 被拖动的标签最后绘制、压在其他标签之上，因此从后向前查找，先判断被拖动的标签。
-        let hit = self.tabs.hits.iter().rev().find(|h| h.tab.contains(x, y))?;
+        let hit = self.hits.tabs.iter().rev().find(|h| h.tab.contains(x, y))?;
         Some((hit.index, hit.close.inset(-2.0, -2.0).contains(x, y)))
     }
 
@@ -533,7 +533,12 @@ impl App {
             return;
         }
         #[cfg(target_os = "macos")]
-        if self.window.as_deref().is_some_and(crate::macos::has_sheet) {
+        if self
+            .window
+            .handle
+            .as_deref()
+            .is_some_and(crate::macos::has_sheet)
+        {
             return;
         }
         for &id in ids {
@@ -719,9 +724,11 @@ impl App {
                     .or_else(|| self.editor.root().map(Path::to_path_buf));
                 (name, dir)
             }
-            Pick::Open | Pick::OpenFolder | Pick::WslFolder(_) | Pick::WorktreeFolder => {
-                (String::new(), None)
-            }
+            Pick::Open
+            | Pick::OpenFolder
+            | Pick::WslFolder(_)
+            | Pick::WorktreeFolder
+            | Pick::BackgroundImage => (String::new(), None),
         };
 
         #[cfg(target_os = "macos")]
@@ -733,7 +740,7 @@ impl App {
                 return;
             };
             let panel = match &kind {
-                Pick::Open => Panel::Open { files: true },
+                Pick::Open | Pick::BackgroundImage => Panel::Open { files: true },
                 Pick::OpenFolder | Pick::WslFolder(_) | Pick::WorktreeFolder => {
                     Panel::Open { files: false }
                 }
@@ -758,7 +765,9 @@ impl App {
             use crate::portal::Choose;
             // 门户的面板只能选文件或者只能选目录：「打开…」选文件，目录从「打开目录…」选。
             let (choose, title) = match &kind {
-                Pick::Open => (Choose::Open { directory: false }, t!("cmd-open-file")),
+                Pick::Open | Pick::BackgroundImage => {
+                    (Choose::Open { directory: false }, t!("cmd-open-file"))
+                }
                 Pick::OpenFolder | Pick::WslFolder(_) | Pick::WorktreeFolder => {
                     (Choose::Open { directory: true }, t!("cmd-open-folder"))
                 }
@@ -785,14 +794,14 @@ impl App {
         {
             // 系统的对话框只能选文件或者只能选目录：「打开…」选文件，目录从「打开目录…」选。
             let title = match &kind {
-                Pick::Open => t!("cmd-open-file"),
+                Pick::Open | Pick::BackgroundImage => t!("cmd-open-file"),
                 Pick::OpenFolder | Pick::WorktreeFolder => t!("cmd-open-folder"),
                 Pick::WslFolder(_) => t!("cmd-open-wsl-folder"),
                 Pick::SaveAs(_) => t!("cmd-save-as"),
             };
             // 对话框的标题不带省略号；挂在窗口上，打开期间窗口不响应。
             let mut dialog = rfd::FileDialog::new().set_title(title.trim_end_matches('…'));
-            if let Some(window) = &self.window {
+            if let Some(window) = &self.window.handle {
                 dialog = dialog.set_parent(&**window);
             }
             if let Some(dir) = &dir {
@@ -805,7 +814,7 @@ impl App {
                     dialog = dialog.set_directory(winc_editor::wsl::distro_root(distro));
                 }
                 let path = match &kind {
-                    Pick::Open => dialog.pick_file(),
+                    Pick::Open | Pick::BackgroundImage => dialog.pick_file(),
                     Pick::OpenFolder | Pick::WslFolder(_) | Pick::WorktreeFolder => {
                         dialog.pick_folder()
                     }
@@ -842,7 +851,7 @@ impl App {
                 return;
             }
             self.save_as_picker = None;
-            let continuation = self.save_continuation.take();
+            let continuation = self.closing.continuation.take();
             let deferred = self.deferred_close.take();
             if let Some(path) = path
                 && self.save_document(id, Some(path))
@@ -869,6 +878,7 @@ impl App {
         match kind {
             Pick::Open | Pick::OpenFolder | Pick::WslFolder(_) => self.open_path(&path),
             Pick::WorktreeFolder => self.worktree_folder_picked(path),
+            Pick::BackgroundImage => self.set_background_image(Some(path)),
             Pick::SaveAs(_) => unreachable!(),
         }
         self.request_redraw();
@@ -903,7 +913,7 @@ impl App {
             if let Some(ws) = (self.editor.workspace.as_mut()).filter(|_| reachable) {
                 ws.refresh();
             }
-            self.picker_stale = true;
+            self.picker.stale = true;
         }
 
         self.relayout();

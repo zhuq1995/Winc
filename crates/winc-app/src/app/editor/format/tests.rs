@@ -139,7 +139,7 @@ fn ordinary_format_save_finishes_before_project_close_even_with_hot_exit() {
     assert!(!winc.settle_for_test().1);
     assert_eq!(winc.keys(), [first, second]);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "saved\n");
-    assert!(winc.app(first).save_prompt.is_none());
+    assert!(winc.app(first).closing.prompt.is_none());
 
     complete(winc.app(first), id, job, formatted());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "DRAFT saved\n");
@@ -201,7 +201,7 @@ fn failed_write_cancels_global_quit_and_keeps_the_dirty_document() {
     winc.app(first).editor.document_mut(id).unwrap().path = Some(file.join("target.rs"));
     complete(winc.app(first), id, job, formatted());
     assert!(!winc.settle_for_test().1);
-    assert!(!winc.app(first).quit_requested && !winc.app(second).quit_requested);
+    assert!(!winc.app(first).closing.quit_requested && !winc.app(second).closing.quit_requested);
     assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
     assert_eq!(std::fs::read_to_string(file).unwrap(), "saved\n");
     drop(winc);
@@ -218,7 +218,7 @@ fn failed_save_after_project_agreed_to_quit_cancels_global_quit() {
     let second = winc.add_detached(other);
     winc.app(first).request_quit();
     assert!(!winc.settle_for_test().1);
-    assert!(winc.app(second).save_prompt.is_some());
+    assert!(winc.app(second).closing.prompt.is_some());
     winc.app(first)
         .editor
         .document_mut(id)
@@ -231,7 +231,7 @@ fn failed_save_after_project_agreed_to_quit_cancels_global_quit() {
     assert!(!winc.settle_for_test().1);
     winc.app(second).answer_save_prompt(SaveChoice::Discard);
     assert!(!winc.settle_for_test().1);
-    assert!(!winc.app(first).quit_requested && !winc.app(second).quit_requested);
+    assert!(!winc.app(first).closing.quit_requested && !winc.app(second).closing.quit_requested);
     assert!(winc.app(first).editor.document(id).unwrap().is_dirty());
     drop(winc);
     std::fs::remove_dir_all(root).unwrap();
@@ -249,7 +249,7 @@ fn cancelled_job_and_stale_result_do_not_complete_a_later_save() {
     app.request_quit();
     complete(&mut app, id, old, formatted());
     assert!(app.format_save_pending());
-    assert!(!app.quit_requested);
+    assert!(!app.closing.quit_requested);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "saved\n");
     app.editor
         .document_mut(id)
@@ -265,7 +265,7 @@ fn cancelled_job_and_stale_result_do_not_complete_a_later_save() {
         .to_string();
     complete(&mut app, id, current, formatted());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), latest);
-    assert!(app.quit_requested);
+    assert!(app.closing.quit_requested);
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -283,7 +283,7 @@ fn independent_format_saves_finish_before_a_deferred_quit() {
     let second_job = saving_job(&mut app, second_id);
     app.request_quit();
     complete(&mut app, second_id, second_job, formatted());
-    assert!(!app.quit_requested && app.quit_pending());
+    assert!(!app.closing.quit_requested && app.quit_pending());
     assert_eq!(
         std::fs::read_to_string(&second_file).unwrap(),
         "DRAFT saved\n"
@@ -294,7 +294,7 @@ fn independent_format_saves_finish_before_a_deferred_quit() {
         std::fs::read_to_string(first_file).unwrap(),
         "DRAFT saved\n"
     );
-    assert!(app.quit_requested);
+    assert!(app.closing.quit_requested);
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -321,7 +321,7 @@ fn cancelling_global_quit_clears_the_deferred_quit_but_keeps_the_save() {
     assert!(!winc.app(saving).quit_pending());
     complete(winc.app(saving), id, job, formatted());
     assert_eq!(std::fs::read_to_string(file).unwrap(), "DRAFT saved\n");
-    assert!(!winc.app(saving).quit_requested && !winc.settle_for_test().1);
+    assert!(!winc.app(saving).closing.quit_requested && !winc.settle_for_test().1);
     drop(winc);
     std::fs::remove_dir_all(root).unwrap();
     let other = std::env::temp_dir().join(format!(
@@ -337,7 +337,7 @@ fn quit_requested_during_save_prompt_and_format_save_respects_prompt_choice() {
         for answer_first in [false, true] {
             let (root, file, mut app, id) = sample(&format!("prompt-{cancel}-{answer_first}"));
             app.close_tab(0);
-            assert!(app.save_prompt.is_some());
+            assert!(app.closing.prompt.is_some());
             let job = saving_job(&mut app, id);
             app.request_quit();
             let choice = if cancel {
@@ -347,14 +347,14 @@ fn quit_requested_during_save_prompt_and_format_save_respects_prompt_choice() {
             };
             if answer_first {
                 app.answer_save_prompt(choice);
-                assert!(app.editor.document(id).is_some() && !app.quit_requested);
+                assert!(app.editor.document(id).is_some() && !app.closing.quit_requested);
             }
             complete(&mut app, id, job, formatted());
             if !answer_first {
-                assert!(!app.quit_requested);
+                assert!(!app.closing.quit_requested);
                 app.answer_save_prompt(choice);
             }
-            assert_eq!(app.quit_requested, !cancel);
+            assert_eq!(app.closing.quit_requested, !cancel);
             assert_eq!(app.editor.document(id).is_some(), cancel);
             assert_eq!(std::fs::read_to_string(file).unwrap(), "DRAFT saved\n");
             drop(app);
@@ -396,7 +396,7 @@ fn format_close_waits_for_an_ordinary_save_as_to_finish() {
                 );
             }
             assert_eq!(app.editor.document(id).is_some(), cancel);
-            assert!(!app.quit_requested);
+            assert!(!app.closing.quit_requested);
             if cancel {
                 assert!(app.editor.document(other_id).unwrap().is_dirty());
             } else {
@@ -424,7 +424,7 @@ fn format_save_failure_preserves_an_independent_save_as_continuation() {
     app.editor.document_mut(id).unwrap().path = Some(file.join("invalid"));
     complete(&mut app, id, job, formatted());
     assert_eq!(app.save_as_picker, Some(other_id));
-    assert!(app.save_continuation.is_some());
+    assert!(app.closing.continuation.is_some());
     app.on_picked(Pick::SaveAs(other_id), Some(root.join("other.txt")));
     assert!(app.editor.document(other_id).is_none());
     assert!(app.editor.document(id).unwrap().is_dirty());
@@ -456,11 +456,11 @@ fn old_tool_approval_does_not_complete_a_new_save() {
         run: None,
     };
     app.answer_tool_choice(answer(old));
-    assert!(app.format_save_pending() && !app.quit_requested);
+    assert!(app.format_save_pending() && !app.closing.quit_requested);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "saved\n");
     app.answer_tool_choice(answer(current));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "draft saved\n");
-    assert!(app.quit_requested);
+    assert!(app.closing.quit_requested);
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }
