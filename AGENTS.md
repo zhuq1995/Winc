@@ -40,6 +40,7 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 - 合并后运行 `cargo test -p winc-app`。项目切换、终端连续、退出确认是本 fork 的不变量，编译通过不代表行为正确。
 - 窗口、事件路由与项目状态的约定见 `.trellis/spec/backend/window-projects.md`，改动前先读。
 - 换行统一 LF：`git config core.autocrlf false`，与 CI 和发布脚本一致；否则快照测试会因 CRLF 失败。
+- fork 不跑 GitHub Actions 的 CI：`.github/workflows/ci.yml` 已删除（每次推 `dev` 都在 macOS clippy、Windows 测试上失败并寄邮件）。上游改动该文件时保持删除，构建检查用本地命令。
 - 上游重写窗口生命周期时，`Shell` 交接需要手工重新推导；到那一步改为在 upstream tag 上维护补丁集，或把功能推回上游，不再整仓合并。
 
 ### 上游合并流程
