@@ -40,6 +40,7 @@ pub fn commit(&self, root: &Path, message: &str, amend: bool) -> Result<String, 
 - **保存**：暂存前保存所操作文件并等待在途保存与保存前格式化；保存失败、磁盘冲突或选择失效时停止，不改 index。
 - **互斥**：暂存、提交、分支写操作互斥。占用按规范化工作树根目录记录，在后台写入结束时释放，不能依赖界面收取结果。
 - **空暂存提交**：暂存区为空且有工作区改动时先确认“暂存全部并提交”（包含未跟踪且未忽略文件），顺序为保存 → 暂存全部 → 提交；取消不改动任何状态；提交失败保留 index 与提交信息。
+- **差异视图**：`crates/winc-app/src/view/diff.rs` 的 `draw_body` 同时接收上游折叠过渡 `(scroll, shift): (Scroll, Option<&FoldShift>)` 与 fork 的暂存目标 `file: Option<&CommitFile>`，`drawn_rows` 用上游签名。横向滚动沿用上游 `DiffHScroll`／`DIFF_HSCROLL`，两侧滑块由同一个滚动位置驱动。
 - **文案**：`en-US` 与 `zh-CN` 成对增删；`winc-i18n` 的键一致与未使用消息测试必须保持通过。
 
 ## 4. 校验与错误
