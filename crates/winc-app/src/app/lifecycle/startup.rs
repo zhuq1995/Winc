@@ -44,6 +44,7 @@ impl App {
         let panel_visible = editor.workspace.is_some();
         // 主题以配置为准；配置中没有时参考环境变量 `WINC_THEME`（见 `forced_theme`）。
         let theme_choice = config.theme.unwrap_or(ThemeChoice::Auto);
+        let vim = (config.vim_enabled == Some(true)).then(Box::default);
 
         Self {
             editor,
@@ -94,6 +95,7 @@ impl App {
             line_widths: ((winc_editor::DocumentId(0), 0, 0), Default::default()),
             ruler_cache: None,
             picture_cache: None,
+            picture_view: Default::default(),
             images: preview::images::ImageJobs::default(),
             tables: preview::tables::TableJobs::default(),
             table_layout: Default::default(),
@@ -124,6 +126,7 @@ impl App {
             module_fx: Default::default(),
             text_content_w: 0.0,
             fold_motion: None,
+            diff_fold: None,
             scroll_glide: None,
             wheel: Default::default(),
             preview_tab: None,
@@ -140,6 +143,7 @@ impl App {
             #[cfg(test)]
             copied_image: None,
             line_clipboard: None,
+            vim,
             search: Search::default(),
             find: Default::default(),
             word_highlights: Vec::new(),
@@ -236,6 +240,9 @@ impl App {
                 },
             );
         }
+        // 系统中的最近目录（程序坞菜单、任务栏跳转列表）独立保存：启动时按当前的最近列表核对
+        // 一次，之后随列表变化重写。
+        self.sync_system_recents();
         #[cfg(target_os = "macos")]
         // 以下回调属于整个应用（菜单栏、程序坞、`⌘Q`），交由当前窗口处理。
         if let Some(proxy) = self.proxy.as_ref().map(crate::winc::WindowProxy::active) {
