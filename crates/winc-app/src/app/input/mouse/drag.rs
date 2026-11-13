@@ -88,6 +88,7 @@ impl App {
         self.update_cursor_icon();
 
         match self.drag {
+            Drag::Picture { at } => self.drag_picture(x, y, at),
             Drag::TerminalSelect | Drag::TerminalMouse(_) => self.terminal_mouse_drag(x, y),
             Drag::None if self.layout.terminal.contains(x, y) => self.terminal_mouse_hover(x, y),
             Drag::Select { by_word, origin } => self.drag_select(x, y, by_word, origin),
@@ -313,6 +314,19 @@ impl App {
                 {
                     let max = content - track.w;
                     doc.scroll_x = scroll_for_thumb(track.x, track.w, thumb.w, x, grab, max);
+                }
+                self.request_redraw();
+            }
+            Drag::Scrollbar {
+                bar: bar @ (Scrollbar::DiffLeftHorizontal | Scrollbar::DiffRightHorizontal),
+                grab,
+            } => {
+                let side = usize::from(bar == Scrollbar::DiffRightHorizontal);
+                if let Some(bars) = self.diff_hscroll()
+                    && let Some((track, thumb)) = bars.thumb(side, 0.0)
+                    && let Some(doc) = self.editor.active_mut()
+                {
+                    doc.scroll_x = scroll_for_thumb(track.x, track.w, thumb.w, x, grab, bars.max);
                 }
                 self.request_redraw();
             }

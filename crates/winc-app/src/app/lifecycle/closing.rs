@@ -537,6 +537,7 @@ impl App {
     ///
     /// 窗口里放着所有项目，项目和运行中的终端都留着；记下备份、窗口大小和目录现场后隐藏。
     fn close_window_now(&mut self) {
+        self.vim_persist();
         self.remember_window();
         if self.editor.workspace.is_some() {
             self.back_up_for_quit();
@@ -596,6 +597,9 @@ impl App {
             return;
         };
         self.cancel_format(id);
+        if self.vim.is_some() {
+            self.vim_store_marks(id);
+        }
         if let Some(doc) = self.editor.close(index) {
             self.forget_git_document(doc.id, doc.path.as_deref());
         }
@@ -609,6 +613,9 @@ impl App {
             let id = doc.id;
             self.remember_closed(doc.path.clone(), doc.selection.head);
             self.cancel_format(id);
+            if self.vim.is_some() {
+                self.vim_store_marks(id);
+            }
         }
         self.animate_tab_close(index);
         if let Some(doc) = self.editor.close(index) {
