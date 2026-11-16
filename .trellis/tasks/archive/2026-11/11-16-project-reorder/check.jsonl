@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/window-projects.md","reason":"核对改动没有破坏窗口交接、项目命中区域与关闭流程。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"核对请求在 settle/after_event 中的执行时机与刷新链路。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"核对是否重复实现已有拖动、滚动与命中逻辑。"}
+{"file":".trellis/tasks/11-09-single-window-sidebar/research/window-architecture.md","reason":"核对回归范围（切换、关闭、恢复）。"}

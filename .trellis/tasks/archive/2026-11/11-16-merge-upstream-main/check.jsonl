@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/git-staging.md","reason":"核对暂存行为：真实索引写入、块级与行级部分暂存、符号链接只整文件暂存"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"核对 fmt、clippy、测试门禁"}
+{"file":".trellis/spec/backend/window-projects.md","reason":"核对窗口交接不变量未被上游版本静默覆盖"}
+{"file":".github/CONTRIBUTING.md","reason":"核对行为测试与双语文案键集合"}
+{"file":"AGENTS.md","reason":"核对合并流程与取舍表是否按文档执行"}

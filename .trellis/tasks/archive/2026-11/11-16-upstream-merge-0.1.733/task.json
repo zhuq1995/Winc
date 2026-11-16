@@ -1,0 +1,29 @@
+{
+  "id": "upstream-merge-0.1.733",
+  "name": "upstream-merge-0.1.733",
+  "title": "同步上游 0.1.733",
+  "description": "把 upstream/main（104 提交、VERSION 0.1.660→0.1.733）合入 dev：含窗口生命周期重写、Git 模块重构、远程开发新 crate。fork 的三个自有化功能必须保住：单窗口多项目、真实暂存区（改用上游实现）、格式化保存编号。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "zhuq",
+  "assignee": "zhuq",
+  "createdAt": "2026-11-16",
+  "completedAt": "2026-11-16",
+  "branch": null,
+  "base_branch": "dev",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "11-16-merge-upstream-main",
+    "11-16-migrate-projects-window"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

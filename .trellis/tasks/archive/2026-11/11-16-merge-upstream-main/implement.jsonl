@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/git-staging.md","reason":"fork 暂存区的既有契约：本任务用 winc-core 的 stage/unstage/staged_picks 替换，用于确认哪些行为不能丢"}
+{"file":".trellis/spec/backend/window-projects.md","reason":"窗口交接与项目状态的所有权规则：本任务移除 projects 与 Shell 交接，需知道哪些不变量留给后续子任务"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"fmt、clippy、测试与提交前检查的仓库要求"}
+{"file":".github/CONTRIBUTING.md","reason":"行为测试、视觉快照、双语文案与仓库检查要求"}
+{"file":"AGENTS.md","reason":"fork 同步流程、上游合并流程与冲突取舍表"}

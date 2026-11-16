@@ -1,0 +1,2 @@
+{"file": "crates/winc-app/src/app/snapshot/projects.rs", "reason": "列表宽度、条目、点击切换、拖动排序、关闭项目、最后一个项目停在开始页"}
+{"file": "AGENTS.md", "reason": "单窗口多项目的行为与不变量"}
