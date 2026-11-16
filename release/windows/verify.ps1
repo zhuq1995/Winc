@@ -41,7 +41,7 @@ foreach ($kind in @('nsis', 'msi')) {
             $process = Start-Process msiexec.exe -ArgumentList "/i `"$setup`" /qn /norestart INSTALLFOLDER=`"$directory`"" -Wait -PassThru
         }
         if ($process.ExitCode -notin @(0, 1641, 3010)) { throw "$kind installation failed: $($process.ExitCode)" }
-        foreach ($file in @('winc.exe', 'winc-pty.exe', 'conpty.dll', 'OpenConsole.exe', 'winc-installation', 'winc-watch', 'bin/winc', 'bin/winc.cmd')) {
+        foreach ($file in @('winc.exe', 'winc-pty.exe', 'conpty.dll', 'OpenConsole.exe', 'winc-installation', 'winc-watch', 'winc-server-Linux-x86_64', 'winc-server-Linux-aarch64', 'bin/winc', 'bin/winc.cmd')) {
             if (-not (Test-Path "$directory/$file")) { throw "${kind}: missing $file" }
         }
         if ((Get-Content "$directory/bin/winc" -Raw) -match "`r") { throw "${kind}: bin/winc has CRLF line endings" }
@@ -74,8 +74,19 @@ foreach ($kind in @('nsis', 'msi')) {
         }
         # A short-lived parent exercises the updater's wait before reinstalling.
         $parent = Start-Process powershell.exe -ArgumentList '-NoProfile -Command "Start-Sleep -Seconds 2"' -PassThru -WindowStyle Hidden
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $update -ParentId $parent.Id -Setup $setup -Executable "$directory/winc.exe" -Installer $kind -Relaunch 0
-        if ($LASTEXITCODE -ne 0) { throw "$kind updater failed" }
+        # The updater is started the way the application starts it: `-Command` with the script
+        # inlined, and its parameters in `WINC_UPDATE_*` environment variables. Passing them as
+        # `-File` arguments would reach a script that no longer declares `param`, leaving every
+        # parameter empty.
+        $env:WINC_UPDATE_PARENT = "$($parent.Id)"
+        $env:WINC_UPDATE_SETUP = $setup
+        $env:WINC_UPDATE_EXE = "$directory/winc.exe"
+        $env:WINC_UPDATE_KIND = $kind
+        $env:WINC_UPDATE_RELAUNCH = '0'
+        & powershell.exe -NoProfile -NonInteractive -Command (Get-Content -LiteralPath $update -Raw)
+        $status = $LASTEXITCODE
+        Remove-Item Env:WINC_UPDATE_*
+        if ($status -ne 0) { throw "$kind updater failed" }
         foreach ($file in @('winc.exe', 'winc-pty.exe')) {
             if ((Get-FileHash "$directory/$file").Hash -ne (Get-FileHash "$root/target/$Target/release/$file").Hash) {
                 throw "$kind update changed $file"
@@ -100,4 +111,4 @@ foreach ($kind in @('nsis', 'msi')) {
     if (Test-Path -LiteralPath (Join-Path $menu 'Winc.lnk')) { throw "${kind}: uninstall left the Start menu shortcut behind" }
 }
 Expand-Archive "$bundle/portable/Winc-$version-windows-x64-portable.zip" "$work/portable" -Force
-if ((Test-Path "$work/portable/winc-installation") -or -not (Test-Path "$work/portable/winc-pty.exe") -or -not (Test-Path "$work/portable/conpty.dll") -or -not (Test-Path "$work/portable/OpenConsole.exe") -or -not (Test-Path "$work/portable/bin/winc") -or -not (Test-Path "$work/portable/winc-watch") -or -not (Test-Path "$work/portable/data/README.txt")) { throw 'invalid portable layout' }
+if ((Test-Path "$work/portable/winc-installation") -or -not (Test-Path "$work/portable/winc-pty.exe") -or -not (Test-Path "$work/portable/conpty.dll") -or -not (Test-Path "$work/portable/OpenConsole.exe") -or -not (Test-Path "$work/portable/bin/winc") -or -not (Test-Path "$work/portable/winc-watch") -or -not (Test-Path "$work/portable/winc-server-Linux-x86_64") -or -not (Test-Path "$work/portable/winc-server-Linux-aarch64") -or -not (Test-Path "$work/portable/data/README.txt")) { throw 'invalid portable layout' }

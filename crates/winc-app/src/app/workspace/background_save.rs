@@ -37,21 +37,30 @@ impl Default for BackgroundSaves {
 impl App {
     /// 文档 `id` 是否正在后台保存。
     pub(in crate::app) fn saving(&self, id: DocumentId) -> bool {
-        self.saves.running.contains(&id)
+        self.disk.saves.running.contains(&id)
     }
 
     /// 在后台写出 `job`（文档 `id` 的保存），完成后由 [`App::poll_saves`] 收取。
     pub(in crate::app) fn save_in_background(&mut self, id: DocumentId, job: SaveJob, quiet: bool) {
-        self.saves.running.insert(id);
-        let sender = self.saves.results.0.clone();
-        self.spawn_then(UserEvent::Saved, move || {
+        self.disk.saves.running.insert(id);
+        let sender = self.disk.saves.results.0.clone();
+        let save = move || {
             let _ = sender.send((id, quiet, job.run()));
-        });
+        };
+        // 远端的文件与改名、移动、删除在同一个线程上按顺序执行。
+        let remote = (self.editor.document(id))
+            .and_then(|doc| doc.path.as_deref())
+            .is_some_and(winc_backend::is_remote);
+        if remote {
+            self.spawn_ordered_then(UserEvent::Saved, save);
+        } else {
+            self.spawn_then(UserEvent::Saved, save);
+        }
     }
 
     /// 收取后台保存完成的文档。
     pub(in crate::app) fn poll_saves(&mut self) {
-        while let Ok(done) = self.saves.results.1.try_recv() {
+        while let Ok(done) = self.disk.saves.results.1.try_recv() {
             self.saved_in_background(done);
         }
     }
@@ -59,7 +68,7 @@ impl App {
     /// 等文档 `id` 在后台的那次保存完成（没有正在保存时立即返回）；等待期间完成的其他文档一并收取。
     pub(in crate::app) fn wait_for_save(&mut self, id: DocumentId) {
         while self.saving(id) {
-            let Ok(done) = self.saves.results.1.recv() else {
+            let Ok(done) = self.disk.saves.results.1.recv() else {
                 return;
             };
             self.saved_in_background(done);
@@ -68,8 +77,8 @@ impl App {
 
     /// 等待所有后台保存完成：关闭、退出之前未保存的状态必须准确。
     pub(in crate::app) fn wait_for_saves(&mut self) {
-        while !self.saves.running.is_empty() {
-            let Ok(done) = self.saves.results.1.recv() else {
+        while !self.disk.saves.running.is_empty() {
+            let Ok(done) = self.disk.saves.results.1.recv() else {
                 return;
             };
             self.saved_in_background(done);
@@ -77,7 +86,7 @@ impl App {
     }
 
     fn saved_in_background(&mut self, (id, quiet, saved): Done) {
-        self.saves.running.remove(&id);
+        self.disk.saves.running.remove(&id);
         let Some(doc) = self.editor.document_mut(id) else {
             return;
         };
@@ -102,7 +111,7 @@ impl App {
         if let Some(path) = path {
             self.sync_documents(|p| p == path);
         }
-        if let Some(quiet) = self.saves.again.remove(&id)
+        if let Some(quiet) = self.disk.saves.again.remove(&id)
             && self.editor.document(id).is_some_and(|d| d.is_dirty())
         {
             self.write_document_with(id, None, quiet, true);

@@ -48,6 +48,35 @@ fn workspace_dependencies_follow_the_layers() {
     assert_eq!(layer_violations(&extra), ["winc-core → winc-render"]);
 }
 
+#[test]
+fn source_files_stay_within_the_size_limit() {
+    let root = root();
+    let sizes = source_sizes(&root, &members(&root).unwrap()).unwrap();
+    assert_eq!(size_violations(&sizes), Vec::<String>::new());
+
+    // 正好达到上限的文件合规，超过一行即报告。
+    let sizes = [
+        ("a.rs".to_owned(), MAX_LINES),
+        ("b.rs".to_owned(), MAX_LINES + 1),
+    ];
+    assert_eq!(size_violations(&sizes), ["b.rs 有 1501 行，超过 1500 行"]);
+}
+
+#[test]
+fn crate_clippy_configs_repeat_the_root_settings() {
+    let root = root();
+    let (violations, copies) = clippy_violations(&root, &members(&root).unwrap()).unwrap();
+    assert_eq!(violations, Vec::<String>::new());
+    // 至少有一个 crate 有自己的配置，否则上面什么都没有检查。
+    assert!(copies > 0);
+
+    // 缺少的设置行被报告；注释和空行不参与比较。
+    let base = clippy_settings("# 说明\na = 1\n\nb = [\n    \"x\",\n]\n");
+    assert_eq!(base, ["a = 1", "b = [", "\"x\",", "]"]);
+    let copy = clippy_settings("b = [\n    \"x\",\n    \"y\",\n]\n");
+    assert_eq!(missing_settings(&base, &copy), ["a = 1"]);
+}
+
 /// `winc-app` 的逻辑层（`app/`）只在帧入口调用绘制层，并以字段持有绘制缓存的类型。
 #[test]
 fn app_logic_does_not_reference_the_view() {
@@ -95,5 +124,62 @@ fn app_logic_does_not_reference_the_view() {
     let mut found = Vec::new();
     scan(&src.join("app"), &mut found);
     scan_file(&src.join("app.rs"), &mut found);
+    assert_eq!(found, Vec::<String>::new());
+}
+
+/// `winc-app` 只在滚动模块（`app/scroll/`）中写入编辑区的滚动位置 `scroll_line`：赋值、复合赋值
+/// 和可变借用都算写入。
+#[test]
+fn scroll_line_is_written_only_by_the_scroll_module() {
+    fn scan(dir: &Path, skip: &Path, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if name != "snapshot" && name != "tests" && path != skip {
+                    scan(&path, skip, found);
+                }
+            } else if name.ends_with(".rs") && name != "tests.rs" {
+                scan_file(&path, found);
+            }
+        }
+    }
+    fn writes(code: &str) -> bool {
+        let mut rest = code;
+        while let Some(at) = rest.find("scroll_line") {
+            let after = rest[at + "scroll_line".len()..].trim_start();
+            let assigns = ["+=", "-=", "*=", "/="]
+                .iter()
+                .any(|op| after.starts_with(op))
+                || (after.starts_with('=') && !after.starts_with("==") && !after.starts_with("=>"));
+            let start = rest[..at].rfind([' ', '(', ',']).map_or(0, |i| i + 1);
+            let borrowed = rest[..start].trim_end().ends_with("&mut");
+            if assigns || borrowed {
+                return true;
+            }
+            rest = &rest[at + "scroll_line".len()..];
+        }
+        false
+    }
+    fn scan_file(path: &Path, found: &mut Vec<String>) {
+        let text = std::fs::read_to_string(path).unwrap();
+        for (number, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or(line);
+            if writes(code) {
+                found.push(format!("{}:{}", path.display(), number + 1));
+            }
+        }
+    }
+    assert!(writes("doc.scroll_line = 1.0;"));
+    assert!(writes("doc.scroll_line -= 1.0;"));
+    assert!(writes("std::mem::swap(&mut doc.scroll_line, &mut row);"));
+    assert!(!writes("if at == doc.scroll_line {"));
+    assert!(!writes("(Some(at), _) if at == doc.scroll_line => {"));
+    assert!(!writes("let row = doc.scroll_line + 1.0;"));
+
+    let src = root().join("crates/winc-app/src");
+    let mut found = Vec::new();
+    scan(&src, &src.join("app/scroll"), &mut found);
     assert_eq!(found, Vec::<String>::new());
 }

@@ -8,6 +8,7 @@
 //! 冲突折叠为一行；两侧只读并随中间滚动，连接带上有采用该侧的按钮，底部为整个文件的操作。
 //! 绘制由 `view/git/merge.rs` 完成，可点击的区域在绘制时记入 `merge.hits`。
 
+use crate::app::scroll::set_scroll_line;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -128,7 +129,7 @@ impl App {
             return Arc::default();
         };
         let key = (doc.id, doc.revision);
-        if let Some((id, revision, found)) = &self.merge.cache
+        if let Some((id, revision, found)) = &self.git.merge.cache
             && (*id, *revision) == key
         {
             return found.clone();
@@ -137,7 +138,7 @@ impl App {
             Some(rope) if enabled && doc.shows_text() => Arc::new(merge::find_conflicts(rope)),
             _ => Arc::default(),
         };
-        self.merge.cache = Some((key.0, key.1, found.clone()));
+        self.git.merge.cache = Some((key.0, key.1, found.clone()));
         found
     }
 
@@ -176,7 +177,7 @@ impl App {
     fn toggle_merge_panes(&mut self) {
         if self.merge_panes_shown() {
             self.unfold_merge_conflicts();
-            self.merge.panes = None;
+            self.git.merge.panes = None;
             self.relayout();
             self.clamp_scroll();
             return;
@@ -188,7 +189,7 @@ impl App {
         let (Some(path), Some(root)) = (path, self.git.root.clone()) else {
             return;
         };
-        let sender = self.merge.loaded.get_or_insert_with(channel).0.clone();
+        let sender = self.git.merge.loaded.get_or_insert_with(channel).0.clone();
         self.spawn_git(UserEvent::GitMergeSides, move |tool| {
             let cancel = winc_editor::format::Cancel::default();
             let sides = tool.map_err(|e| super::unusable(&e)).and_then(|git| {
@@ -205,15 +206,21 @@ impl App {
 
     /// 接收后台读取的两侧与计算完成的对齐。
     pub(in crate::app) fn poll_merge_sides(&mut self) {
-        let finished: Vec<SidesAligned> = (self.merge.aligned.as_ref())
+        let finished: Vec<SidesAligned> = (self.git.merge.aligned.as_ref())
             .map(|(_, results)| results.try_iter().collect())
             .unwrap_or_default();
         for result in finished {
-            if let Some(panes) = self.merge.panes.as_mut().filter(|p| p.doc == result.doc) {
+            if let Some(panes) = self
+                .git
+                .merge
+                .panes
+                .as_mut()
+                .filter(|p| p.doc == result.doc)
+            {
                 panes.accept_alignment(result.revision, result.aligned);
             }
         }
-        let loaded: Vec<SidesLoaded> = (self.merge.loaded.as_ref())
+        let loaded: Vec<SidesLoaded> = (self.git.merge.loaded.as_ref())
             .map(|(_, results)| results.try_iter().collect())
             .unwrap_or_default();
         if !loaded.is_empty() {
@@ -244,7 +251,7 @@ impl App {
             return self.notify(t!("git-merge-panes-not-utf8", name = name));
         };
         let [ours_title, theirs_title] = labels;
-        self.merge.panes = Some(MergePanes {
+        self.git.merge.panes = Some(MergePanes {
             doc: loaded.doc,
             sides: [
                 DiffSide::new(ours_title, &ours, None, language),
@@ -279,14 +286,19 @@ impl App {
     /// 文件不再是冲突状态（已标记为已解决）时两侧没有意义，不再显示。
     pub(crate) fn merge_panes_shown(&self) -> bool {
         let id = self.editor.active().map(|d| d.id);
-        self.merge.panes.as_ref().is_some_and(|p| Some(p.doc) == id) && self.active_unmerged()
+        self.git
+            .merge
+            .panes
+            .as_ref()
+            .is_some_and(|p| Some(p.doc) == id)
+            && self.active_unmerged()
     }
 
     /// 将编辑区分为三栏，栏之间留出连接带，底部留出操作栏；窗口容纳不下时不显示两侧。
     pub(in crate::app) fn place_merge_panes(&mut self) {
-        self.merge.pane_rects = [Rect::default(); 2];
-        self.merge.ribbons = [Rect::default(); 2];
-        self.merge.footer = Rect::default();
+        self.git.merge.pane_rects = [Rect::default(); 2];
+        self.git.merge.ribbons = [Rect::default(); 2];
+        self.git.merge.footer = Rect::default();
         let needed = PANE_MIN * 3.0 + PANE_RIBBON * 2.0;
         if !self.merge_panes_shown() || self.layout.editor.w < needed {
             return;
@@ -298,12 +310,12 @@ impl App {
         let at = |x: f32, w: f32| Rect::new(x, whole.y, w, height);
         let left = at(whole.x, side);
         let right = at(whole.right() - side, side);
-        self.merge.pane_rects = [left, right];
-        self.merge.ribbons = [
+        self.git.merge.pane_rects = [left, right];
+        self.git.merge.ribbons = [
             at(left.right(), PANE_RIBBON),
             at(right.x - PANE_RIBBON, PANE_RIBBON),
         ];
-        self.merge.footer = Rect::new(whole.x, left.bottom(), whole.w, PANE_FOOTER);
+        self.git.merge.footer = Rect::new(whole.x, left.bottom(), whole.w, PANE_FOOTER);
 
         let shift = side + PANE_RIBBON;
         l.editor = at(left.right() + PANE_RIBBON, whole.w - shift * 2.0);
@@ -320,7 +332,7 @@ impl App {
 
     /// 三栏合并是否正在显示两侧。
     pub(crate) fn merge_panes_placed(&self) -> bool {
-        self.merge.pane_rects[0].w > 0.0
+        self.git.merge.pane_rects[0].w > 0.0
     }
 
     /// 在绘制前同步三栏合并：收起已解决的文件，将光标不在其中的冲突折叠为一行，按需重新计算对齐。
@@ -336,7 +348,7 @@ impl App {
         let Some(index) = self.editor.active else {
             return;
         };
-        let Some(panes) = self.merge.panes.as_mut() else {
+        let Some(panes) = self.git.merge.panes.as_mut() else {
             return;
         };
         panes.folded = true;
@@ -376,7 +388,10 @@ impl App {
         if after == before && doc.row_count() == rows {
             return;
         }
-        doc.scroll_line = (doc.scroll_line + after as f64 - before as f64).max(0.0);
+        set_scroll_line(
+            doc,
+            (doc.scroll_line + after as f64 - before as f64).max(0.0),
+        );
         if self.editor.active == Some(index) {
             self.clamp_scroll();
         }
@@ -386,14 +401,14 @@ impl App {
     ///
     /// 同一文件之后再次冲突时，两侧需要重新从暂存阶段读取，不能显示上一次合并的版本。
     fn drop_finished_merge_panes(&mut self) {
-        let Some(doc) = self.merge.panes.as_ref().map(|panes| panes.doc) else {
+        let Some(doc) = self.git.merge.panes.as_ref().map(|panes| panes.doc) else {
             return;
         };
         let open = self.editor.documents.iter().any(|d| d.id == doc);
         let active = self.editor.active().map(|d| d.id) == Some(doc);
         if !open || (active && self.git.status.is_some() && !self.active_unmerged()) {
             self.unfold_merge_conflicts();
-            self.merge.panes = None;
+            self.git.merge.panes = None;
         }
     }
 
@@ -408,7 +423,7 @@ impl App {
         let Some(rope) = doc.text().rope().cloned() else {
             return;
         };
-        let Some(panes) = self.merge.panes.as_mut() else {
+        let Some(panes) = self.git.merge.panes.as_mut() else {
             return;
         };
         let current = panes
@@ -420,7 +435,7 @@ impl App {
         }
         panes.aligning = Some(revision);
         let sides = [panes.sides[0].text.clone(), panes.sides[1].text.clone()];
-        let sender = self.merge.aligned.get_or_insert_with(channel).0.clone();
+        let sender = self.git.merge.aligned.get_or_insert_with(channel).0.clone();
         self.spawn_then(UserEvent::GitMergeSides, move || {
             let [ours, theirs] = sides;
             let aligned = [
@@ -437,7 +452,7 @@ impl App {
 
     /// 展开三栏合并折叠的冲突。
     fn unfold_merge_conflicts(&mut self) {
-        let Some(panes) = self.merge.panes.as_mut().filter(|p| p.folded) else {
+        let Some(panes) = self.git.merge.panes.as_mut().filter(|p| p.folded) else {
             return;
         };
         panes.folded = false;
@@ -471,7 +486,13 @@ impl App {
 
     /// 窗口坐标 (`x`, `y`)（逻辑像素）是否位于三栏合并的两侧或连接带上。
     pub(in crate::app) fn in_merge_pane(&self, x: f32, y: f32) -> bool {
-        (self.merge.pane_rects.iter().chain(&self.merge.ribbons)).any(|r| r.contains(x, y))
+        (self
+            .git
+            .merge
+            .pane_rects
+            .iter()
+            .chain(&self.git.merge.ribbons))
+        .any(|r| r.contains(x, y))
     }
 
     /// 按 `pick` 解决第 `i` 段冲突，将整段替换为所选的一侧。
@@ -604,7 +625,7 @@ impl App {
                 self.select(pos, pos);
                 let doc = &mut self.editor.documents[index];
                 let row = doc.row_of(conflict.start);
-                doc.scroll_line = row.saturating_sub(3) as f64;
+                set_scroll_line(doc, row.saturating_sub(3) as f64);
                 self.clamp_scroll();
             }
             None if forward => self.flash(t!("git-merge-no-next")),
@@ -636,7 +657,7 @@ impl App {
         };
         match target {
             Some(target) => {
-                self.editor.documents[index].scroll_line = target;
+                set_scroll_line(&mut self.editor.documents[index], target);
                 self.clamp_scroll();
             }
             None if forward => self.flash(t!("git-merge-no-next")),

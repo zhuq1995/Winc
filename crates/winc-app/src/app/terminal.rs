@@ -17,8 +17,6 @@ pub(crate) mod run;
 pub(crate) mod shells;
 pub(crate) mod strip;
 mod tab;
-#[cfg(test)]
-mod tests;
 
 use helper::*;
 
@@ -117,6 +115,8 @@ pub(crate) enum HeaderHit {
     ShellMenu,
     /// 把面板挪到编辑区右边，或者挪回下面。
     Position,
+    /// 最大化面板，或者还原（⌘⇧↩）。
+    Maximize,
     /// 运行配置的按钮。
     Run(run::RunButton),
     /// 查找条的一部分。
@@ -148,10 +148,10 @@ pub(crate) struct TerminalPanel {
     pub width: f32,
     /// 出现、收起、换位置的动画。
     pub motion: Option<PanelMotion>,
-    /// 最大化（⌘⇧↩）：面板占到排版允许的最大，编辑区只留最小的高度（宽度）。
+    /// 最大化（⌘⇧↩）：面板铺满编辑区一栏，编辑区不占地方。随现场保存。
     pub maximized: bool,
-    /// 最大化、还原时大小的渐变：（开始时的高度或宽度，时钟）。
-    pub grow: Option<(f32, Clock)>,
+    /// 最大化、还原的过渡：面板在平常的大小和整栏之间伸缩。
+    pub grow: Option<Clock>,
     /// 测试里没有窗口、没有时钟：设置后面板的动画都停在这一时刻。
     #[cfg(test)]
     pub frozen: Option<Duration>,
@@ -423,6 +423,7 @@ impl App {
             open: t.open,
             height: t.height,
             width: t.width,
+            maximized: t.maximized,
         })
     }
 
@@ -451,6 +452,7 @@ impl App {
         if session.width > 0.0 {
             t.width = session.width;
         }
+        t.maximized = session.maximized;
         if session.open {
             self.set_terminal_open(true);
             self.start_terminal();
@@ -461,7 +463,7 @@ impl App {
     ///
     /// 面板直接到位，没有打开动画；测量启动时间时不恢复。
     pub(in crate::app) fn restore_terminal_for_window(&mut self) {
-        if self.bench.silent() {
+        if self.frame.bench.silent() {
             return;
         }
         let session = self
@@ -550,11 +552,6 @@ impl App {
             &[one] => (Some(one), 1),
             many => (None, many.len()),
         };
-        if self.needs_prompt_window() {
-            self.pending_ui
-                .push_back(crate::app::PendingUi::Close(request));
-            return true;
-        }
         let message = match (&request, name) {
             (CloseRequest::Quit, Some(name)) => t!("terminal-quit-confirm-one", name = name),
             (CloseRequest::Quit, None) => t!("terminal-quit-confirm-many", count = count),
@@ -586,10 +583,6 @@ impl App {
             CloseRequest::CloseWindow | CloseRequest::Tabs(_) => (
                 t!("terminal-close-window-confirm-detail"),
                 t!("cmd-close-window"),
-            ),
-            CloseRequest::CloseProject => (
-                t!("terminal-close-window-confirm-detail"),
-                t!("cmd-close-project"),
             ),
         };
         if self.window.handle.is_some() {
@@ -682,20 +675,39 @@ impl App {
 
     /// 最大化或还原面板（⌘⇧↩）。
     ///
-    /// 大小逐渐变化，shell 逐帧重排，与拖动分隔条时相同；面板收着
-    /// 时打开并直接最大化。
+    /// 大小逐渐变化，shell 逐帧重排，与拖动分隔条时相同；面板收着时打开并直接最大化。最大化后
+    /// 编辑区看不见，焦点放进面板。
     pub(super) fn toggle_terminal_maximized(&mut self) {
         if !self.terminal.open {
             self.terminal.maximized = true;
             self.open_terminal_panel();
         } else {
-            let l = self.layout.terminal;
-            let from = if self.terminal_right() { l.w } else { l.h };
             self.terminal.maximized = !self.terminal.maximized;
-            self.terminal.grow = self.panel_clock(SIDEBAR_ANIMATION).map(|c| (from, c));
+            self.start_terminal_grow();
+            if self.terminal.maximized && !self.focus.in_terminal() {
+                self.focus = Focus::Terminal;
+            }
         }
+        self.reset_blink();
         self.relayout();
         self.request_redraw();
+    }
+
+    /// 开始最大化、还原的过渡：面板在平常的大小和整栏之间伸缩，方向由 `maximized` 决定。
+    ///
+    /// 上一段过渡还没走完时（例如拖动时吸附又松开）从当前的位置往回走。
+    pub(in crate::app) fn start_terminal_grow(&mut self) {
+        self.terminal.grow = match self.terminal.grow.filter(|clock| !clock.done()) {
+            Some(clock) => Some(clock.reversed()),
+            None => self.panel_clock(SIDEBAR_ANIMATION),
+        };
+    }
+
+    /// 要在编辑区里打开或切换文件：面板最大化着时先还原，让出编辑区。
+    pub(in crate::app) fn make_room_for_editor(&mut self) {
+        if self.terminal.open && self.terminal.maximized {
+            self.toggle_terminal_maximized();
+        }
     }
 
     /// 切换面板的位置（编辑区右边或下面），写回配置文件并重新排版。
@@ -893,7 +905,7 @@ impl App {
     }
 
     /// 要离开正在看的标签：告诉里面的程序失去了焦点（开了焦点上报时），否则它一直以为自己在前台。
-    pub(in crate::app) fn blur_terminal_tab(&mut self) {
+    fn blur_terminal_tab(&mut self) {
         let t = &mut self.terminal;
         if !std::mem::take(&mut t.focus_sent) {
             return;

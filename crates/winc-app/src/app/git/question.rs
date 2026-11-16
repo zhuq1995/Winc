@@ -60,6 +60,36 @@ const OTHER_CONFIRM_LINES: usize = 8;
 const HOST_KEY_LINES: usize = 1;
 
 impl QuestionView {
+    /// 返回「转到提交号、分支或标签」对话框的内容：一个输入框。
+    pub(super) fn go_to_revision() -> Self {
+        Self {
+            title: t!("git-go-to-title").to_owned(),
+            message: None,
+            message_lines: 0,
+            values: Vec::new(),
+            inputs: vec![QuestionInput {
+                label: t!("git-go-to-label"),
+                placeholder: t!("git-go-to-placeholder"),
+            }],
+            confirm: t!("git-go-to-button"),
+        }
+    }
+
+    /// 返回「按路径筛选」对话框的内容：一个输入框。
+    pub(super) fn log_path() -> Self {
+        Self {
+            title: t!("git-log-path-title").to_owned(),
+            message: None,
+            message_lines: 0,
+            values: Vec::new(),
+            inputs: vec![QuestionInput {
+                label: t!("git-log-path-label"),
+                placeholder: t!("git-log-path-placeholder"),
+            }],
+            confirm: t!("git-log-path-button"),
+        }
+    }
+
     /// 返回添加远程仓库（`editing` 为 `None`）或修改其地址的对话框内容。
     pub(crate) fn remote(editing: Option<&str>) -> QuestionView {
         let input = |label, placeholder| QuestionInput { label, placeholder };
@@ -88,8 +118,48 @@ impl QuestionView {
         }
     }
 
-    /// 返回 `prompt` 对应的对话框内容。
-    pub(crate) fn of(prompt: &Prompt) -> QuestionView {
+    /// 返回连接远端主机的对话框内容：主机、端口和密钥文件。
+    pub(crate) fn connect() -> QuestionView {
+        let input = |label, placeholder| QuestionInput { label, placeholder };
+        QuestionView {
+            title: t!("workspace-remote-dialog-title").to_owned(),
+            message: None,
+            message_lines: 0,
+            values: Vec::new(),
+            inputs: vec![
+                input(
+                    t!("workspace-remote-dialog-host"),
+                    t!("workspace-remote-dialog-host-placeholder"),
+                ),
+                input(t!("workspace-remote-dialog-port"), "22"),
+                input(
+                    t!("workspace-remote-dialog-key"),
+                    t!("workspace-remote-dialog-key-placeholder"),
+                ),
+            ],
+            confirm: t!("workspace-remote-dialog-connect"),
+        }
+    }
+
+    /// 返回 `prompt` 对应的对话框内容；`origin` 是提出请求的远端主机，排在只读信息的第一行。
+    ///
+    /// 远端主机上的命令提出的请求，答复会发到那台主机；提示的文字也由它给出，可以写成任何
+    /// 样子。标明主机，用户才知道输入的内容交给了谁。
+    pub(crate) fn of(prompt: &Prompt, origin: Option<&str>) -> QuestionView {
+        let mut view = Self::of_prompt(prompt);
+        if let Some(host) = origin {
+            let from = QuestionValue {
+                label: t!("git-question-origin"),
+                text: host.to_owned(),
+                mono: false,
+            };
+            view.values.insert(0, from);
+        }
+        view
+    }
+
+    /// 返回 `prompt` 本身对应的对话框内容。
+    fn of_prompt(prompt: &Prompt) -> QuestionView {
         let value = |label, text: &str| QuestionValue {
             label,
             text: text.to_owned(),
@@ -190,6 +260,15 @@ impl QuestionView {
     }
 }
 
+/// 输入请求的来源：决定请求何时作废，以及用户取消后由谁提示。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum Asker {
+    /// 第几个 Git 操作。
+    Git(u64),
+    /// 到远端主机的连接。
+    Remote,
+}
+
 /// 开始接收第 `id` 个操作的输入请求：写入 `questions` 并唤醒界面线程。
 pub(super) fn listen(
     proxy: WindowProxy,
@@ -205,8 +284,8 @@ pub(super) fn listen(
 impl App {
     /// 处理后台送达的输入请求；所属操作已结束的请求被丢弃，askpass 程序按取消处理。
     pub(in crate::app) fn poll_git_questions(&mut self) {
-        while let Ok((id, question)) = self.branch.questions.1.try_recv() {
-            if self.branch.running.is_some() && self.branch.started == id {
+        while let Ok((id, question)) = self.git.branch.questions.1.try_recv() {
+            if self.git.branch.running.is_some() && self.git.branch.started == id {
                 self.open_git_question(id, question);
             }
         }
@@ -218,13 +297,28 @@ impl App {
     /// 已打开的表单被关闭，因为操作正在等待答复。无需输入的请求没有默认答复：键盘焦点不落在按钮上，
     /// 接受主机密钥必须由用户明确选择。
     pub(in crate::app) fn open_git_question(&mut self, id: u64, question: Question) {
+        // 用户已取消过这个操作的询问：之后的询问同样按取消答复，不再弹出。
+        if self.git.branch.declined {
+            return;
+        }
+        self.open_question(Asker::Git(id), question);
+    }
+
+    /// 答复来自 `asker` 的输入请求，规则见 [`App::open_git_question`]。
+    pub(in crate::app) fn open_question(&mut self, asker: Asker, question: Question) {
         let Question { prompt, reply } = question;
         if let Prompt::Password { server, .. } = &prompt
-            && let Some((known, password)) = self.branch.password.take()
+            && let Some((known, password)) = self.git.branch.password.take()
             && known == *server
         {
             let _ = reply.send(password);
             return;
+        }
+        // 连接远端主机的对话框让位给询问，答复之后再回来（见 `connect_dialog_closed`）。
+        if asker == Asker::Remote {
+            self.connect_dialog_steps_aside();
+            // 同一张卡片换了一页：旧的一页淡出，询问淡入。
+            self.turn_card(crate::app::animation::Card::Dialog);
         }
         self.close_form_dialog();
         let (name, focus) = match &prompt {
@@ -240,18 +334,25 @@ impl App {
             | Prompt::Other { .. }
             | Prompt::HostKey { .. } => (TextField::masked(), DialogPart::Branch),
         };
-        self.branch.asking = Some((id, reply));
-        self.show_form_dialog(FormKind::Question(prompt), name, focus);
+        self.git.branch.asking = Some((asker, reply));
+        // 远端仓库的操作提出的请求：答复会发到那台主机上，对话框标明它。
+        let origin = match asker {
+            Asker::Git(_) => (self.git.root.as_deref())
+                .and_then(winc_backend::locate)
+                .map(|at| at.target.as_str().to_owned()),
+            Asker::Remote => None,
+        };
+        self.show_form_dialog(FormKind::Question(prompt, origin), name, focus);
     }
 
     /// 提交询问对话框。
     ///
     /// 登录对话框在密码为空时先把键盘焦点移到密码框，密码可能确实为空，再次提交时按空密码答复。
     pub(super) fn answer_git_question(&mut self) {
-        let Some(dialog) = &mut self.form_dialog else {
+        let Some(dialog) = &mut self.overlays.form_dialog else {
             return;
         };
-        let FormKind::Question(prompt) = &dialog.kind else {
+        let FormKind::Question(prompt, _) = &dialog.kind else {
             return;
         };
         let answer = if prompt.is_confirmation() {
@@ -266,53 +367,121 @@ impl App {
                 return;
             }
             let password = dialog.second.text().replace(['\r', '\n'], "");
-            self.branch.password = Some((server.clone(), password));
+            self.git.branch.password = Some((server.clone(), password));
         }
-        if let Some((_, reply)) = self.branch.asking.take() {
+        let asker = self.git.branch.asking.take().map(|(asker, reply)| {
             let _ = reply.send(answer);
-        }
+            asker
+        });
         self.close_form_dialog();
+        // 答复的是连接远端主机时的询问：连接仍在进行，回到连接的对话框。
+        if asker == Some(Asker::Remote) {
+            self.restore_connect_dialog();
+        }
     }
 
     /// 关闭询问对话框时调用：尚未答复的请求按用户取消处理。
+    ///
+    /// 取消一次即取消整件事：`ssh` 在一次询问没有答复后会再问（口令默认问三次）。连接远端
+    /// 主机时直接中止连接；Git 操作此后的询问不再弹出（见 [`App::open_git_question`]）。
     pub(super) fn decline_git_question(&mut self) {
-        if self.branch.asking.take().is_some() {
-            self.branch.declined = true;
+        match self.git.branch.asking.take() {
+            Some((Asker::Git(_), _)) => self.git.branch.declined = true,
+            Some((Asker::Remote, _)) => self.cancel_remote(),
+            None => {}
         }
     }
 
     /// 第 `id` 个操作结束时调用：清除已填写的密码，关闭未答复的对话框，不按用户取消处理。
     pub(in crate::app) fn end_git_questions(&mut self, id: u64) {
-        if self.branch.started == id {
-            self.branch.password = None;
+        if self.git.branch.started == id {
+            self.git.branch.password = None;
         }
-        if self.branch.asking.as_ref().is_some_and(|(at, _)| *at == id) {
-            self.branch.asking = None;
+        self.end_questions(Asker::Git(id));
+    }
+
+    /// 连接结束时调用：关闭未答复的对话框，不按用户取消处理。
+    pub(in crate::app) fn end_remote_questions(&mut self) {
+        self.end_questions(Asker::Remote);
+    }
+
+    fn end_questions(&mut self, asker: Asker) {
+        if self
+            .git
+            .branch
+            .asking
+            .as_ref()
+            .is_some_and(|(at, _)| *at == asker)
+        {
+            self.git.branch.asking = None;
             self.close_form_dialog();
         }
     }
 
     /// 报告操作失败：用户取消输入时提示已取消，否则显示 `message` 并提供查看完整输出的按钮。
     pub(in crate::app) fn report_git_failure(&mut self, what: &str, message: String) {
-        if mem::take(&mut self.branch.declined) {
+        if mem::take(&mut self.git.branch.declined) {
             self.flash(t!("git-op-canceled", what = what));
         } else {
             self.notify_with(message, NoticeAction::GitOutput);
         }
     }
 
-    /// 在只读标签中打开 Git 操作的输出。
+    /// 在只读标签中显示 Git 的输出记录；标签开着时内容实时更新（[`App::refresh_git_output`]）。
     pub(in crate::app) fn show_git_output(&mut self) {
-        let text = winc_editor::git::output_text();
-        let text = if text.is_empty() {
+        let (text, written) = winc_editor::git::output_snapshot();
+        let shown = if text.is_empty() {
             t!("git-output-empty").to_owned()
         } else {
             text
         };
-        self.editor.show_output(t!("git-output-title"), &text);
+        self.editor.show_output(t!("git-output-title"), &shown);
+        self.git.output_shown = written;
         self.focus = Focus::Editor;
         self.relayout();
         self.ensure_caret_visible();
         self.request_redraw();
+    }
+
+    /// 让 Git 输出的新内容送到本窗口：记录每写入一次就向事件循环发一个事件，窗口关闭后不再发。
+    ///
+    /// 测试中没有事件循环，不登记；测试直接调用 [`App::refresh_git_output`]。
+    pub(crate) fn watch_git_output(&self) {
+        if let Some(proxy) = self.link.proxy.clone() {
+            winc_editor::git::on_output(move || proxy.send_event(UserEvent::GitOutput).is_ok());
+        }
+    }
+
+    /// Git 输出的标签开着时，把新写入的内容接在末尾：命令一开始、输出每到一行都看得到，不用关掉
+    /// 重开。
+    ///
+    /// 标签没开着时不做事；不抢焦点、不切换标签，正在看的位置不动。
+    pub(in crate::app) fn refresh_git_output(&mut self) {
+        let title = t!("git-output-title");
+        // 标签里是「暂无输出」的说明，或者接不上（最早的内容已被丢弃）：整篇换掉。
+        let (more, text, written) = match winc_editor::git::output_since(self.git.output_shown) {
+            Some((more, written)) => (Some(more), String::new(), written),
+            None => {
+                let (text, written) = winc_editor::git::output_snapshot();
+                (None, text, written)
+            }
+        };
+        if written == self.git.output_shown {
+            return;
+        }
+        if !self.editor.refresh_output(title, more.as_deref(), &text) {
+            return;
+        }
+        self.git.output_shown = written;
+        self.relayout();
+        self.request_redraw();
+    }
+
+    /// 打开的目录不是仓库：已经找过、没有找到，也没有读取失败。提交视图据此给出初始化和克隆。
+    pub(crate) fn git_no_repository(&self) -> bool {
+        self.editor.root().is_some()
+            && self.git.root.is_none()
+            && self.git.problem.is_none()
+            && !self.git_scanning()
     }
 }

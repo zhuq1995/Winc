@@ -20,12 +20,15 @@ use crate::layout::{
 
 mod animation;
 mod editor;
+#[cfg(unix)]
 mod git;
 mod input;
 #[cfg(target_os = "macos")]
 mod memory;
 mod pictures;
 mod preview;
+#[cfg(unix)]
+mod remote;
 mod settings;
 mod shots;
 mod status;
@@ -106,7 +109,7 @@ fn blank_app(dark: bool) -> App {
 
     let renderer =
         Renderer::offscreen(SIZE.0, SIZE.1, SCALE, palette.frame_bg, None, None).unwrap();
-    app.renderer = Some(renderer);
+    app.frame.renderer = Some(renderer);
     app.measure_fonts();
     app.relayout();
     app
@@ -137,13 +140,13 @@ fn hover_tree_row(app: &mut App, index: usize, x: f32) {
 pub(super) fn paint(app: &mut App) {
     app.vim_sync();
     app.relayout();
-    let mut renderer = app.renderer.take().unwrap();
+    let mut renderer = app.frame.renderer.take().unwrap();
     app.declare_base(&mut renderer);
     renderer.draw(|frame| view::draw(app, frame));
-    app.hover = app.hover_at(app.mouse.0, app.mouse.1);
+    app.pointer.hover = app.hover_at(app.pointer.mouse.0, app.pointer.mouse.1);
     app.declare_base(&mut renderer);
     renderer.draw(|frame| view::draw(app, frame));
-    app.renderer = Some(renderer);
+    app.frame.renderer = Some(renderer);
 }
 
 /// 直接删除 `path`（文件或目录），不移入废纸篓，避免测试在用户的废纸篓中留下内容。
@@ -157,7 +160,7 @@ fn delete_for_test(path: &Path) -> std::io::Result<()> {
 
 /// 在 `(x, y)` 处按下并释放右键。
 ///
-/// 测试中没有窗口，系统菜单不会真正弹出；菜单内容保存在 `app.context_menu` 中，
+/// 测试中没有窗口，系统菜单不会真正弹出；菜单内容保存在 `app.overlays.context_menu` 中，
 /// 可用 [`menu_commands`] 读取。
 fn right_click(app: &mut App, (x, y): (f32, f32)) {
     app.on_mouse_move(x, y);
@@ -189,7 +192,10 @@ fn menu_commands(app: &App) -> Vec<(MenuCommand, bool)> {
         }
     }
     let mut out = Vec::new();
-    flatten(&app.context_menu.as_ref().unwrap().entries, &mut out);
+    flatten(
+        &app.overlays.context_menu.as_ref().unwrap().entries,
+        &mut out,
+    );
     out
 }
 
@@ -207,7 +213,7 @@ fn tree_row_center(app: &App, index: usize) -> (f32, f32) {
 /// 目录取环境变量 `WINC_SNAPSHOT_DIR`；未设置时使用系统临时目录下的 `winc-snapshots`。
 fn shoot(app: &mut App, name: &str) {
     paint(app);
-    let renderer = app.renderer.take().unwrap();
+    let renderer = app.frame.renderer.take().unwrap();
 
     let dir = std::env::var_os("WINC_SNAPSHOT_DIR").map_or_else(
         || std::env::temp_dir().join("winc-snapshots"),
@@ -216,7 +222,7 @@ fn shoot(app: &mut App, name: &str) {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.png"));
     write_png(&path, renderer.image().unwrap()).unwrap();
-    app.renderer = Some(renderer);
+    app.frame.renderer = Some(renderer);
     eprintln!("{}", path.display());
 }
 
@@ -244,7 +250,7 @@ fn search_folder(name: &str) -> PathBuf {
 
 /// 等待后台搜索完成，接收结果并绘制一帧。
 fn finish_search(app: &mut App) {
-    app.global.engine.wait();
+    app.panels.global.engine.wait();
     app.poll_global();
     paint(app);
 }
@@ -409,27 +415,13 @@ fn a_commit_finishing_after_a_folder_switch_does_not_push_the_new_repo() {
     let dir = sample_folder("commit-elsewhere");
     let mut app = app_with(&dir, false);
     let elsewhere = dir.join("other-repo");
-    app.commit.busy = true;
+    app.git.commit.busy = true;
     app.committed_in(&elsewhere);
-    assert!(app.branch.running.is_none());
-    assert!(app.commit.busy, "这边正在提交的不受影响");
+    assert!(app.git.branch.running.is_none());
+    assert!(app.git.commit.busy, "这边正在提交的不受影响");
     assert_eq!(
         app.status.message.as_deref(),
         Some("已在「other-repo」中提交 abc1234")
     );
     std::fs::remove_dir_all(&dir).unwrap();
-}
-
-/// 给测试里启动的命令行程序（`git` 等）加上不创建控制台窗口的标志：由没有控制台的进程启动
-/// 测试时，Windows 为每个控制台程序单独弹出一个窗口，跑一遍测试会弹出大量窗口。
-/// `0x0800_0000` 是 `CREATE_NO_WINDOW`，与产品内启动 `git` 的方式一致。
-pub(crate) fn quiet(command: std::process::Command) -> std::process::Command {
-    #[cfg(windows)]
-    {
-        let mut command = command;
-        std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000);
-        command
-    }
-    #[cfg(not(windows))]
-    command
 }

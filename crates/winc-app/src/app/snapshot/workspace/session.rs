@@ -27,7 +27,7 @@ fn no_history_starts_on_the_start_page() {
     // 点「应用设置」打开设置。
     let (row, _) = app.hits.start[0];
     app.on_mouse_move(row.x + 10.0, row.y + 10.0);
-    assert_eq!(app.hover, Hover::Start(StartAction::Settings));
+    assert_eq!(app.pointer.hover, Hover::Start(StartAction::Settings));
     app.on_mouse_down(MouseButton::Left);
     app.on_mouse_up(MouseButton::Left);
     assert!(app.settings.open);
@@ -37,7 +37,7 @@ fn no_history_starts_on_the_start_page() {
     // 点「新建文件」开一个未命名标签，开始页换成编辑区。
     let (row, _) = app.hits.start[1];
     app.on_mouse_move(row.x + 10.0, row.y + 10.0);
-    assert_eq!(app.hover, Hover::Start(StartAction::NewFile));
+    assert_eq!(app.pointer.hover, Hover::Start(StartAction::NewFile));
     app.on_mouse_down(MouseButton::Left);
     app.on_mouse_up(MouseButton::Left);
     assert_eq!(app.editor.documents.len(), 1);
@@ -95,7 +95,7 @@ fn recent_folders_open_and_can_be_forgotten() {
     // 悬停在一行上时，右端的 ✕ 才可用；点击 ✕ 只从列表中移除该项，不打开目录。
     let close = rect(&app, StartAction::Forget(0));
     app.on_mouse_move(close.x + 4.0, close.y + 4.0);
-    assert_eq!(app.hover, Hover::Start(StartAction::Forget(0)));
+    assert_eq!(app.pointer.hover, Hover::Start(StartAction::Forget(0)));
     app.on_mouse_down(MouseButton::Left);
     assert!(app.editor.workspace.is_none());
     assert_eq!(app.state.recent.len(), 2);
@@ -127,7 +127,7 @@ fn recent_folders_open_and_can_be_forgotten() {
     );
 
     // 测试中没有状态文件路径，这些变更只保存在内存中。
-    assert!(app.state_path.is_none());
+    assert!(app.store.state_path.is_none());
 
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&other);
@@ -256,8 +256,11 @@ fn switching_folders_keeps_each_folders_tabs() {
     // 项目名菜单：最近的目录（不含当前目录）、新建窗口、打开目录、关闭目录。菜单开着时项目名
     // 按钮处于按下状态，关掉菜单后放开。
     app.open_project_menu();
-    assert_eq!(app.menu_button, Some(crate::app::MenuButton::Project));
-    let menu = app.context_menu.as_ref().unwrap();
+    assert_eq!(
+        app.overlays.menu_button,
+        Some(crate::app::MenuButton::Project)
+    );
+    let menu = app.overlays.context_menu.as_ref().unwrap();
     let commands: Vec<_> = menu
         .entries
         .iter()
@@ -273,8 +276,7 @@ fn switching_folders_keeps_each_folders_tabs() {
             MenuCommand::OpenRecent(b_index),
             MenuCommand::NewWindow,
             MenuCommand::OpenFolder,
-            MenuCommand::CloseFolder,
-            MenuCommand::CloseProject
+            MenuCommand::CloseFolder
         ]
     );
 
@@ -307,9 +309,9 @@ fn switching_folders_keeps_each_folders_tabs() {
         })
         .collect();
     let folder_icon = crate::app::input::context_menu::MenuIcon::Folder;
-    assert_eq!(icons, [Some(folder_icon), None, None, None, None]);
+    assert_eq!(icons, [Some(folder_icon), None, None, None]);
     let row = popup.row_rects[0];
-    let image = app.renderer.as_ref().unwrap().image().unwrap();
+    let image = app.frame.renderer.as_ref().unwrap().image().unwrap();
     let scale = image.width as f32 / app.layout.window.w;
     let (x0, x1) = ((row.x + 24.0) * scale, (row.x + 46.0) * scale);
     let (y0, y1) = (row.y * scale, row.bottom() * scale);
@@ -351,7 +353,7 @@ fn switching_folders_keeps_each_folders_tabs() {
 
     // 从菜单切换到 B：B 的 `a.txt` 恢复（之前未保存的修改已放弃），项目名按钮放开。
     app.run_menu_command(MenuCommand::OpenRecent(b_index));
-    assert_eq!(app.menu_button, None);
+    assert_eq!(app.overlays.menu_button, None);
     assert_eq!(app.editor.workspace.as_ref().unwrap().root, root_b);
     assert_eq!(names(&app), ["a.txt"]);
     assert!(!app.editor.active().unwrap().is_dirty());
@@ -575,7 +577,7 @@ fn edits_made_after_agreeing_to_quit_are_backed_up_too() {
 }
 
 #[test]
-fn closing_the_window_hides_it_and_keeps_the_folder_and_its_tabs() {
+fn closing_the_window_closes_the_folder_but_keeps_its_tabs_and_changes() {
     let dir = search_folder("close-window");
     let root = backup_root("close-window");
     let mut app = app_with(&dir.join("src/main.rs"), false);
@@ -595,10 +597,11 @@ fn closing_the_window_hides_it_and_keeps_the_folder_and_its_tabs() {
         return;
     }
 
-    // macOS：不退出应用，窗口只是隐藏。窗口里放着所有项目，目录、标签和运行中的终端都留着，
-    // 点程序坞图标回来时原样显示。
+    // macOS：不退出应用。窗口隐藏，目录和标签关闭，回到开始页；目录的现场和备份都留着，
+    // 之后退出时没有打开的目录，下次启动是开始页。
     assert!(!app.closing.quit_requested && app.window.hidden);
-    assert!(app.editor.workspace.is_some() && app.editor.documents.len() == 2);
+    assert!(app.editor.workspace.is_none() && app.editor.documents.is_empty());
+    assert!(app.state.last.is_none());
     let session = app
         .state
         .session_for(&folder)
@@ -610,6 +613,25 @@ fn closing_the_window_hides_it_and_keeps_the_folder_and_its_tabs() {
     // 标签已经关闭，但后续的备份不会删除该备份文件。
     back_up_now(&mut app);
     assert_eq!(backups.read_all().len(), 1);
+
+    // 在同一个进程里从最近列表重新打开该目录：标签和未保存的内容都回来。
+    app.open_folder_now(&folder);
+    let names: Vec<_> = app
+        .editor
+        .documents
+        .iter()
+        .map(|d| d.name().into_owned())
+        .collect();
+    assert_eq!(names, ["main.rs", "Cargo.toml"]);
+    let main = &app.editor.documents[0];
+    assert!(main.is_dirty());
+    assert!(
+        main.text()
+            .rope()
+            .unwrap()
+            .to_string()
+            .starts_with("// 还没存\n")
+    );
 
     // 这时用 ⌘Q 退出：下次启动打开该目录。
     app.request_quit();
@@ -766,11 +788,11 @@ fn with_hot_exit_off_quitting_asks_and_then_drops_the_backups() {
     assert!(app.closing.prompt.is_some() && !app.closing.quit_requested);
     app.answer_save_prompt(SaveChoice::Cancel);
     assert_eq!(backups.read_all().len(), 1);
-    // 关闭项目时同样询问；取消则项目、目录和标签都不动。
-    app.request_close_project();
+    // 关闭窗口时同样询问；取消则窗口、目录和标签都不动。
+    app.request_close_window();
     assert!(app.closing.prompt.is_some());
     app.answer_save_prompt(SaveChoice::Cancel);
-    assert!(!app.project_closed && !app.closing.quit_requested);
+    assert!(!app.window.hidden && !app.closing.quit_requested);
     assert!(app.editor.workspace.is_some() && !app.editor.documents.is_empty());
 
     // 不保存：退出并删除备份，下次启动不恢复。
@@ -911,9 +933,9 @@ fn the_sidebar_state_is_remembered_per_folder() {
     let first = sample_folder("sidebar-first");
     let second = sample_folder("sidebar-second");
     let mut app = app_with(&first.join("short.rs"), false);
-    assert!(app.sidebar.visible);
+    assert!(app.panels.sidebar.visible);
     app.toggle_sidebar();
-    assert!(!app.sidebar.visible);
+    assert!(!app.panels.sidebar.visible);
     app.remember_session();
     let state = app.state.clone();
 
@@ -921,21 +943,21 @@ fn the_sidebar_state_is_remembered_per_folder() {
     let mut app = blank_app(false);
     app.state = state.clone();
     app.open_folder_now(&first);
-    assert!(!app.sidebar.visible);
+    assert!(!app.panels.sidebar.visible);
     assert!(!app.focus_in_sidebar());
 
     // 启动时目录在窗口创建之前打开：窗口建好时恢复，没有动画。
     let mut app = app_with(&first.join("short.rs"), false);
     app.state = state.clone();
     app.restore_sidebar_for_window();
-    assert!(!app.sidebar.visible);
-    assert!(app.sidebar.motion.is_none());
+    assert!(!app.panels.sidebar.visible);
+    assert!(app.panels.sidebar.motion.is_none());
 
     // 没有记录过的目录显示文件树，上一个目录收起不影响它。
     let mut app = blank_app(false);
     app.state = state.clone();
     app.open_folder_now(&second);
-    assert!(app.sidebar.visible);
+    assert!(app.panels.sidebar.visible);
 
     // 重新展开后记下的也是展开；关闭目录时侧栏收起是回到开始页，不算用户收起。
     let mut app = blank_app(false);
@@ -944,7 +966,7 @@ fn the_sidebar_state_is_remembered_per_folder() {
     app.toggle_sidebar();
     let root = app.editor.root().unwrap().to_path_buf();
     app.close_folder();
-    assert!(!app.sidebar.visible);
+    assert!(!app.panels.sidebar.visible);
     let session = app.state.session_for(&root).unwrap();
     assert!(!session.sidebar_hidden);
 

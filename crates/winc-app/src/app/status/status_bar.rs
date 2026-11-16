@@ -30,6 +30,8 @@ pub enum StatusItem {
     Branch,
     /// 终端面板的开关（终端模块开着时在设置按钮左边）。
     Terminal,
+    /// 连接远端主机的按钮（远程模块开着时在终端开关左边）：点了打开主机面板。
+    Remote,
     /// 设置按钮（始终在最右边）：点了打开设置。
     Settings,
     /// 后台检查找到了新版本：点了打开更新窗口。
@@ -54,6 +56,9 @@ impl App {
     pub(in crate::app) fn open_status_menu(&mut self, item: StatusItem) {
         if item == StatusItem::Terminal {
             return self.click_terminal_button();
+        }
+        if item == StatusItem::Remote {
+            return self.open_remote_picker();
         }
         // 面板开着时点在面板外先关掉它（`click_picker`），再点一下才展开：点分支名就是开和关。
         if item == StatusItem::Branch {
@@ -83,6 +88,7 @@ impl App {
             (
                 StatusItem::Branch
                 | StatusItem::Terminal
+                | StatusItem::Remote
                 | StatusItem::Settings
                 | StatusItem::Update,
                 _,
@@ -176,8 +182,8 @@ impl App {
         };
         match doc.begin_reopen_with_encoding(encoding) {
             Ok(job) => {
-                let ticket = self.rereads.reencodes.issue(id);
-                let sender = self.rereads.results.0.clone();
+                let ticket = self.disk.rereads.reencodes.issue(id);
+                let sender = self.disk.rereads.results.0.clone();
                 self.spawn_then(UserEvent::Reread, move || {
                     let _ = sender.send((id, ticket, DiskBack::Reencoded(job.read())));
                 });
@@ -206,7 +212,7 @@ impl App {
             Ok(true) => {
                 let damaged = doc.encoding == Encoding::Lossy;
                 if self.editor.active().is_some_and(|d| d.id == id) {
-                    self.sticky_cache = None;
+                    self.caches.sticky_cache = None;
                     self.relayout();
                     self.clamp_scroll();
                     self.ensure_caret_visible();
@@ -287,16 +293,6 @@ impl App {
         self.request_redraw();
     }
 
-    /// 执行命令面板中的「更改文件的语言」：弹出状态栏上的语言菜单。
-    ///
-    /// 输出标签（格式化的结果）没有这一项，不弹出该菜单。
-    pub(in crate::app) fn open_language_menu(&mut self) {
-        if self.editor.active().is_none_or(|d| d.title.is_some()) {
-            return;
-        }
-        self.open_status_menu(StatusItem::Language);
-    }
-
     /// 执行命令面板中的「更改行尾序列」：弹出状态栏上的行尾菜单。
     pub(in crate::app) fn open_line_ending_menu(&mut self) {
         self.open_status_menu(StatusItem::LineEnding);
@@ -315,7 +311,7 @@ impl App {
     #[cfg(not(target_os = "macos"))]
     fn click_update(&mut self) {
         use crate::winc::UpdateState;
-        let state = self.shared.update_state.borrow().clone();
+        let state = self.link.shared.update_state.borrow().clone();
         match state {
             UpdateState::Ready(_) => {
                 crate::updates::restart();

@@ -1,7 +1,6 @@
 //! 各模块测试共用的辅助函数：在系统临时目录下为每个测试创建互不干扰的目录。
 
 use std::path::PathBuf;
-use std::process::Command;
 
 /// 在系统临时目录下新建一个空目录（已有的先清空），返回规范化后的路径（macOS 的临时目录位于
 /// `/private` 之下，打开的文件记录的是真实路径）。
@@ -28,10 +27,31 @@ pub(crate) fn scratch(name: &str) -> PathBuf {
     winc_config::files::canonicalize(&dir).unwrap()
 }
 
+/// 在本进程内启动服务端并登记为到 `name` 的连接，返回连接目标：之后该目标的虚拟路径指向本机的
+/// 同名路径，文件操作和命令都经连接执行。
+///
+/// # Panics
+///
+/// `name` 不是合法的连接目标、无法创建管道或握手失败时 panic。
+#[cfg(unix)]
+pub(crate) fn loopback(name: &str) -> winc_backend::Target {
+    use winc_backend::remote;
+
+    let (requests, to_server) = std::io::pipe().unwrap();
+    let (replies, from_server) = std::io::pipe().unwrap();
+    std::thread::spawn(move || {
+        let _ = remote::serve(requests, from_server);
+    });
+    let target = winc_backend::Target::new(name).unwrap();
+    let connection = remote::Connection::over(replies, to_server).unwrap();
+    remote::register(target.clone(), connection);
+    target
+}
+
 /// 给测试里启动的命令行程序（`git` 等）加上不创建控制台窗口的标志：由没有控制台的进程启动
 /// 测试时，Windows 为每个控制台程序单独弹出一个窗口，跑一遍测试会弹出大量窗口。
 /// `0x0800_0000` 是 `CREATE_NO_WINDOW`，与产品内启动 `git` 的方式一致。
-pub(crate) fn quiet(command: Command) -> Command {
+pub(crate) fn quiet(command: std::process::Command) -> std::process::Command {
     #[cfg(windows)]
     {
         let mut command = command;

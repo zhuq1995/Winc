@@ -8,7 +8,8 @@ use winc_editor::git::{Change, Head};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::app::git::Target;
-use crate::app::git::commit::{CommitFile, CommitGroup};
+use crate::app::git::commit::CommitGroup;
+use crate::app::git::form::FormKind;
 use crate::app::{ChangeTarget, CommitRow, CommitTarget, DiffTarget};
 use crate::keymap::Action;
 
@@ -22,6 +23,7 @@ mod commit_selection;
 mod diff;
 mod log;
 mod log_details;
+mod log_filters;
 mod merge;
 mod module;
 mod question;
@@ -62,7 +64,7 @@ fn make_repo(dir: &Path) -> bool {
 
 fn make_repo_inner(dir: &Path) -> bool {
     let git = |args: &[&str]| {
-        crate::app::snapshot::quiet(Command::new("git"))
+        Command::new("git")
             .arg("-C")
             .arg(dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
@@ -74,13 +76,11 @@ fn make_repo_inner(dir: &Path) -> bool {
     if !git(&["init", "-q", "-b", "main"]) || !git(&["add", "."]) {
         return false;
     }
-    // 仓库自己的配置：winc 提交时不依赖本机的全局身份和签名设置，检出内容不随全局
-    // `core.autocrlf` 变成 CRLF。
+    // 仓库自己的配置：winc 提交时不依赖本机的全局身份和签名设置。
     for (key, value) in [
         ("user.name", "t"),
         ("user.email", "t@t"),
         ("commit.gpgsign", "false"),
-        ("core.autocrlf", "false"),
     ] {
         git(&["config", key, value]);
     }
@@ -106,73 +106,6 @@ fn long_repo(dir: &Path) -> bool {
     true
 }
 
-/// 提交视图里的一个条目：`group` 组里的 `path`。
-fn commit_file(group: CommitGroup, path: &Path) -> CommitFile {
-    CommitFile::new(group, path.to_path_buf())
-}
-
-/// 等后台的暂存写操作结束，并把状态刷新到界面里。
-///
-/// 服务器上的 `git` 走后台线程；测试里反复收取结果。
-fn wait_staging(app: &mut App) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    app.poll_commit();
-    while std::time::Instant::now() < deadline {
-        app.poll_commit();
-        app.poll_git();
-        if !app.commit.staging && app.git.running.is_none() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    panic!("暂存操作没有结束");
-}
-
-/// 等后台的提交（含先暂存全部再提交）结束，并把结果刷新到界面里。
-fn wait_commit(app: &mut App) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    app.poll_commit();
-    while std::time::Instant::now() < deadline {
-        app.poll_commit();
-        app.poll_git();
-        if !app.commit.busy && !app.commit.staging && app.git.running.is_none() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    panic!("提交没有结束");
-}
-
-/// 暂存区里相对于 `HEAD` 有变化的路径。
-fn staged_paths(app: &App) -> Vec<PathBuf> {
-    app.git
-        .status
-        .as_ref()
-        .map(|s| {
-            s.entries
-                .iter()
-                .filter(|e| e.staged.is_some())
-                .map(|e| e.path.clone())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// 工作区里还有未暂存变化的路径。
-fn unstaged_paths(app: &App) -> Vec<PathBuf> {
-    app.git
-        .status
-        .as_ref()
-        .map(|s| {
-            s.entries
-                .iter()
-                .filter(|e| e.unstaged.is_some())
-                .map(|e| e.path.clone())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// 弹出 `command` 所在的菜单（分支的操作菜单、储藏那一行的菜单，或提交视图的「⋯」）并选中它；
 /// 测试中没有系统菜单，选中即执行。
 fn choose_in_branch_menu(app: &mut App, command: crate::app::MenuCommand) {
@@ -188,16 +121,32 @@ fn choose_in_branch_menu(app: &mut App, command: crate::app::MenuCommand) {
 }
 
 /// 按窗口内提示框的第 `button` 个按钮：第一个是默认按钮，最后一个是「取消」。
+///
+/// 推送和发布由推送对话框确认：没有提示框而开着推送对话框时，第一个按钮是它的主按钮，其余
+/// 是「取消」。
 fn press_alert(app: &mut App, button: usize) {
     paint(app);
-    let rect = app.alert.as_ref().unwrap().parts.buttons[button];
+    let pushing =
+        (app.overlays.form_dialog.as_ref()).is_some_and(|d| matches!(d.kind, FormKind::Push(_)));
+    if app.overlays.alert.is_none() && pushing {
+        let layout = app.dialog_layout();
+        let rect = if button == 0 {
+            layout.confirm
+        } else {
+            layout.cancel
+        };
+        app.click_form_dialog(rect.x + 4.0, rect.y + 4.0);
+        app.poll_branch_ops();
+        return;
+    }
+    let rect = app.overlays.alert.as_ref().unwrap().parts.buttons[button];
     app.on_mouse_move(rect.x + 4.0, rect.y + 4.0);
     app.alert_mouse_down();
 }
 
 /// 在测试仓库 `dir` 中运行 `git` 命令，失败时 panic。
 fn git_in(dir: &Path, args: &[&str]) {
-    let ok = crate::app::snapshot::quiet(Command::new("git"))
+    let ok = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -236,7 +185,7 @@ fn git_app_in(name: &str, long: bool, dark: bool) -> Option<(App, PathBuf)> {
 /// 日志默认只显示当前分支；使用本函数的测试检查包括其他分支在内的提交图。
 fn show_all_log(app: &mut App) -> bool {
     let shown = app.run_action(Action::GitShowLog);
-    app.change_log_query(|q| q.branch = None);
+    app.change_log_query(|q| q.branches.clear());
     shown
 }
 
@@ -261,13 +210,13 @@ fn history_repo(root: &Path, days: i64) {
         step += 1;
         at += 86_400;
         let date = format!("{at} +0800");
-        let ok = crate::app::snapshot::quiet(Command::new("git"))
+        let ok = Command::new("git")
             .arg("-C")
             .arg(root)
             .args(["add", "."])
             .output()
             .is_ok_and(|o| o.status.success())
-            && crate::app::snapshot::quiet(Command::new("git"))
+            && Command::new("git")
                 .arg("-C")
                 .arg(root)
                 .args(["-c", &format!("user.name={name}"), "-c"])
@@ -296,7 +245,7 @@ fn history_repo(root: &Path, days: i64) {
     commit("README.md", "# demo\n\n使用说明\n", "补充使用说明");
     // 合并在第五次提交的那天下午。
     let date = format!("{} +0800", base + 5 * 86_400 + 43_200);
-    let merged = crate::app::snapshot::quiet(Command::new("git"))
+    let merged = Command::new("git")
         .arg("-C")
         .arg(root)
         .args(["-c", "user.name=张伟", "-c", "user.email=zhang@example.com"])

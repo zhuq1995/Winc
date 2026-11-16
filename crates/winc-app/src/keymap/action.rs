@@ -18,6 +18,7 @@ pub enum Action {
     GoBack,
     GoForward,
     Settings,
+    ReleaseNotes,
     KeyboardShortcuts,
     RecordKeys,
 
@@ -25,6 +26,8 @@ pub enum Action {
     NewWindow,
     OpenFile,
     OpenFolder,
+    RemoteConnect,
+    RemoteDisconnect,
     OpenRecent,
     Save,
     SaveAs,
@@ -35,7 +38,6 @@ pub enum Action {
     NextTab,
     PreviousTab,
     CloseFolder,
-    CloseProject,
     CloseWindow,
     CopyPath,
     CopyRelativePath,
@@ -184,7 +186,14 @@ pub enum Action {
     /// 切换差异的单栏显示和并排显示。
     ToggleDiffLayout,
     GitShowChanges,
+    /// 更改列表：显示选中文件的差异，焦点移到差异上。
+    ChangesShowDiff,
+    /// 更改列表：在编辑区打开选中的文件。
+    ChangesOpenSource,
+    /// 更改列表：回滚选中的文件（先确认）。
+    ChangesRollback,
     GitShowLog,
+    GitGoToRevision,
     /// 在只读标签中打开 Git 操作的输出。
     GitShowOutput,
     /// 克隆仓库。
@@ -211,11 +220,15 @@ pub enum Action {
     GitSync,
     /// 储藏工作区里的更改（输入说明）。
     GitStash,
-    /// 暂存当前仓库的全部更改，包括未跟踪且未被忽略的文件。
+    /// 把全部更改加入暂存区，未跟踪的文件除外。
     GitStageAll,
-    /// 取消暂存当前仓库的全部更改，工作区不变。
+    /// 把暂存区中的全部内容移出暂存区。
     GitUnstageAll,
+    /// 把当前文件的更改加入暂存区。
+    GitStageFile,
     GitFileHistory,
+    /// 当前文件中选中的几行的历史。
+    GitSelectionHistory,
     GitBlame,
     ShowCommit,
     GitRevertChange,
@@ -255,6 +268,8 @@ pub enum Module {
     Git,
     /// 终端模块。
     Terminal,
+    /// 远程模块。
+    Remote,
 }
 
 impl Action {
@@ -271,12 +286,15 @@ impl Action {
             GoBack => t!("cmd-go-back"),
             GoForward => t!("cmd-go-forward"),
             Settings => t!("cmd-settings"),
+            ReleaseNotes => t!("cmd-release-notes"),
             KeyboardShortcuts => t!("cmd-keyboard-shortcuts"),
             RecordKeys => t!("cmd-record-keys"),
             NewFile => t!("cmd-new-file"),
             NewWindow => t!("cmd-new-window"),
             OpenFile => t!("cmd-open-file"),
             OpenFolder => t!("cmd-open-folder"),
+            RemoteConnect => t!("cmd-remote-connect"),
+            RemoteDisconnect => t!("cmd-remote-disconnect"),
             OpenRecent => t!("cmd-open-recent"),
             Save => t!("cmd-save"),
             SaveAs => t!("cmd-save-as"),
@@ -287,7 +305,6 @@ impl Action {
             NextTab => t!("cmd-next-tab"),
             PreviousTab => t!("cmd-previous-tab"),
             CloseFolder => t!("cmd-close-folder"),
-            CloseProject => t!("cmd-close-project"),
             CloseWindow => t!("cmd-close-window"),
             CopyPath => t!("cmd-copy-path"),
             CopyRelativePath => t!("cmd-copy-relative-path"),
@@ -425,7 +442,11 @@ impl Action {
             PreviousDiffFile => t!("cmd-previous-diff-file"),
             ToggleDiffLayout => t!("cmd-toggle-diff-layout"),
             GitShowChanges => t!("cmd-git-show-changes"),
+            ChangesShowDiff => t!("cmd-changes-show-diff"),
+            ChangesOpenSource => t!("cmd-changes-open-source"),
+            ChangesRollback => t!("cmd-changes-rollback"),
             GitShowLog => t!("cmd-git-show-log"),
+            GitGoToRevision => t!("cmd-git-go-to-revision"),
             GitShowOutput => t!("cmd-git-show-output"),
             GitClone => t!("cmd-git-clone"),
             GitInit => t!("cmd-git-init"),
@@ -442,7 +463,9 @@ impl Action {
             GitStash => t!("cmd-git-stash"),
             GitStageAll => t!("cmd-git-stage-all"),
             GitUnstageAll => t!("cmd-git-unstage-all"),
+            GitStageFile => t!("cmd-git-stage-file"),
             GitFileHistory => t!("cmd-git-file-history"),
+            GitSelectionHistory => t!("cmd-git-selection-history"),
             GitBlame => t!("cmd-git-blame"),
             ShowCommit => t!("cmd-show-commit"),
             GitRevertChange => t!("cmd-git-revert-change"),
@@ -485,12 +508,15 @@ impl Action {
             GoBack => "Go Back",
             GoForward => "Go Forward",
             Settings => "Settings",
+            ReleaseNotes => "Release Notes",
             KeyboardShortcuts => "Keyboard Shortcuts",
             RecordKeys => "Record Keys",
             NewFile => "New File",
             NewWindow => "New Window",
             OpenFile => "Open",
             OpenFolder => "Open Folder",
+            RemoteConnect => "Remote: Connect to SSH Host…",
+            RemoteDisconnect => "Remote: Disconnect",
             OpenRecent => "Open Recent Folder",
             Save => "Save",
             SaveAs => "Save As",
@@ -501,7 +527,6 @@ impl Action {
             NextTab => "Open Next Editor",
             PreviousTab => "Open Previous Editor",
             CloseFolder => "Close Folder",
-            CloseProject => "Close Project",
             CloseWindow => "Close Window",
             CopyPath => "Copy Path",
             CopyRelativePath => "Copy Relative Path",
@@ -633,7 +658,11 @@ impl Action {
             PreviousDiffFile => "Go to Previous File in Diff",
             ToggleDiffLayout => "Toggle Inline Diff",
             GitShowChanges => "Git: Open Changes",
+            ChangesShowDiff => "Git: Show Diff of Selected Change",
+            ChangesOpenSource => "Git: Open Selected Change",
+            ChangesRollback => "Git: Roll Back Selected Changes",
             GitShowLog => "Git: Show Log",
+            GitGoToRevision => "Git: Go to Hash, Branch or Tag",
             GitShowOutput => "Git: Show Output",
             GitClone => "Git: Clone Repository…",
             GitInit => "Git: Initialize Repository",
@@ -650,7 +679,9 @@ impl Action {
             GitStash => "Git: Stash Changes…",
             GitStageAll => "Git: Stage All Changes",
             GitUnstageAll => "Git: Unstage All Changes",
+            GitStageFile => "Git: Stage Current File",
             GitFileHistory => "Git: Show File History",
+            GitSelectionHistory => "Git: Show History for Selection",
             GitBlame => "Git: Toggle Blame",
             ShowCommit => "Git: Commit",
             GitRevertChange => "Git: Revert Change",
@@ -693,14 +724,17 @@ impl Action {
             | GoBack
             | GoForward
             | Settings
+            | ReleaseNotes
             | KeyboardShortcuts
             | RecordKeys
             | InstallShellCommand
             | UninstallShellCommand => Group::General,
-            NewFile | OpenFile | OpenFolder | Save | SaveAs | CloseTab | CloseOtherTabs
-            | CloseAllTabs | ReopenClosed | NextTab | PreviousTab | CloseFolder | CloseProject
-            | CloseWindow | CopyPath | CopyRelativePath | RevealInFinder | CopyActivePath
-            | CopyKeyPath | RevealActiveFile | OpenInTerminal | Quit => Group::File,
+            NewFile | OpenFile | OpenFolder | RemoteConnect | RemoteDisconnect | Save | SaveAs
+            | CloseTab | CloseOtherTabs | CloseAllTabs | ReopenClosed | NextTab | PreviousTab
+            | CloseFolder | CloseWindow | CopyPath | CopyRelativePath | RevealInFinder
+            | CopyActivePath | CopyKeyPath | RevealActiveFile | OpenInTerminal | Quit => {
+                Group::File
+            }
             NewWindow | OpenRecent | CopyReference | CopyAbsoluteReference => Group::File,
             Undo
             | Redo
@@ -805,7 +839,11 @@ impl Action {
             | PreviousDiffFile
             | ToggleDiffLayout
             | GitShowChanges
+            | ChangesShowDiff
+            | ChangesOpenSource
+            | ChangesRollback
             | GitShowLog
+            | GitGoToRevision
             | GitShowOutput
             | GitClone
             | GitInit
@@ -822,7 +860,9 @@ impl Action {
             | GitStash
             | GitStageAll
             | GitUnstageAll
+            | GitStageFile
             | GitFileHistory
+            | GitSelectionHistory
             | GitBlame
             | ShowCommit
             | GitRevertChange
@@ -914,7 +954,11 @@ impl Action {
     pub fn module(self) -> Option<Module> {
         match self {
             Action::GitShowChanges
+            | Action::ChangesShowDiff
+            | Action::ChangesOpenSource
+            | Action::ChangesRollback
             | Action::GitShowLog
+            | Action::GitGoToRevision
             | Action::GitShowOutput
             | Action::GitClone
             | Action::GitInit
@@ -931,7 +975,9 @@ impl Action {
             | Action::GitStash
             | Action::GitStageAll
             | Action::GitUnstageAll
+            | Action::GitStageFile
             | Action::GitFileHistory
+            | Action::GitSelectionHistory
             | Action::GitBlame
             | Action::ShowCommit
             | Action::GitRevertChange => Some(Module::Git),
@@ -955,6 +1001,7 @@ impl Action {
             | Action::NextError
             | Action::PreviousError
             | Action::SendToTerminal => Some(Module::Terminal),
+            Action::RemoteConnect | Action::RemoteDisconnect => Some(Module::Remote),
             _ => None,
         }
     }
@@ -1013,6 +1060,7 @@ pub const ACTIONS: &[Action] = {
         GoForward,
         ShowCommands,
         Settings,
+        ReleaseNotes,
         KeyboardShortcuts,
         RecordKeys,
         Format,
@@ -1040,6 +1088,8 @@ pub const ACTIONS: &[Action] = {
         NewWindow,
         OpenFile,
         OpenFolder,
+        RemoteConnect,
+        RemoteDisconnect,
         OpenRecent,
         Save,
         SaveAs,
@@ -1050,7 +1100,6 @@ pub const ACTIONS: &[Action] = {
         NextTab,
         PreviousTab,
         CloseFolder,
-        CloseProject,
         CloseWindow,
         CopyPath,
         CopyRelativePath,
@@ -1158,7 +1207,11 @@ pub const ACTIONS: &[Action] = {
         TogglePreview,
         ShowCommit,
         GitShowChanges,
+        ChangesShowDiff,
+        ChangesOpenSource,
+        ChangesRollback,
         GitShowLog,
+        GitGoToRevision,
         GitShowOutput,
         GitClone,
         GitInit,
@@ -1175,7 +1228,9 @@ pub const ACTIONS: &[Action] = {
         GitStash,
         GitStageAll,
         GitUnstageAll,
+        GitStageFile,
         GitFileHistory,
+        GitSelectionHistory,
         GitBlame,
         GitRevertChange,
         ToggleTerminal,

@@ -23,13 +23,15 @@ struct Member {
 
 /// 各 crate 允许依赖的 workspace 内的包；未列出的 crate 不允许依赖任何内部包。
 ///
-/// 依赖只能指向更底层的 crate：`winc-core`、`winc-render` 不依赖任何内部包，`winc-editor` 不依赖
-/// 窗口与渲染，只有 `winc-app` 同时依赖编辑器与渲染层。新增内部依赖时必须在此登记。
+/// 依赖只能指向更底层的 crate：`winc-backend`、`winc-core`、`winc-render` 不依赖任何内部包，
+/// `winc-editor` 不依赖窗口与渲染，只有 `winc-app` 同时依赖编辑器与渲染层。新增内部依赖时
+/// 必须在此登记。
 const LAYERS: &[(&str, &[&str])] = &[
     ("winc", &["winc-app"]),
     (
         "winc-app",
         &[
+            "winc-backend",
             "winc-config",
             "winc-core",
             "winc-editor",
@@ -46,6 +48,7 @@ const LAYERS: &[(&str, &[&str])] = &[
     (
         "winc-editor",
         &[
+            "winc-backend",
             "winc-config",
             "winc-core",
             "winc-i18n",
@@ -57,11 +60,12 @@ const LAYERS: &[(&str, &[&str])] = &[
         "winc-typeset",
         &["winc-i18n", "winc-preview", "winc-render", "winc-syntax"],
     ),
-    ("winc-config", &["winc-i18n", "winc-syntax"]),
-    ("winc-preview", &["winc-i18n"]),
+    ("winc-config", &["winc-backend", "winc-i18n", "winc-syntax"]),
+    ("winc-preview", &["winc-backend", "winc-i18n"]),
     ("winc-syntax", &["winc-core"]),
     ("winc-vim", &["winc-core"]),
     ("winc-pty", &["winc-version"]),
+    ("winc-server", &["winc-backend", "winc-watch"]),
     // 仅测试依赖。
     ("winc-watch", &["winc-config"]),
     (
@@ -69,6 +73,94 @@ const LAYERS: &[(&str, &[&str])] = &[
         &["winc-config", "winc-preview", "winc-version", "winc-vim"],
     ),
 ];
+
+/// 单个源文件的行数上限（行）：项目约定的规模上限，超出的文件按职责拆分。
+const MAX_LINES: usize = 1500;
+
+/// 返回超过 [`MAX_LINES`] 的源文件，每项写明行数；全部合规时为空。
+///
+/// `sizes` 是各源文件的路径（相对 workspace 根目录，以 `/` 分隔）和行数。
+fn size_violations(sizes: &[(String, usize)]) -> Vec<String> {
+    (sizes.iter())
+        .filter(|(_, lines)| *lines > MAX_LINES)
+        .map(|(path, lines)| format!("{path} 有 {lines} 行，超过 {MAX_LINES} 行"))
+        .collect()
+}
+
+/// 返回 `members` 各自目录下全部 `.rs` 文件的路径（相对 `root`，以 `/` 分隔）和行数，按路径排序。
+///
+/// # Errors
+///
+/// 无法读取某个目录或文件时返回原因。
+fn source_sizes(root: &Path, members: &[Member]) -> Result<Vec<(String, usize)>, String> {
+    fn scan(root: &Path, dir: &Path, sizes: &mut Vec<(String, usize)>) -> Result<(), String> {
+        let entries = std::fs::read_dir(root.join(dir))
+            .map_err(|e| format!("无法读取 {}：{e}", dir.display()))?;
+        for entry in entries.flatten() {
+            let path = dir.join(entry.file_name());
+            if root.join(&path).is_dir() {
+                scan(root, &path, sizes)?;
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(root.join(&path))
+                    .map_err(|e| format!("无法读取 {}：{e}", path.display()))?;
+                let name: Vec<_> = path.iter().map(|part| part.to_string_lossy()).collect();
+                sizes.push((name.join("/"), text.lines().count()));
+            }
+        }
+        Ok(())
+    }
+    let mut sizes = Vec::new();
+    for member in members {
+        scan(root, &member.dir, &mut sizes)?;
+    }
+    sizes.sort();
+    Ok(sizes)
+}
+
+/// 返回 `clippy.toml` 的文本 `text` 中的设置行：去掉注释行和空行，每行去掉首尾空白。
+fn clippy_settings(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+}
+
+/// 返回 `base`（根目录 `clippy.toml` 的设置行）中没有出现在 `copy`（某个 crate 自己的那一份）
+/// 中的行；`copy` 重复了全部设置时为空。
+///
+/// clippy 只读取离源文件最近的一份配置，crate 自己的配置必须重复根目录的全部设置。
+fn missing_settings<'a>(base: &[&'a str], copy: &[&str]) -> Vec<&'a str> {
+    (base.iter().copied())
+        .filter(|line| !copy.contains(line))
+        .collect()
+}
+
+/// 返回各 crate 自己的 `clippy.toml` 中缺少的根目录设置，每项写成「文件：设置行」，同时返回
+/// 检查过的配置份数；全部重复了根目录的设置时前者为空。
+///
+/// # Errors
+///
+/// 无法读取根目录或某个 crate 的 `clippy.toml` 时返回原因。
+fn clippy_violations(root: &Path, members: &[Member]) -> Result<(Vec<String>, usize), String> {
+    let read = |path: &Path| {
+        std::fs::read_to_string(root.join(path))
+            .map_err(|e| format!("无法读取 {}：{e}", path.display()))
+    };
+    let base = read(Path::new("clippy.toml"))?;
+    let base = clippy_settings(&base);
+    let (mut violations, mut copies) = (Vec::new(), 0);
+    for member in members {
+        let path = member.dir.join("clippy.toml");
+        if root.join(&path).is_file() {
+            let copy = read(&path)?;
+            for line in missing_settings(&base, &clippy_settings(&copy)) {
+                violations.push(format!("{}：{line}", path.display()));
+            }
+            copies += 1;
+        }
+    }
+    Ok((violations, copies))
+}
 
 /// 返回不在 [`LAYERS`] 允许范围内的依赖，每项写成「包 → 依赖」；全部合规时为空。
 fn layer_violations(members: &[Member]) -> Vec<String> {
@@ -242,6 +334,17 @@ pub fn test(args: &[String]) -> Result<bool, String> {
     if !violations.is_empty() {
         return Err(format!(
             "依赖不符合分层规则（见 `LAYERS`）：{}",
+            violations.join("、")
+        ));
+    }
+    let violations = size_violations(&source_sizes(&root, &members)?);
+    if !violations.is_empty() {
+        return Err(format!("文件不符合规模约定：{}", violations.join("、")));
+    }
+    let (violations, _) = clippy_violations(&root, &members)?;
+    if !violations.is_empty() {
+        return Err(format!(
+            "crate 的 clippy.toml 缺少根目录的设置：{}",
             violations.join("、")
         ));
     }

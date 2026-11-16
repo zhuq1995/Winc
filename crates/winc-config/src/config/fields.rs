@@ -54,6 +54,7 @@ pub(super) const SECTIONS: &[(&str, &[Field])] = &[
     ("terminal", TERMINAL),
     ("vim", VIM),
     ("git", GIT),
+    ("remote", REMOTE),
     ("format", FORMAT),
 ];
 
@@ -257,7 +258,32 @@ const TREE: &[Field] = &[
 ];
 
 /// `markdown` 一节。
-const MARKDOWN: &[Field] = &[bool_field!("remoteImages", markdown_remote_images)];
+const MARKDOWN: &[Field] = &[
+    bool_field!("remoteImages", markdown_remote_images),
+    bool_field!("lineNumbers", markdown_line_numbers),
+    Field {
+        key: "textWidth",
+        read: |config, value, name, problems| {
+            config.markdown_text_width = match value.as_str() {
+                Some("standard") => Some(TextWidth::Standard),
+                Some("wide") => Some(TextWidth::Wide),
+                Some("full") => Some(TextWidth::Full),
+                _ => {
+                    problems.push(t!("config-text-width-invalid", name = name));
+                    None
+                }
+            };
+        },
+        write: |config| {
+            let value = match config.markdown_text_width? {
+                TextWidth::Standard => "standard",
+                TextWidth::Wide => "wide",
+                TextWidth::Full => "full",
+            };
+            Some(Json::String(value.into()))
+        },
+    },
+];
 
 /// `update` 一节。
 const UPDATE: &[Field] = &[bool_field!("autoCheck", update_auto_check)];
@@ -540,6 +566,10 @@ const TERMINAL: &[Field] = &[
 const GIT: &[Field] = &[
     bool_field!("enabled", git_enabled),
     bool_field!("confirmPush", git_confirm_push),
+    bool_field!("systemProxy", git_system_proxy),
+    bool_field!("inlineBlame", git_inline_blame),
+    bool_field!("autoFetch", git_auto_fetch),
+    bool_field!("stagingArea", git_staging_area),
     Field {
         key: "repositoryScanDepth",
         read: |config, value, name, problems| {
@@ -586,6 +616,9 @@ const GIT: &[Field] = &[
         },
     },
 ];
+
+/// `remote` 一节。
+const REMOTE: &[Field] = &[bool_field!("enabled", remote_enabled)];
 
 /// `format` 一节，用户配置和项目配置共用。
 ///

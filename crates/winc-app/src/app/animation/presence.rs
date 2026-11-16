@@ -85,6 +85,8 @@ pub struct ModuleFx {
     pub commit_tab: Presence,
     /// 状态栏右端的终端开关和设置分类栏中的「终端」一项：二者都随终端模块出现、消失。
     pub terminal: Presence,
+    /// 状态栏右端连接远端主机的按钮，随远程模块出现、消失。
+    pub remote: Presence,
     /// 设置分类栏中的「Git」一项，随 Git 模块出现、消失。
     pub git: Presence,
     /// 状态栏的分支名。
@@ -104,6 +106,7 @@ impl ModuleFx {
     pub fn moving(&self) -> bool {
         self.commit_tab.moving()
             || self.terminal.moving()
+            || self.remote.moving()
             || self.git.moving()
             || self.branch.moving()
             || self.preview.moving()
@@ -117,27 +120,30 @@ impl App {
     pub(in crate::app) fn track_modules(&mut self) {
         let commit = self.git.root.is_some();
         let terminal = self.terminal_enabled();
+        let remote = self.remote_enabled();
         let git = self.git_enabled();
         let branch = self.git.status.as_ref().is_some_and(|s| s.head.is_some());
         let preview = self.editor.active().is_some_and(|d| d.can_preview());
         let browser = self.browser_page().is_some();
-        let fx = &self.module_fx;
+        let fx = &self.motion.module_fx;
         let changed = fx.commit_tab.shown != commit
             || fx.terminal.shown != terminal
+            || fx.remote.shown != remote
             || fx.git.shown != git
             || fx.branch.shown != branch
             || fx.preview.shown != preview
             || fx.browser.shown != browser;
         // 同一帧变了的几样（开关 Git 模块时「提交」一段和分支名）共用一个时钟。
-        let primed = std::mem::replace(&mut self.module_fx.primed, true);
+        let primed = std::mem::replace(&mut self.motion.module_fx.primed, true);
         let clock = if primed && changed {
             self.clock(MODULE_FADE)
         } else {
             None
         };
-        let fx = &mut self.module_fx;
+        let fx = &mut self.motion.module_fx;
         fx.commit_tab.track(commit, clock);
         fx.terminal.track(terminal, clock);
+        fx.remote.track(remote, clock);
         fx.git.track(git, clock);
         fx.branch.track(branch, clock);
         if !branch && !fx.branch.moving() {

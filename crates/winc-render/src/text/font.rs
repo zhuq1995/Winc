@@ -1,11 +1,14 @@
 //! 字体：按需 mmap 字体文件，不扫描系统字体库。
 //!
 //! 槽位依次是等宽字体、界面字体、等宽字体的斜体、数学字体、终端字体及其斜体，其后是按优先级
-//! 排列的后备字体；斜体和后备字体在首次需要时才映射文件。候选路径按平台给出，用户配置的字体
-//! 排在最前面。
+//! 排列的后备字体，最后是用户在字体列表中写在主字体之后的字体；斜体和后备字体在首次需要时才
+//! 映射文件。候选路径按平台给出，用户配置的字体排在最前面。
 
-use std::fs::File;
-use std::path::PathBuf;
+use std::fs::{File, Metadata};
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::time::SystemTime;
 
 use swash::{CacheKey, FontRef, StringId};
 
@@ -51,8 +54,8 @@ const SORTED_FONTS: usize = 64;
 
 /// 一个已经打开的字体文件。
 pub(crate) struct Face {
-    /// 字体文件的内容，见 [`FontData`]。
-    data: FontData,
+    /// 字体文件的内容，与打开同一个文件的其他字体共用，见 [`load`]。
+    data: Arc<FontData>,
     /// 所选字体在文件中的偏移（字节）。
     offset: u32,
     /// swash 用来区分不同字体的缓存键。
@@ -104,7 +107,7 @@ impl Face {
 
     /// 打开字体；`shift` 为 `None` 时不固定字重，否则是字重的偏移。
     fn open_as(file: &FontFile, shift: Option<i16>) -> Option<Face> {
-        let data = load(&File::open(&file.path).ok()?)?;
+        let data = load(&file.path)?;
         let selected = select(&data, file.postscript.as_deref())?;
         let font = selected.font;
         let (offset, key) = (font.offset, font.key);
@@ -195,7 +198,7 @@ fn sibling(file: &FontFile, font: &FontRef, shift: f32) -> Option<(FontFile, f32
         if !is_font || name_prefix(&path).as_ref() != Some(&prefix) {
             continue;
         }
-        let Some(data) = File::open(&path).ok().and_then(|file| load(&file)) else {
+        let Some(data) = load(&path) else {
             continue;
         };
         let count = swash::FontDataRef::new(&data).map_or(1, |d| d.len());
@@ -390,9 +393,9 @@ pub(crate) fn postscript_name(font: &FontRef) -> Option<String> {
     Some(name.chars().collect())
 }
 
-/// 字体文件的内容：系统的字体映射进内存，其余的读进内存。
+/// 字体文件的内容：当前用户无法修改的文件映射进内存，其余的读进内存，见 [`load`]。
 pub(crate) enum FontData {
-    /// 映射的文件，见 [`load`]。
+    /// 映射的文件。
     Mapped(memmap2::Mmap),
     /// 读进内存的文件内容。
     ///
@@ -412,33 +415,101 @@ impl std::ops::Deref for FontData {
     }
 }
 
-/// 读取字体文件 `file` 的内容；无法读取时返回 `None`。
+/// 一份字体文件内容的来源：路径、长度和修改时间都相同时是同一份内容。
+#[derive(PartialEq)]
+struct Source {
+    path: PathBuf,
+    /// 文件的长度（字节）。
+    len: u64,
+    /// 文件的修改时间；平台不提供时为 `None`。
+    modified: Option<SystemTime>,
+}
+
+/// 进程中正在使用的字体文件内容：同一个文件只保留一份，各字重、各字号和各窗口共用。
 ///
-/// 映射的文件被其他进程截断以后，访问被截掉的页会收到 SIGBUS，整个进程退出。属于 root 的文件
-/// （macOS 只读系统卷上的系统字体、Linux 的 `/usr/share/fonts`）普通用户无法修改，映射进来，
-/// 多个字号、多个窗口共用系统的页缓存；用户自己的字体（`~/Library/Fonts`、配置里写的路径）
-/// 可能在使用中被替换或截断，因此读进内存。
-pub(crate) fn load(file: &File) -> Option<FontData> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if file.metadata().ok()?.uid() != 0 {
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut &*file, &mut bytes).ok()?;
-            return Some(FontData::Owned(bytes));
-        }
+/// 只持有弱引用：最后一个使用者释放后内容随之释放，留下的空项在下一次载入时清除。
+static LOADED: Mutex<Vec<(Source, Weak<FontData>)>> = Mutex::new(Vec::new());
+
+/// 返回字体文件 `path` 的内容；无法读取时返回 `None`。
+///
+/// 该文件的内容正在使用、文件此后没有变化时，返回已有的那一份（见 [`LOADED`]）。
+///
+/// 映射的文件被其他进程截断后，访问被截掉的页会收到 SIGBUS，进程中止。因此只映射当前用户
+/// 无法修改的文件（见 [`is_modifiable`]），与其他进程共用系统的页缓存，只有访问过的页占用
+/// 内存；当前用户可以修改的字体可能在使用中被替换或截断，读进内存。
+pub(crate) fn load(path: &Path) -> Option<Arc<FontData>> {
+    let file = File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    let source = Source {
+        path: path.to_owned(),
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    };
+    let lock = || LOADED.lock().unwrap_or_else(PoisonError::into_inner);
+    let in_use = |loaded: &[(Source, Weak<FontData>)]| {
+        let (_, data) = loaded.iter().find(|(known, _)| *known == source)?;
+        data.upgrade()
+    };
+    if let Some(data) = in_use(&lock()) {
+        return Some(data);
     }
+    // 读取时不持有锁：读一个大文件期间，其他线程仍可以载入别的字体。
+    let data = Arc::new(read(&file, &metadata)?);
+    let mut loaded = lock();
+    loaded.retain(|(_, data)| data.strong_count() > 0);
+    // 读取期间另一个线程载入了同一个文件：改用已登记的那一份。
+    if let Some(data) = in_use(&loaded) {
+        return Some(data);
+    }
+    loaded.push((source, Arc::downgrade(&data)));
+    Some(data)
+}
+
+/// 读取或映射 `file` 的内容，`metadata` 是该文件的信息；失败时返回 `None`。
+fn read(file: &File, metadata: &Metadata) -> Option<FontData> {
+    #[cfg(unix)]
+    if modifiable(metadata) {
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut &*file, &mut bytes).ok()?;
+        return Some(FontData::Owned(bytes));
+    }
+    #[cfg(not(unix))]
+    let _ = metadata;
     map(file).map(FontData::Mapped)
 }
 
-/// 把 `file` 以只读方式映射进内存；映射失败时返回 `None`。
+/// 权限位中组和其他用户的写权限（`S_IWGRP | S_IWOTH`）。
+#[cfg(unix)]
+const WRITABLE_BY_OTHERS: u32 = 0o022;
+
+/// 是否可能在使用中被当前用户修改，`metadata` 是文件的信息；见 [`is_modifiable`]。
+#[cfg(unix)]
+// 本函数只有对 `libc::geteuid` 的一次调用需要 `unsafe`，因此只在此处放开 `unsafe_code`。
+#[allow(unsafe_code)]
+fn modifiable(metadata: &Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: `geteuid` 没有参数，不访问内存，总是成功。
+    let user = unsafe { libc::geteuid() };
+    is_modifiable(metadata.uid(), metadata.mode(), user)
+}
+
+/// 是否可能在使用中被当前用户修改：`owner`、`mode` 是文件的属主和权限位，`user` 是当前用户。
 ///
-/// 这是本模块唯一一处 `unsafe`：把文件映射进内存。
+/// 属主是当前用户，或组、其他用户有写权限的文件可能被修改。属于 root 或其他账号的文件（macOS
+/// 按需下载的系统字体属于系统的服务账号）只有管理员或该账号能修改，由系统更新。以 root 运行时
+/// 其他账号的文件仍可能被其属主修改。
+#[cfg(unix)]
+fn is_modifiable(owner: u32, mode: u32, user: u32) -> bool {
+    let by_owner = owner != 0 && (owner == user || user == 0);
+    by_owner || mode & WRITABLE_BY_OTHERS != 0
+}
+
+/// 把 `file` 以只读方式映射进内存；映射失败时返回 `None`。
 #[allow(unsafe_code)]
 fn map(file: &File) -> Option<memmap2::Mmap> {
     // SAFETY: `file` 是调用方持有的有效文件句柄，映射为只读。映射期间文件内容必须保持不变：
-    // 这里只映射普通用户无法修改的文件（见 `load`），这类文件只有管理员能截断；被截断后访问
-    // 被截掉的页会触发 SIGBUS，这是内存映射文件固有的限制。
+    // 这里只映射当前用户无法修改的文件（见 `load`），这类文件只有管理员或系统的服务账号能
+    // 截断；被截断后访问被截掉的页会触发 SIGBUS，这是内存映射文件固有的限制。
     unsafe { memmap2::Mmap::map(file) }.ok()
 }
 
@@ -476,6 +547,10 @@ const TERMINAL_ITALIC: u8 = 5;
 /// 第一个后备字体的槽位。
 const FALLBACK: u8 = 6;
 
+/// 一项字体设置中最多使用的字体数（个）：槽位编号是 `u8`，三项设置的列表与平台后备字体合计
+/// 不能超过 256 个槽位；常见的写法只有两三个字体。
+const LISTED_FONTS: usize = 16;
+
 /// 槽位 `slot` 中是否为斜体字体：要斜体的字落到其他槽位时斜切。
 pub(crate) fn italic_slot(slot: u8) -> bool {
     matches!(slot, MONO_ITALIC | TERMINAL_ITALIC)
@@ -498,14 +573,18 @@ pub(crate) struct Fonts {
     ///
     /// 用于避免每个字符都查哈希表。
     ascii: [[Option<(u8, u16)>; 128]; FontKind::COUNT],
+    /// 平台后备字体的槽位范围。
+    fallbacks: Range<u8>,
+    /// 等宽字体、界面字体和终端字体的列表中写在主字体之后的字体所在的槽位范围，依次尝试。
+    listed: [Range<u8>; 3],
 }
 
 impl Fonts {
-    /// 加载字体；`mono`、`ui` 和 `terminal` 是用户配置里指定的字体，为 `None` 时等宽字体和界面
+    /// 加载字体；`mono`、`ui` 和 `terminal` 是用户配置里指定的字体列表，为空时等宽字体和界面
     /// 字体用内置候选，终端用等宽字体。
     ///
-    /// 指定的终端字体打不开时同样用等宽字体，不报错。`weight` 是全部文字的字重，超出 100 至
-    /// 900 时取最接近的值。
+    /// 列表中第一个能打开的字体是主字体，其余的字体在主字体缺字时依次尝试。指定的终端字体都打不
+    /// 开时同样用等宽字体，不报错。`weight` 是全部文字的字重，超出 100 至 900 时取最接近的值。
     ///
     /// # Errors
     ///
@@ -515,14 +594,15 @@ impl Fonts {
     ///
     /// 等宽字体成功打开后又立即无法打开时 panic。
     pub(crate) fn load(
-        mono: Option<&FontSpec>,
-        ui: Option<&FontSpec>,
-        terminal: Option<&FontSpec>,
+        mono: &[FontSpec],
+        ui: &[FontSpec],
+        terminal: &[FontSpec],
         weight: u16,
     ) -> Result<Fonts, String> {
         let shift = weight.clamp(WEIGHT_MIN, WEIGHT_MAX) as i16 - REGULAR as i16;
         // 指定的字体不可用时退回内置候选而不报错：字体配置有误时程序仍可启动。
-        let candidates = Candidates::for_platform(mono, ui);
+        let listed = [mono, ui, terminal].map(resolve_list);
+        let candidates = Candidates::for_platform(&listed[0], &listed[1]);
         let (mono, mono_file) = first_opened(&candidates.mono, shift).ok_or_else(|| {
             format!(
                 "找不到等宽字体，尝试过：{:?}。可以用 WINC_FONT 指定字体文件，\
@@ -532,20 +612,24 @@ impl Fonts {
         })?;
 
         // 没有界面字体时用等宽字体代替。
-        let ui = first_existing(&candidates.ui, shift)
-            .or_else(|| first_existing(&candidates.mono, shift))
+        let (ui, ui_file) = first_opened(&candidates.ui, shift)
+            .or_else(|| first_opened(&candidates.mono, shift))
             .expect("等宽字体刚刚成功打开过");
 
         let italic = italic_candidates(&mono_file, &mono);
         // 数学字体一开始就映射（只是映射文件，很快）：度量要用到它，`metrics` 不能再去加载。
         let math = first_existing(&candidates.math, shift).map_or(Slot::Missing, Slot::Ready);
         // 终端字体同样一开始就映射：度量要用到它。
-        let (terminal, terminal_italic) = match first_opened(&resolve_first(terminal), shift) {
+        let (terminal, terminal_italic, terminal_file) = match first_opened(&listed[2], shift) {
             Some((face, file)) => {
                 let italic = italic_candidates(&file, &face);
-                (Slot::Ready(face), Slot::Pending(Choices::files(italic)))
+                (
+                    Slot::Ready(face),
+                    Slot::Pending(Choices::files(italic)),
+                    Some(file),
+                )
             }
-            None => (Slot::Missing, Slot::Missing),
+            None => (Slot::Missing, Slot::Missing, None),
         };
         let mut slots = vec![
             Slot::Ready(mono),
@@ -556,12 +640,26 @@ impl Fonts {
             terminal_italic,
         ];
         slots.extend(candidates.fallbacks.into_iter().map(Slot::Pending));
+        let fallbacks = FALLBACK..slots.len() as u8;
+        // 列表中主字体之外的字体到第一次用到时才打开。排在主字体之前的字体刚才已打不开，到时
+        // 再试一次即成为 `Missing`。没有终端字体时终端用等宽字体，终端的列表不再使用。
+        let chosen = [Some(&mono_file), Some(&ui_file), terminal_file.as_ref()];
+        let listed = std::array::from_fn(|i| {
+            let start = slots.len() as u8;
+            if chosen[i].is_some() {
+                let rest = listed[i].iter().filter(|file| Some(*file) != chosen[i]);
+                slots.extend(rest.map(|file| Slot::Pending(Choices::files(vec![file.clone()]))));
+            }
+            start..slots.len() as u8
+        });
 
         let mut fonts = Fonts {
             slots,
             shift,
             resolved: FastMap::default(),
             ascii: [[None; 128]; FontKind::COUNT],
+            fallbacks,
+            listed,
         };
 
         for kind in [FontKind::Mono, FontKind::Ui, FontKind::Math] {
@@ -688,17 +786,26 @@ impl Fonts {
             return hit;
         }
 
-        // 先找主字体，再找其他主字体（斜体没有的字符用正体，终端字体没有的用等宽字体），最后是
-        // 后备字体。斜体、终端字体不作为其他字体的后备。
+        // 先找主字体及其列表中的字体，再找其他主字体及其列表（斜体没有的字符用正体，终端字体
+        // 没有的用等宽字体），最后是后备字体。斜体、终端字体不作为其他字体的后备。
+        let [mono, ui, terminal] = self.listed.clone();
+        let with = |slot: u8, listed: Range<u8>| std::iter::once(slot).chain(listed);
+        let mono = with(MONO, mono);
+        let ui = with(UI, ui);
         let mut order: Vec<u8> = match kind {
-            FontKind::Mono => vec![MONO, UI],
-            FontKind::Ui => vec![UI, MONO],
-            FontKind::MonoItalic => vec![MONO_ITALIC, MONO, UI],
-            FontKind::Math => vec![MATH, UI, MONO],
-            FontKind::Terminal => vec![TERMINAL, MONO, UI],
-            FontKind::TerminalItalic => vec![TERMINAL_ITALIC, TERMINAL, MONO, UI],
+            FontKind::Mono => mono.chain(ui).collect(),
+            FontKind::Ui => ui.chain(mono).collect(),
+            FontKind::MonoItalic => [MONO_ITALIC].into_iter().chain(mono).chain(ui).collect(),
+            FontKind::Math => [MATH].into_iter().chain(ui).chain(mono).collect(),
+            FontKind::Terminal => with(TERMINAL, terminal).chain(mono).chain(ui).collect(),
+            FontKind::TerminalItalic => [TERMINAL_ITALIC]
+                .into_iter()
+                .chain(with(TERMINAL, terminal))
+                .chain(mono)
+                .chain(ui)
+                .collect(),
         };
-        order.extend(FALLBACK..self.slots.len() as u8);
+        order.extend(self.fallbacks.clone());
 
         let mut result = (primary, 0);
         // 缓存项数随出现过的字符数增长（例如打开一个几乎每个字符都不同的文件），满了就整体清空；
@@ -739,9 +846,20 @@ impl Fonts {
     }
 }
 
-/// 返回用户配置的字体解析出的候选；解析不出来时为空列表，调用方会按平台默认字体处理。
-fn resolve_first(spec: Option<&FontSpec>) -> Vec<FontFile> {
-    spec.and_then(FontSpec::resolve).into_iter().collect()
+/// 返回用户配置的字体列表解析出的候选，按列表的顺序；解析不出来的字体略去，超过
+/// [`LISTED_FONTS`] 个的部分不用。都解析不出来时为空列表，调用方会按平台默认字体处理。
+fn resolve_list(specs: &[FontSpec]) -> Vec<FontFile> {
+    let mut files: Vec<FontFile> = Vec::new();
+    for file in specs
+        .iter()
+        .take(LISTED_FONTS)
+        .filter_map(FontSpec::resolve)
+    {
+        if !files.contains(&file) {
+            files.push(file);
+        }
+    }
+    files
 }
 /// 返回 `files` 中第一个能打开的字体；都打不开时返回 `None`。
 fn first_existing(files: &[FontFile], shift: i16) -> Option<Face> {
@@ -942,17 +1060,17 @@ impl Choices {
 
 impl Candidates {
     /// 返回各槽位的候选字体：用户配置的字体排在最前面，其后是平台默认字体。
-    fn for_platform(mono: Option<&FontSpec>, ui: Option<&FontSpec>) -> Candidates {
+    fn for_platform(mono: &[FontFile], ui: &[FontFile]) -> Candidates {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
 
         // `WINC_FONT` 环境变量指定的字体排在最前面，其次是用户配置的字体，便于临时试用其他字体。
-        let mut mono = resolve_first(mono);
+        let mut mono = mono.to_vec();
         if let Some(font) = std::env::var_os("WINC_FONT") {
             mono.insert(0, FontFile::first(font));
         }
-        let mut ui_paths = resolve_first(ui);
+        let mut ui_paths = ui.to_vec();
 
         let user_fonts = |name: &str| -> Vec<FontFile> {
             vec![
