@@ -191,7 +191,10 @@ impl App {
         // 拖动文件树中的项或标签时没有悬停目标；文件树中高亮的是放置目标目录，而不是鼠标所在的行。
         match self.drag {
             Drag::Scrollbar { bar, .. } => return Hover::Scrollbar(bar),
-            _ if self.tree_dragging().is_some() || self.dragged_tab().is_some() => {
+            _ if self.tree_dragging().is_some()
+                || self.dragged_tab().is_some()
+                || self.dragged_project().is_some() =>
+            {
                 return Hover::None;
             }
             _ => {}
@@ -791,6 +794,8 @@ impl App {
             } else {
                 CursorIcon::Default
             }
+        } else if self.dragged_project().is_some() {
+            CursorIcon::Grabbing
         } else if matches!(self.drag, Drag::OutlineDivider { .. })
             || self.hover == Hover::OutlineDivider
         {

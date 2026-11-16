@@ -83,7 +83,16 @@ pub(in crate::view) fn draw_projects(app: &mut App, frame: &mut Frame<'_>) {
         let text_x = badge_rect.right() + PAD;
         let text_max = (row.right() - PAD - room - text_x).max(0.0);
         let text = truncate_end(frame, &name, app.fonts.ui, text_max);
-        let color = if current { p.text } else { p.text_muted };
+        let dragged = app
+            .dragged_project()
+            .is_some_and(|(key, _)| key == project.key);
+        let color = if dragged {
+            p.text_dim
+        } else if current {
+            p.text
+        } else {
+            p.text_muted
+        };
         ui_text(frame, app, text_x, row, &text, color, clip);
 
         if project.busy && !hovered {
@@ -124,5 +133,14 @@ pub(in crate::view) fn draw_projects(app: &mut App, frame: &mut Frame<'_>) {
         if row.w > 0.0 && row.h > 0.0 {
             app.projects_hits.push((row, project.key));
         }
+    }
+
+    // 拖动中的落点：两个条目之间的强调色横线，两端留出与条目相同的边距。
+    if let Some((_, gap)) = app.dragged_project() {
+        let y = area.y + PROJECT_PAD - app.projects_scroll
+            + gap as f32 * (PROJECT_ROW + PROJECT_GAP)
+            - PROJECT_GAP / 2.0;
+        let line = Rect::new(area.x + PAD / 2.0, y, (area.w - PAD).max(0.0), 2.0);
+        frame.rect_clipped(line, p.accent, 1.0, area);
     }
 }

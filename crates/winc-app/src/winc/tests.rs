@@ -40,6 +40,11 @@ impl Winc {
         self.activate(key);
     }
 
+    /// 测试用：把项目 `key` 移到下标 `index`，与拖动松开后的请求走同一条路。
+    pub(crate) fn move_project_for_test(&mut self, key: WindowKey, index: usize) {
+        self.move_project(key, index);
+    }
+
     /// 测试用：跑一遍处理完事件后的那一步，返回窗口的请求和是否该结束事件循环。
     pub(crate) fn settle_for_test(&mut self) -> (Vec<Request>, bool) {
         self.settle()
