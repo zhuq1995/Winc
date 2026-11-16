@@ -1,0 +1,35 @@
+{
+  "skill_name": "winc-merge-upstream",
+  "evals": [
+    {
+      "id": 1,
+      "name": "check-upstream-scope",
+      "prompt": "检查 Winc 上游更新。这次只用本地已有远端引用，不 fetch、不合并、不修改文件、不推送。请比较当前 dev 与 upstream/main、upstream/dev，报告版本、提交差异和冲突风险，并说明下一轮合并要保留哪些 fork 行为。先读 AGENTS.md，给出有源码定位的简明报告。",
+      "expected_output": "检查报告遵守只读范围，确认main/dev引用关系与固定提交，盘点fork的默认界面、复制菜单、项目与平台约束，并指出当前已知缺口。",
+      "files": [],
+      "expectations": [
+        "只使用已有引用与源码做只读检查，明确本地引用的范围；执行记录中没有 fetch、merge、checkout、配置修改或推送。",
+        "报告 dev 与 upstream/main、upstream/dev 的实际提交差异或包含关系、版本与提交标识，并区分上游更新和 fork 自有差异。",
+        "明确暂存区缺省开启、显式 false 关闭，说明要检查初始化和设置路径的一致性，而不只检查索引算法。",
+        "保留清单同时包含复制分支名和复制工作树名，并给出各自的源码入口。",
+        "同时覆盖单窗口项目行为、格式化作业号、CI 保持删除和工具 worktree 隔离，给出具体定位。",
+        "区分当前契约缺口、待运行的行为检查与本轮回归；没有把编译或旧测试文件存在当作完整行为通过。"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "assess-merge-evidence",
+      "prompt": "准备合并 upstream/main。上游已有真实 Git 暂存区，候选方案是整文件取上游以删除 fork 重复代码；候选说明还写了 cargo test -p winc-app 通过、window/tests.rs 文件存在、项目点击快照产生 Focus 请求，所以窗口切换也可以验收。请只读检查当前仓库，评审这份方案，列出应保留的入口/默认值和还缺哪些证据。不要执行 fetch、merge、checkout、测试、修改或推送。",
+      "expected_output": "接受上游等价实现但检查四处默认值及两个复制菜单，识别未加载旧窗口测试、离屏请求与真实交接差别、Unix平台限制；提供逐项验收要求，保留未证明项。",
+      "files": [],
+      "expectations": [
+        "认可复用上游暂存实现的方向，同时拒绝未经逐项 fork 差异核对就整文件取上游；检查自动合并文件中的入口与默认值。",
+        "准确列出默认暂存区的四处位置（lib.rs、winc.rs、app/git/commit/staging.rs、app/settings.rs）及 git_staging_area != Some(false)。",
+        "同时指出复制分支名（含当前分支）与复制工作树名的菜单入口，并要求双语文案或剪贴板结果检查。",
+        "指出旧 window/tests.rs 没有被父模块加载或仍用旧 API，且离屏 Focus 请求无法证明窗口句柄与 renderer 实际交接。",
+        "指出格式化相关测试有 Unix 条件，Windows 测试或 musl cargo check 无法证明对应平台行为。",
+        "把未证实的窗口/关闭/退出行为列为待验证并阻止验收，至少以一个当前源码缺口说明具体要补的检查。"
+      ]
+    }
+  ]
+}
