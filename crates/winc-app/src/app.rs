@@ -607,6 +607,7 @@ impl Hover {
                         | CommitTarget::GroupRevert(_)
                         | CommitTarget::Check(_)
                         | CommitTarget::StageFile(..)
+                        | CommitTarget::DirStage(..)
                         | CommitTarget::GroupStage(_)
                 )
                 | Hover::Diff(

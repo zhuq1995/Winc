@@ -116,6 +116,8 @@
 - `crates/winc-config/src/config.rs::Config::git_staging_area` 的注释与四处一致。
 - 入口：设置 › Git › 显示暂存区；提交视图 ⋯ 菜单的 `CommitStagingArea`／`CommitChangeList`；`toggle_staging_area`。
 - UI：暂存区视图按已暂存/未暂存分组，文件行尾 `CommitTarget::StageFile(index, on)` 显示 ＋／−；`crates/winc-app/src/view/git/commit.rs::file_action_targets` 负责命中。差异块/行采用上游 `DiffTarget::Include`／`IncludeLine` 复选框。
+- 目录行尾 `CommitTarget::DirStage(row, on)` 与分组标题 `GroupStage(group)` 同样提供 ＋／−；目录范围来自 `commit_rows().dir(group, dir)`，包含折叠的子目录且只取当前组内文件。长目录名展开时按钮随全名移动，包含顶部固定目录；名称裁剪、提示与点击命中保持一致；历史浏览、勾选式和冲突目录隐藏暂存按钮。
+- 目录回归入口：`crates/winc-app/src/app/snapshot/directory_staging.rs` 使用真实 Git 索引和离屏鼠标操作；检查目录外已暂存文件、其他分组未跟踪文件及磁盘内容保持原状，并检查长名展开与固定目录按钮的命中。
 - 命令：`GitStageAll`、`GitUnstageAll`、`GitStageFile`；`stage_all` 暂存已跟踪改动，未跟踪文件逐个加入。
 - 检查：全新配置首次启动、第二个项目、切换设置、重启四条路径；显式 false 仍可切到勾选式。只保留核心索引代码不能证明默认视图或入口保留。
 

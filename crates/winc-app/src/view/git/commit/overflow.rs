@@ -17,7 +17,10 @@ pub(in crate::view) fn commit_overflow(app: &App, frame: &mut Frame<'_>) -> Opti
     let rows = app.commit_rows();
     let row = match app.pointer.hover {
         Hover::Commit(
-            CommitTarget::Dir(r) | CommitTarget::DirCheck(r) | CommitTarget::Sticky(r, _),
+            CommitTarget::Dir(r)
+            | CommitTarget::DirCheck(r)
+            | CommitTarget::DirStage(r, _)
+            | CommitTarget::Sticky(r, _),
         ) => r,
         // 鼠标移到跟在全名后面的按钮上时，仍保持全名显示。
         Hover::Commit(
@@ -46,7 +49,23 @@ pub(in crate::view) fn commit_overflow(app: &App, frame: &mut Frame<'_>) -> Opti
     let band = Rect::new(list.x + 8.0, y, list.w - 16.0, COMMIT_ROW);
     let end = name_end(app, frame, &text, band);
     let window = app.layout.window.right() - 8.0;
-    let (right, actions) = if text.folder {
+    let dir_action = if text.folder
+        && app.git.commit.staging()
+        && !app.git.commit.browse
+        && rows.group_of(row) != Some(CommitGroup::Conflicts)
+    {
+        let home = file_actions(band).1;
+        if end <= home.x - 4.0 {
+            return None;
+        }
+        let shift = (end + 4.0 - home.x).min(window - home.right());
+        Some(Rect::new(home.x + shift, home.y, home.w, home.h))
+    } else {
+        None
+    };
+    let (right, actions) = if let Some(button) = dir_action {
+        (button.right() + 4.0, None)
+    } else if text.folder {
         if end <= band.right() - 6.0 {
             return None;
         }
@@ -69,6 +88,19 @@ pub(in crate::view) fn commit_overflow(app: &App, frame: &mut Frame<'_>) -> Opti
         let (open, revert) = (moved(open), moved(revert));
         (revert.right() + 4.0, Some((open, revert)))
     };
+    let clip = app
+        .commit_sticky(&rows)
+        .iter()
+        .find(|s| s.row == row)
+        .map_or(Rect::new(list.x, list.y, window - list.x, list.h), |s| {
+            Rect::new(
+                list.x,
+                list.y + s.level as f32 * COMMIT_ROW,
+                window - list.x,
+                COMMIT_ROW,
+            )
+            .intersect(Rect::new(list.x, list.y, window - list.x, list.h))
+        });
     let spill = (right > list.right()).then(|| {
         Rect::new(
             list.right(),
@@ -81,7 +113,9 @@ pub(in crate::view) fn commit_overflow(app: &App, frame: &mut Frame<'_>) -> Opti
         row,
         y,
         spill,
+        clip,
         actions,
+        dir_action,
     })
 }
 
@@ -131,7 +165,9 @@ pub(in crate::view) fn draw_commit_overflow(app: &App, frame: &mut Frame<'_>) {
         row,
         y,
         spill: Some(spill),
+        clip: row_clip,
         actions,
+        dir_action,
     }) = app.git.commit.overflow
     else {
         return;
@@ -160,9 +196,10 @@ pub(in crate::view) fn draw_commit_overflow(app: &App, frame: &mut Frame<'_>) {
         let back = |r: Rect| Rect::new(r.x - lag, r.y, r.w, r.h);
         (back(open), back(revert))
     });
+    let dir_action = dir_action.map(|r| Rect::new(r.x - lag, r.y, r.w, r.h));
     let right = match actions {
         Some((_, revert)) => revert.right() + 4.0,
-        None => x + view.width + 8.0,
+        None => dir_action.map_or(x + view.width + 8.0, |r| r.right() + 4.0),
     }
     .min(spill.right());
     if right <= spill.x {
@@ -175,21 +212,28 @@ pub(in crate::view) fn draw_commit_overflow(app: &App, frame: &mut Frame<'_>) {
     let p = app.palette;
     let radii = [0.0, RADIUS_ROW, RADIUS_ROW, 0.0];
     // 先垫一层侧栏底色，再叠半透明的悬停色，与列表里那一行的底色相同。
-    frame.rect_corners(spill, p.sidebar_bg, radii, spill);
+    frame.rect_corners(spill, p.sidebar_bg, radii, row_clip);
     if let Some(color) = text.shade {
-        frame.rect_corners(spill, color, radii, spill);
+        frame.rect_corners(spill, color, radii, row_clip);
     }
-    let clip = Rect::new(spill.x, y, spill.w, COMMIT_ROW);
+    let clip = Rect::new(spill.x, y, spill.w, COMMIT_ROW).intersect(row_clip);
     // 有按钮时名字在按钮之前截断。
-    let text_clip = match actions {
-        Some((open, _)) => Rect::new(clip.x, clip.y, (open.x - 4.0 - clip.x).max(0.0), clip.h),
-        None => clip,
-    };
+    let text_end = actions.map(|(open, _)| open.x).or(dir_action.map(|r| r.x));
+    let text_clip = text_end.map_or(clip, |end| {
+        Rect::new(clip.x, clip.y, (end - 4.0 - clip.x).max(0.0), clip.h)
+    });
     let style = (x, band, text.folder, text.color);
     draw_name(app, frame, style, (&parts, &view), text_clip);
     if let (Some(actions), CommitRow::File { index, .. }) = (actions, &rows[row]) {
         let targets = file_action_targets(app, rows.group_of(row), *index);
         draw_file_actions(app, frame, actions, targets, clip);
+    }
+    if let Some(rect) = dir_action {
+        let target = CommitTarget::DirStage(row, rows.group_of(row) != Some(CommitGroup::Staged));
+        let on = app.pointer.hover == Hover::Commit(target);
+        draw_button(frame, p, rect, clip, on, false);
+        let color = if on { p.text } else { p.text_muted };
+        draw_action_icon(frame, target, center(rect), color, clip);
     }
 }
 

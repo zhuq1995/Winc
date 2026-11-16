@@ -19,6 +19,7 @@ use crate::layout::{
 };
 
 mod animation;
+mod directory_staging;
 mod editor;
 #[cfg(unix)]
 mod git;

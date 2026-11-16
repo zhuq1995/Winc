@@ -12,7 +12,7 @@
   "assignee": "zhuq",
   "createdAt": "2026-11-10",
   "completedAt": null,
-  "branch": "feat/git-staging",
+  "branch": "feat/restore-directory-staging",
   "base_branch": "dev",
   "worktree_path": null,
   "commit": null,

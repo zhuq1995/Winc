@@ -147,8 +147,12 @@ pub(crate) struct CommitOverflow {
     pub y: f32,
     /// 伸出侧栏的那一段；全名在侧栏里写得下（只是要让开状态字母）时为 `None`。
     pub spill: Option<Rect>,
+    /// 全名的绘制与命中范围；顶部固定目录限制在它所在的纵向格子内。
+    pub clip: Rect,
     /// 文件行跟在全名后面的「打开文件」「回滚」两个按钮；目录行为 `None`。
     pub actions: Option<(Rect, Rect)>,
+    /// 目录行跟在全名后面的暂存或取消暂存按钮。
+    pub dir_action: Option<Rect>,
 }
 
 /// 改动列表里一行名字的过渡状态的键（见 `TreeLabels`）：滚动、展开收起前后不变。
@@ -522,6 +526,8 @@ pub enum CommitTarget {
     ///
     /// 参数同 [`CommitTarget::Dir`]。
     DirCheck(usize),
+    /// 暂存区视图中目录行尾的「＋」或「−」：按绘制行号暂存或取消暂存该目录在当前组内的文件。
+    DirStage(usize, bool),
     /// 文件的勾选框，参数是 `Status::entries` 的下标。
     Check(usize),
     /// 文件那一行：选中并预览差异；双击打开文件。

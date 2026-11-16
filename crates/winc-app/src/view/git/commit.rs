@@ -676,7 +676,15 @@ fn draw_sticky(
                 }
                 other => other,
             };
-            let rect = rect.intersect(slot);
+            let clip = if matches!(
+                target,
+                CommitTarget::DirStage(..) | CommitTarget::Sticky(..)
+            ) {
+                Rect::new(rect.x, slot.y, rect.w, slot.h)
+            } else {
+                slot
+            };
+            let rect = rect.intersect(clip);
             if rect.h > 0.0 {
                 pinned.push((rect, target));
             }
@@ -810,8 +818,12 @@ fn draw_action_icon(
             let at = ((cx - w / 2.0).round(), (cy - h / 2.0).round());
             icons::document(frame, at, (w, h), color, clip);
         }
-        CommitTarget::StageFile(_, true) => icons::plus(frame, (cx, cy), 8.0, color, clip),
-        CommitTarget::StageFile(_, false) | CommitTarget::GroupStage(CommitGroup::Staged) => {
+        CommitTarget::StageFile(_, true) | CommitTarget::DirStage(_, true) => {
+            icons::plus(frame, (cx, cy), 8.0, color, clip)
+        }
+        CommitTarget::StageFile(_, false)
+        | CommitTarget::DirStage(_, false)
+        | CommitTarget::GroupStage(CommitGroup::Staged) => {
             icons::minus(frame, (cx, cy), 8.0, color, clip);
         }
         CommitTarget::GroupStage(_) => icons::plus(frame, (cx, cy), 8.0, color, clip),
