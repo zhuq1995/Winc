@@ -122,7 +122,7 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 发布流水线是 `.github/workflows/release-windows.yml`，产出 MSI、NSIS 安装包和便携 zip，并做代码签名与更新签名。本机打包只出 NSIS 安装包：不签名，不产 MSI，自动更新关闭。
 
-需要的工具：`x86_64-pc-windows-msvc` 工具链；`x86_64-unknown-linux-musl` target（链接器用 `rust-lld`）；NSIS（`C:\Program Files (x86)\NSIS\makensis.exe`）；Node；PowerShell 7 的 `pwsh`（`release/windows/conpty.ps1` 用了 `-MaximumRetryCount`，Windows PowerShell 5.1 不认这个参数）。
+需要的工具：`x86_64-pc-windows-msvc` 工具链；`x86_64-unknown-linux-musl` target（链接器用 `rust-lld`），`cargo xtask server` 会自己 `rustup target add` 这个目标和 `aarch64-unknown-linux-musl`；NSIS（`C:\Program Files (x86)\NSIS\makensis.exe`）；Node；PowerShell 7 的 `pwsh`（`release/windows/conpty.ps1` 用了 `-MaximumRetryCount`，Windows PowerShell 5.1 不认这个参数）。
 
 ```bash
 # 1. 编译主程序与 WSL 文件监视器，并生成图标
