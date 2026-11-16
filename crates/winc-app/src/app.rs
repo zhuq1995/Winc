@@ -689,6 +689,16 @@ enum Drag {
         unit: diff::SelectUnit,
         origin: (usize, usize),
     },
+    /// 拖动项目列表中的条目：按下处的鼠标纵坐标、条目序号，以及当前落点的间隙序号。
+    ///
+    /// 间隙序号 `0` 表示第一个条目之前，项目数表示最后一个条目之后；落点等于条目原位时
+    /// `drop` 为 `None`。
+    Project {
+        key: crate::winc::WindowKey,
+        start_y: f32,
+        from: usize,
+        drop: Option<usize>,
+    },
 }
 
 /// 一次鼠标按下的记录，用于识别连击。
@@ -1172,6 +1182,18 @@ impl App {
     /// 是否正在用鼠标拖动（拖选文字、拖动分隔条等）。
     pub(crate) fn dragging(&self) -> bool {
         self.drag != Drag::None
+    }
+
+    /// 正在拖动的项目条目：项目编号与当前落点的间隙序号；没有形成拖动时为 `None`。
+    pub(crate) fn dragged_project(&self) -> Option<(crate::winc::WindowKey, usize)> {
+        match self.drag {
+            Drag::Project {
+                key,
+                drop: Some(drop),
+                ..
+            } => Some((key, drop)),
+            _ => None,
+        }
     }
 
     /// 是否按下主修饰键：macOS 上为 ⌘，其他系统上为 Ctrl（用于单击多选、比较、打开链接）。

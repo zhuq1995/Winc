@@ -56,6 +56,14 @@ impl App {
             self.cancel_tree_drag();
             return;
         }
+        // 项目拖动同样按 Esc 取消：指示线随之消失，之后的松开不再重排。
+        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            && matches!(self.drag, crate::app::Drag::Project { .. })
+        {
+            self.drag = crate::app::Drag::None;
+            self.update_cursor_icon();
+            return;
+        }
 
         // 「⋯」菜单打开时，按任意键（单独按修饰键除外）都会先关闭菜单；按的是 `Esc` 时只关闭
         // 菜单，不再继续处理。

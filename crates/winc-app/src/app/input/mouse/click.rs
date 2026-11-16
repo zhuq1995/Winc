@@ -46,13 +46,23 @@ impl App {
             return;
         }
 
-        // 项目列表：点条目切过去，点右端的 ✕ 关掉那个项目（先切过去，让它的确认显示在窗口里）。
+        // 项目列表：按住条目开始拖动，松开时按是否移动决定切换还是重排；点右端的 ✕ 关掉那个项目
+        // （先切过去，让它的确认显示在窗口里）。
         if button == MouseButton::Left
             && !self.picker.open
             && let Some(target) = self.project_at(x, y)
         {
             match target {
-                Hover::Project(key) => self.shared.request(crate::winc::Request::Focus(key)),
+                Hover::Project(key) => {
+                    if let Some(from) = self.projects_keys.iter().position(|k| *k == key) {
+                        self.drag = Drag::Project {
+                            key,
+                            start_y: y,
+                            from,
+                            drop: None,
+                        };
+                    }
+                }
                 Hover::ProjectClose(key) => {
                     self.shared.request(crate::winc::Request::CloseProject(key));
                 }

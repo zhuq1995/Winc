@@ -23,9 +23,9 @@ use crate::app::{
     WindowControl, resize_cursor, tree_max_scroll,
 };
 use crate::layout::{
-    RowAction, Scrollbar, SearchParts, SettingControl, SettingsPart, SidebarView, hit,
-    hscrollbar_thumb, row_actions, scroll_for_thumb, scrollbar_thumb, settings_thumb,
-    settings_track,
+    PROJECT_GAP, PROJECT_PAD, PROJECT_ROW, RowAction, Scrollbar, SearchParts, SettingControl,
+    SettingsPart, SidebarView, hit, hscrollbar_thumb, row_actions, scroll_for_thumb,
+    scrollbar_thumb, settings_thumb, settings_track,
 };
 use crate::theme::*;
 
@@ -92,6 +92,26 @@ impl App {
         if button == MouseButton::Left {
             self.release_tree_item();
             self.release_tab();
+        }
+
+        // 项目条目：松开时按落点重排；没有拖动（或在原位松开）时照旧切换过去。
+        if button == MouseButton::Left
+            && let Drag::Project {
+                key, from, drop, ..
+            } = self.drag
+        {
+            match drop {
+                Some(gap) => {
+                    let len = self.shared.projects().len();
+                    let index = if gap > from { gap - 1 } else { gap };
+                    let index = index.min(len.saturating_sub(1));
+                    self.shared
+                        .request(crate::winc::Request::MoveProject(key, index));
+                }
+                None => self.shared.request(crate::winc::Request::Focus(key)),
+            }
+            self.drag = Drag::None;
+            self.request_redraw();
         }
 
         if matches!(button, MouseButton::Left | MouseButton::Middle)

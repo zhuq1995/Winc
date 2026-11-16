@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// 判定为拖动项目条目的纵向移动距离（逻辑像素，经验值）：按下后移动不足此距离时仍视为单击。
+const PROJECT_DRAG_THRESHOLD: f32 = 4.0;
+
 impl App {
     /// 处理鼠标移动到窗口坐标 (`x`, `y`)（逻辑像素）：更新悬停、指针样式和进行中的拖动。
     pub(in crate::app) fn on_mouse_move(&mut self, x: f32, y: f32) {
@@ -71,6 +74,35 @@ impl App {
             self.drag_tab(x);
         }
         self.drag_terminal_tab(x);
+
+        // 拖动项目条目：超过阈值后才算拖动，落点按列表的滚动位置换算；拖动期间不更新悬停。
+        if let Drag::Project {
+            key,
+            start_y,
+            from,
+            drop,
+        } = self.drag
+        {
+            if drop.is_none() && (y - start_y).abs() < PROJECT_DRAG_THRESHOLD {
+                return;
+            }
+            let count = self.shared.projects().len();
+            let top = self.layout.projects.y + PROJECT_PAD - self.projects_scroll;
+            let gap = ((y - top) / (PROJECT_ROW + PROJECT_GAP)).round();
+            let gap = gap.clamp(0.0, count as f32) as usize;
+            let target = (gap != from && gap != from + 1).then_some(gap);
+            if target != drop {
+                self.drag = Drag::Project {
+                    key,
+                    start_y,
+                    from,
+                    drop: target,
+                };
+                self.request_redraw();
+            }
+            self.update_cursor_icon();
+            return;
+        }
 
         self.set_hover(self.hover_at(x, y));
         let code = self
@@ -347,6 +379,7 @@ impl App {
 
                 self.request_redraw();
             }
+            Drag::Project { .. } => {}
             Drag::None => {}
         }
     }

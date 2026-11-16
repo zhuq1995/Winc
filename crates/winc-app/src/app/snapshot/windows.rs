@@ -113,6 +113,118 @@ fn the_project_list_shows_every_project_and_switches_on_click() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 三个项目的应用层（前两个进入子目录无关），当前项目是第一个；列表的命中区域在第一帧后可用。
+fn three_projects() -> (Winc, [crate::winc::WindowKey; 3]) {
+    let mut winc = Winc::new(None, None);
+    let keys = std::array::from_fn(|_| winc.add_detached(blank_app(false)));
+    winc.settle_for_test();
+    (winc, keys)
+}
+
+/// 项目列表第 `index` 个条目的中心点。
+fn project_row_center(app: &App, index: usize) -> (f32, f32) {
+    let (row, _) = app.projects_hits[index];
+    (row.x + row.w / 2.0, row.y + row.h / 2.0)
+}
+
+#[test]
+fn dragging_a_project_to_the_top_asks_to_move_it() {
+    let (mut winc, [a, b, c]) = three_projects();
+    let app = winc.app(a);
+    paint(app);
+    assert_eq!(app.projects_hits.len(), 3);
+    let (x, y) = project_row_center(app, 2);
+    let (top_x, top_y) = project_row_center(app, 0);
+
+    // 按下后移动不到拖动阈值时仍是单击。
+    app.on_mouse_move(x, y);
+    app.on_mouse_down(MouseButton::Left);
+    app.on_mouse_move(x, y - 3.0);
+    assert!(app.dragged_project().is_none());
+
+    // 移到第一个条目前：落点是第一个间隙，指示线与悬停高亮只留一种。
+    app.on_mouse_move(top_x, top_y);
+    assert_eq!(app.dragged_project(), Some((c, 0)));
+    paint(app);
+    assert_eq!(app.dragged_project(), Some((c, 0)));
+    assert_eq!(app.hover, Hover::None);
+    app.on_mouse_up(MouseButton::Left);
+    assert!(app.dragged_project().is_none());
+    assert_eq!(winc.settle_for_test().0, [Request::MoveProject(c, 0)]);
+
+    // 应用层按请求重排：列表顺序变为第三、第一、第二，当前项目不变。
+    winc.move_project_for_test(c, 0);
+    winc.settle_for_test();
+    assert_eq!(winc.keys(), [c, a, b]);
+    assert_eq!(winc.active_for_test(), Some(a));
+    let app = winc.app(a);
+    let order: Vec<_> = app.shared.projects().iter().map(|p| p.key).collect();
+    assert_eq!(order, [c, a, b]);
+    paint(app);
+    let hits: Vec<_> = app.projects_hits.iter().map(|(_, key)| *key).collect();
+    assert_eq!(hits, [c, a, b]);
+}
+
+#[test]
+fn pressing_and_releasing_a_project_without_moving_still_switches() {
+    let (mut winc, [a, b, _]) = three_projects();
+    let app = winc.app(a);
+    paint(app);
+    let (x, y) = project_row_center(app, 1);
+    click(app, (x, y));
+    assert!(app.dragged_project().is_none());
+    assert_eq!(winc.settle_for_test().0, [Request::Focus(b)]);
+}
+
+#[test]
+fn dropping_a_project_back_in_place_only_switches() {
+    let (mut winc, [a, b, _]) = three_projects();
+    let app = winc.app(a);
+    paint(app);
+    let (x, y) = project_row_center(app, 1);
+    let (top_x, top_y) = project_row_center(app, 0);
+    app.on_mouse_move(x, y);
+    app.on_mouse_down(MouseButton::Left);
+    app.on_mouse_move(top_x, top_y);
+    assert_eq!(app.dragged_project(), Some((b, 0)));
+
+    // 条目之前、之后的间隙都算原位：没有落点线，松开只切换过去。
+    app.on_mouse_move(x, y);
+    assert!(app.dragged_project().is_none());
+    app.on_mouse_move(x, y + 20.0);
+    assert!(app.dragged_project().is_none());
+    app.on_mouse_up(MouseButton::Left);
+    assert_eq!(winc.settle_for_test().0, [Request::Focus(b)]);
+}
+
+#[test]
+fn dragging_a_project_outside_the_list_clamps_to_the_ends() {
+    let (mut winc, [a, _, c]) = three_projects();
+    let app = winc.app(a);
+    paint(app);
+    let area = app.layout.projects;
+
+    // 拖到列表上方之外：落点是第一个间隙。
+    let (x, y) = project_row_center(app, 2);
+    app.on_mouse_move(x, y);
+    app.on_mouse_down(MouseButton::Left);
+    app.on_mouse_move(x, area.y - 40.0);
+    assert_eq!(app.dragged_project(), Some((c, 0)));
+    app.on_mouse_up(MouseButton::Left);
+    assert_eq!(winc.settle_for_test().0, [Request::MoveProject(c, 0)]);
+
+    // 把第一个拖到列表下方之外：落点是最后一个间隙，下标是最后一个位置。
+    let app = winc.app(a);
+    paint(app);
+    let (x, y) = project_row_center(app, 0);
+    app.on_mouse_move(x, y);
+    app.on_mouse_down(MouseButton::Left);
+    app.on_mouse_move(x, area.bottom() + 40.0);
+    assert_eq!(app.dragged_project(), Some((a, 3)));
+    app.on_mouse_up(MouseButton::Left);
+    assert_eq!(winc.settle_for_test().0, [Request::MoveProject(a, 2)]);
+}
+
 #[test]
 fn modal_overlays_consume_project_list_clicks() {
     let (mut winc, a, b, dir) = two_windows("projects-modal");

@@ -91,6 +91,8 @@ pub enum Request {
     OpenFolder(PathBuf),
     /// 切换到项目 `key`：窗口和渲染器交给它，其他项目的状态留在内存里。
     Focus(WindowKey),
+    /// 把项目 `key` 移到下标 `index`（重排后列表中的位置）。
+    MoveProject(WindowKey, usize),
     /// 关掉项目 `key`：先切过去，让它的保存确认、终端确认显示在窗口里。
     CloseProject(WindowKey),
     /// 文件或目录从 `.0` 移到了 `.1`（在一个项目里剪切、到另一个项目里粘贴）：各项目里打开的
@@ -586,6 +588,18 @@ impl Winc {
         }
     }
 
+    /// 把项目 `key` 移到下标 `index`（重排后列表中的位置）；当前项目不变。
+    ///
+    /// 列表顺序由下一轮 `settle` 的 `refresh_shared` 反映到共用状态。
+    fn move_project(&mut self, key: WindowKey, index: usize) {
+        let Some(from) = self.windows.iter().position(|slot| slot.key == key) else {
+            return;
+        };
+        let slot = self.windows.remove(from);
+        let index = index.min(self.windows.len());
+        self.windows.insert(index, slot);
+    }
+
     /// 打开目录 `folder`：已经开着就切到那个项目，否则新开一个项目。
     fn open_folder(&mut self, event_loop: &ActiveEventLoop, folder: &Path) {
         let folder =
@@ -846,6 +860,7 @@ impl Winc {
                         self.activate(key);
                     }
                     Request::CloseProject(key) => self.close_project(key),
+                    Request::MoveProject(key, index) => self.move_project(key, index),
                     // 已在 `settle` 里处理。
                     Request::Moved(..) => {}
                 }
