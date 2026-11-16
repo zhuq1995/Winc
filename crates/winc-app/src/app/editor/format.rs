@@ -837,6 +837,8 @@ impl App {
         let saved = name.is_some() && self.save_document(id, None);
         self.format.saving.remove(&id);
         if !saved {
+            // 保存失败：文档里有没写下去的内容，等这次保存的关闭不能继续。
+            self.deferred_close = None;
             return;
         }
         let name = name.expect("保存成功的文档有名称");

@@ -137,3 +137,19 @@ fn closing_the_last_project_leaves_it_on_the_start_page() {
     assert!(winc.app(a).editor.root().is_none());
     assert_eq!(winc.app(a).projects_width(), 0.0);
 }
+
+/// 不同位置下的同名目录：各自加上级目录区分，否则列表里两行看起来一样。
+#[test]
+fn projects_with_the_same_folder_name_show_their_parent() {
+    let a_dir = sample_folder("projects-names/a/proj");
+    let b_dir = sample_folder("projects-names/b/proj");
+    let mut winc = crate::winc::Winc::new(None, None);
+    winc.add_detached(app_with(&a_dir.join("short.rs"), false));
+    winc.add_detached(app_with(&b_dir.join("short.rs"), false));
+    winc.settle_for_test();
+
+    assert_eq!(
+        winc.project_names(),
+        [Some("a/proj".to_owned()), Some("b/proj".to_owned())]
+    );
+}

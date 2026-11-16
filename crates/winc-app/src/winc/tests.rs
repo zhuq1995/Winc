@@ -25,6 +25,13 @@ impl Winc {
         self.windows.iter().map(|slot| slot.key).collect()
     }
 
+    /// 测试用：项目列表里各项的名字。
+    pub(crate) fn project_names(&self) -> Vec<Option<String>> {
+        (self.shared.projects().iter())
+            .map(|project| project.name.clone())
+            .collect()
+    }
+
     /// 测试用：把当前窗口设为 `key`。
     pub(crate) fn set_active(&mut self, key: WindowKey) {
         self.active = Some(key);

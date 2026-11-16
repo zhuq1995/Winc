@@ -6,6 +6,7 @@
 //! 本层统一办理跨窗口的事情：新建窗口、切到前台（[`Request`]）、同步设置、去掉关掉的窗口。
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -593,16 +594,26 @@ impl Winc {
             let fresh = roots().map(|(key, root)| (key, root.to_path_buf()));
             *self.shared.roots.borrow_mut() = fresh.collect();
         }
-        // 侧栏的项目列表：编号、目录名和终端是否在忙。
-        let projects: Vec<Project> = (self.windows.iter())
-            .map(|slot| Project {
+        // 侧栏的项目列表：编号、名字和终端是否在忙。
+        let labels: Vec<Option<(String, String)>> = (self.windows.iter())
+            .map(|slot| slot.app.editor.root().map(project_label))
+            .collect();
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        for (name, _) in labels.iter().flatten() {
+            *seen.entry(name.as_str()).or_default() += 1;
+        }
+        let projects: Vec<Project> = (self.windows.iter().zip(&labels))
+            .map(|(slot, label)| Project {
                 key: slot.key,
-                name: slot
-                    .app
-                    .editor
-                    .root()
-                    .and_then(|root| root.file_name())
-                    .map(|name| name.to_string_lossy().into_owned()),
+                // 同名目录各自加上级目录区分，否则列表里两行看起来一样。
+                name: label
+                    .as_ref()
+                    .map(|(name, parent)| match seen.get(name.as_str()) {
+                        Some(&count) if count > 1 && !parent.is_empty() => {
+                            format!("{parent}/{name}")
+                        }
+                        _ => name.clone(),
+                    }),
                 busy: slot
                     .app
                     .terminal
@@ -1078,6 +1089,21 @@ impl ApplicationHandler<Envelope> for Winc {
         }
         self.remember_windows();
     }
+}
+
+/// 项目列表里的名字：目录名，以及用于区分同名目录的上级目录名。
+fn project_label(root: &Path) -> (String, String) {
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| root.display().to_string());
+    let parent = root
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    (name, parent)
 }
 
 #[cfg(test)]
