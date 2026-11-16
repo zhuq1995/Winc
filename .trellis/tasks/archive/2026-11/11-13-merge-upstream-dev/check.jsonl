@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/window-projects.md", "reason": "单窗口项目列表与窗口生命周期约定，解 lifecycle/layout/input 冲突时以此为准"}
+{"file": ".trellis/spec/backend/git-staging.md", "reason": "暂存区 ＋／− 的契约，解 app/diff.rs 与 view/diff.rs 冲突时以此为准"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "验证命令与质量门槛（fmt/clippy/test）"}

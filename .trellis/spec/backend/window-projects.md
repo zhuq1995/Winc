@@ -19,7 +19,9 @@
 ## 布局与界面
 
 - `Layout::compute` 的 `projects_width` 决定最左侧项目列表是否占位置：只有多个项目时非零（`App::projects_width`）。
-- 项目列表的绘制在 `view/workspace/projects.rs`，每帧把条目和关闭按钮的矩形记进 `App::projects_hits` / `App::projects_close`；点击与悬停在 `app/input/mouse` 里按这两张表判断，命中后请求 `Request::Focus` 或 `Request::CloseProject`。
+- 项目列表的绘制在 `view/workspace/projects.rs`，每帧把条目和关闭按钮的矩形记进 `App::projects_hits` / `App::projects_close`；点击与悬停在 `app/input/mouse` 里按这两张表判断。
+- 条目上按下开始一条 `Drag::Project`（记录全量顺序中的下标与按下处纵坐标）：松开时移动不足 `PROJECT_DRAG_THRESHOLD`、或落点回到原位时请求 `Request::Focus`，落在其他间隙时请求 `Request::MoveProject(key, 重排后的下标)`；`Esc` 取消拖动。关闭按钮仍是按下即 `Request::CloseProject`。
+- 落点的间隙序号按 `Layout::projects`、`projects_scroll` 与 `PROJECT_ROW + PROJECT_GAP` 换算，绘制指示线与判定共用同一换算。
 - 该列存在时，`Layout` 的侧栏、分隔条和编辑区整体右移 `projects_width + ISLAND_GAP`；顶栏与侧栏开关保持原来的绝对位置。
 
 ## 打开与关闭
@@ -38,3 +40,4 @@
 
 - 继续用 `last` / `otherWindows` / 目录现场：当前项目的目录写 `last`，其余项目写 `otherWindows`，启动时各建一个项目。
 - 数量上限不变（目录现场 10 条、`otherWindows` 读取 10 条）；终端进程在应用退出后不恢复。
+- 列表顺序取自 `Winc.windows`；拖拽排序只改内存顺序（`Winc::move_project`），`Winc::remember_windows` 退出时按新顺序写 `otherWindows`，当前项目不变。

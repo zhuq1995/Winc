@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/window-projects.md","reason":"项目列表、窗口交接与事件路由的现有约定，改动限界。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"App（每项目）与应用层 Winc 的职责边界，请求何时执行。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用标签拖动与现有 hits/滚动几何，不新造拖动框架。"}
+{"file":".trellis/tasks/11-09-single-window-sidebar/research/window-architecture.md","reason":"项目列表、窗口顺序和状态持久化的代码入口。"}
