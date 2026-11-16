@@ -42,6 +42,8 @@ pub enum DialogPart {
     Branch,
     /// 询问对话框的第二个输入框：登录的密码、远程仓库的地址。
     Second,
+    /// 连接对话框的第三个输入框：密钥文件。
+    Third,
     /// 交互式变基的列表（键盘焦点）。
     RebaseList,
     /// 交互式变基列表的第几行。
@@ -54,7 +56,7 @@ pub enum DialogPart {
     RebaseDown,
     /// 「基于」的分支菜单。
     Base,
-    /// 「位置」右端选目录的按钮。
+    /// 输入框右端的选择按钮：「位置」的选目录，连接对话框中密钥文件的选文件。
     Change,
     /// 「复制被忽略的文件」（勾选框连同名称都能点）。
     Copy,
@@ -77,6 +79,10 @@ pub struct DialogLayout {
     pub values: Vec<Rect>,
     /// 询问对话框的第二个输入框；其他对话框为空矩形。
     pub second: Rect,
+    /// 连接对话框的第三个输入框；其他对话框为空矩形。
+    pub third: Rect,
+    /// 连接对话框第三个输入框右端选文件的按钮。
+    pub choose: Option<Rect>,
     /// 顶部的标题行。
     pub header: Rect,
     /// 关闭按钮。
@@ -104,6 +110,23 @@ impl DialogLayout {
     /// 卡片宽 [`DIALOG_W`]，窗口太窄时缩到窗口以内；高度按内容算，水平居中。竖直方向偏上：
     /// 顶边距窗口上边缘为剩余空间高度的 42%，使视觉重心落在窗口中部。
     pub fn compute(window: Rect, location: bool, options: &[DialogPart]) -> Self {
+        Self::form(window, location, options, 0)
+    }
+
+    /// 计算推送对话框的几何：远程的菜单、目标分支的输入框，其下 `lines` 行待推送的提交，再往下
+    /// 是勾选项。
+    ///
+    /// 版式与 [`DialogLayout::compute`] 相同，只是菜单在上、输入框在下；提交列表在 `message`，
+    /// 它的名称是 `labels` 的最后一项。
+    pub fn push(window: Rect, lines: usize, options: &[DialogPart]) -> Self {
+        let mut layout = Self::form(window, false, options, lines);
+        std::mem::swap(&mut layout.branch, &mut layout.base);
+        layout
+    }
+
+    /// [`DialogLayout::compute`] 的实现；`lines` 不为 0 时各行之后多一块 `lines` 行高的只读
+    /// 文字（`message`），名称加在 `labels` 末尾。
+    fn form(window: Rect, location: bool, options: &[DialogPart], lines: usize) -> Self {
         let w = DIALOG_W.min(window.w - SETTINGS_MARGIN * 2.0).max(0.0);
         let inner = (w - SETTINGS_PAD * 2.0).max(0.0);
         // 先按卡片左上角在原点排好，最后整体平移到窗口里。
@@ -142,6 +165,15 @@ impl DialogLayout {
             (location, change)
         });
 
+        let message = if lines > 0 {
+            labels.push(Rect::new(x, y, DIALOG_LABEL_W, QUESTION_LINE_H));
+            let block = Rect::new(cx, y, cw, lines as f32 * QUESTION_LINE_H);
+            y = block.bottom() + DIALOG_GAP;
+            Some(block)
+        } else {
+            None
+        };
+
         // 勾选项排在框那一列，勾选框的左边和框的左边对齐。
         y += 2.0;
         let options: Vec<_> = (options.iter())
@@ -177,9 +209,11 @@ impl DialogLayout {
         DialogLayout {
             card: at(Rect::new(0.0, 0.0, w, h)),
             list: Rect::default(),
-            message: Rect::default(),
+            message: message.map(at).unwrap_or_default(),
             values: Vec::new(),
             second: Rect::default(),
+            third: Rect::default(),
+            choose: None,
             header: at(header),
             close: at(close),
             labels: labels.into_iter().map(at).collect(),
@@ -193,7 +227,7 @@ impl DialogLayout {
     }
 
     /// 计算询问对话框的几何：`lines` 是说明文字的行数，`values` 是只读信息的行数，`inputs` 是输入框
-    /// 的个数（最多 2 个）。
+    /// 的个数（最多 3 个）。
     ///
     /// 窗口太窄时卡片缩到窗口以内，位置规则与 [`DialogLayout::compute`] 相同。标签在 `labels` 中
     /// 按只读信息、输入框的顺序排列。
@@ -250,6 +284,7 @@ impl DialogLayout {
             message: at(message),
             values: rows.iter().map(|&r| at(r)).collect(),
             second: field(1),
+            third: field(2),
             header: at(header),
             close: at(close),
             labels: labels.into_iter().map(at).collect(),
@@ -334,20 +369,39 @@ impl DialogLayout {
         layout
     }
 
+    /// 计算连接远端主机对话框的几何：主机、端口和密钥文件三行，版式与克隆仓库相同；密钥
+    /// 文件一行的右端有选文件的按钮，位置同「位置」一行的目录按钮。
+    pub fn connect_form(window: Rect) -> Self {
+        let mut layout = Self::question(window, 0, 0, 3);
+        let rect = layout.third;
+        layout.choose = Some(Rect::new(
+            rect.right() - 2.0 - DIALOG_CHANGE_W,
+            rect.y + 2.0,
+            DIALOG_CHANGE_W,
+            rect.h - 4.0,
+        ));
+        layout
+    }
+
+    /// 输入框右端的选择按钮（[`DialogPart::Change`]）：「位置」的目录按钮，或密钥文件的选文件
+    /// 按钮；没有时为 `None`。
+    pub fn change(&self) -> Option<Rect> {
+        self.location.map(|(_, change)| change).or(self.choose)
+    }
+
     /// 返回 `(x, y)` 处可点击的部件；落在部件之外时返回 `None`。
     pub fn part_at(&self, x: f32, y: f32) -> Option<DialogPart> {
-        let change = self
-            .location
-            .map(|(_, change)| (change, DialogPart::Change));
+        let change = self.change().map(|change| (change, DialogPart::Change));
         let parts = [
             (self.close, DialogPart::Close),
             (self.cancel, DialogPart::Cancel),
             (self.confirm, DialogPart::Confirm),
             (self.branch, DialogPart::Branch),
             (self.second, DialogPart::Second),
+            (self.third, DialogPart::Third),
             (self.base, DialogPart::Base),
         ];
-        // 选目录的按钮叠在「位置」框里面，先匹配这一项。
+        // 选择按钮叠在输入框里面，先匹配这一项。
         (change.into_iter().chain(parts))
             .chain(self.options.iter().map(|&(part, row)| (row, part)))
             .find(|(rect, _)| rect.contains(x, y))

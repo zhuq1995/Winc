@@ -31,6 +31,9 @@ workspace-outline-off = The outline is turned off in Settings
 workspace-outline-no-file = Open a file to see its outline
 workspace-outline-unsupported = The current tab has no outline
 workspace-outline-too-large = The file is too large to show an outline
+workspace-outline-reading = Reading the table of contents…
+workspace-outline-no-bookmarks = This PDF has no bookmarks
+workspace-outline-no-contents = This book has no table of contents
 workspace-outline-no-symbols = No symbols found in this file
 workspace-sidebar-commit = Commit
 workspace-sidebar-no-folder = No Folder Open
@@ -43,6 +46,9 @@ workspace-tree-empty-hint = Double-click here to create a file
 workspace-tree-rename-placeholder = New name
 workspace-tree-create-placeholder = Name (use / to create subfolders)
 workspace-tree-copy-failed = Couldn’t copy “{ $name }”: { $error }
+workspace-tree-copying-file = Copying “{ $name }”… { $done } of { $total }
+workspace-tree-copying-folder = Copying “{ $name }”… { $done } copied
+workspace-tree-copy-canceled = Copy canceled
 workspace-tree-move-confirm-one = Move “{ $name }” to “{ $folder }”?
 workspace-tree-move-confirm-many = { $count ->
         [one] Move { $count } item to “{ $folder }”?
@@ -59,6 +65,10 @@ workspace-tree-drag-copy = Copy { $name }
 
 ## Open folder
 
+workspace-open-folder-where = Where do you want to open “{ $name }”?
+workspace-open-folder-where-detail = Opening it in this window closes “{ $current }” and its tabs and terminals.
+workspace-open-folder-this-window = This Window
+workspace-open-folder-new-window = New Window
 
 ## Start page
 
@@ -68,6 +78,10 @@ workspace-start-open = Open File or Folder
 workspace-start-open-file = Open File
 workspace-start-open-folder = Open Folder
 workspace-start-version = Version { $version }
+workspace-start-module-remote = SSH Remote
+workspace-start-theme = Theme
+workspace-start-setup-intro = Your personal workspace starts here.
+workspace-start-setup-done = Done
 workspace-start-section-start = Start
 workspace-start-section-recent = Recent
 
@@ -186,6 +200,68 @@ workspace-goto-total = { $count ->
 workspace-stash-title = Stash Changes
 workspace-stash-placeholder = Message (optional)
 workspace-stash-hint = Includes untracked files · { common-key-enter } Stash
+workspace-picker-remote-hosts-placeholder = Select a host, or type user@host or host:folder
+workspace-picker-remote-folders-placeholder = Type to filter folders, / to enter; paths work too
+workspace-picker-remote-connected = Connected
+workspace-picker-remote-connect = Connect to { $host }
+workspace-picker-remote-open-here = Open This Folder
+workspace-picker-remote-hint-open = { common-key-enter } Open
+workspace-picker-remote-hint-enter = { $platform ->
+    [macos] ⇥ Enter Folder · ⌘↩ Open
+   *[other] Tab Enter Folder · Ctrl+Enter Open
+}
+workspace-picker-remote-hint-edit = { $platform ->
+    [macos] ↩ Connect · ⇥ Edit
+   *[other] Enter Connect · Tab Edit
+}
+workspace-picker-remote-config = Edit SSH Config File…
+workspace-remote-config-failed = Couldn’t create the SSH config file: { $error }
+workspace-picker-remote-loading = Loading…
+workspace-picker-remote-failed = Couldn’t read: { $error }
+workspace-picker-remote-no-folders = No matching folders
+workspace-picker-remote-no-hosts = No hosts yet: type user@host to connect, or add hosts to ~/.ssh/config
+workspace-picker-remote-invalid-host = No matching hosts, and the text isn’t a valid host name
+workspace-remote-dialog-title = Connect to SSH Host
+workspace-remote-dialog-host = Host
+workspace-remote-dialog-host-placeholder = user@host
+workspace-remote-dialog-port = Port
+workspace-remote-dialog-key = Key File
+workspace-remote-dialog-key-placeholder = Optional; otherwise ssh config, agent or password
+workspace-remote-dialog-key-choose = Choose Key File
+workspace-remote-dialog-missing-key = Key file not found
+workspace-remote-dialog-connect = Connect
+workspace-remote-dialog-connecting = Connecting…
+workspace-remote-dialog-installing = Installing Server…
+workspace-remote-dialog-starting = Starting Server…
+workspace-remote-dialog-invalid-host = Invalid host name
+workspace-remote-dialog-invalid-port = Invalid port
+workspace-picker-remote-new = New Host…
+workspace-remote-menu = Connect to SSH Host…
+workspace-remote-submenu = Connect to SSH Host
+workspace-remote-other = Other Host…
+workspace-remote-disconnect = Disconnect from SSH Host
+workspace-start-remote = Connect to SSH Host
+workspace-remote-status-connected = SSH: { $host }
+workspace-remote-status-lost = SSH: { $host } (disconnected)
+workspace-remote-status-stalled = SSH: { $host } (not responding)
+workspace-remote-connecting = Connecting to { $host }…
+workspace-remote-installing = Installing the server program on { $host }…
+workspace-remote-starting = Starting the server program on { $host }…
+workspace-remote-canceled = Connection canceled
+workspace-remote-failed = Couldn’t connect to { $host }: { $error }
+workspace-remote-no-server = the installation is missing the remote server program; reinstall Winc
+workspace-remote-unsupported-system = the host’s system ({ $system }) is not supported
+workspace-remote-disabled = Couldn’t open: the SSH Remote module is turned off
+workspace-remote-lost = The connection to { $host } was lost
+workspace-remote-error-lost = the connection to the remote host was lost
+workspace-remote-error-not-connected = not connected to the remote host
+workspace-remote-reconnecting = The connection to { $host } was lost. Reconnecting…
+workspace-notice-reconnect = Reconnect
+workspace-notice-cancel = Cancel
+workspace-notice-release-notes = View Release Notes
+workspace-release-notes-title = Release Notes
+workspace-release-notes-missing = There are no release notes for { $version } yet. Earlier releases are shown below.
+workspace-release-notes-updated = Winc was updated to { $version }
 workspace-rename-branch-title = Rename Branch
 workspace-rename-branch-placeholder = Branch name
 workspace-rename-branch-hint = Currently { $name } · { common-key-enter } Rename
@@ -195,6 +271,10 @@ workspace-tag-hint = From { $commit } · { common-key-enter } Create
 
 ## Quick open
 
+workspace-picker-languages = { $count ->
+        [one] { $count } language
+       *[other] { $count } languages
+    }
 workspace-picker-commands = { $count ->
         [one] { $count } command
        *[other] { $count } commands
@@ -220,11 +300,13 @@ workspace-picker-folder-empty = No files in this folder
 workspace-picker-no-matching-files = No matching files. Ignored files aren’t searched.
 workspace-picker-recently-opened = Recently opened
 workspace-picker-no-matching-commands = No matching commands
+workspace-picker-no-matching-languages = No matching languages
 workspace-picker-recently-used = Recently used
 workspace-picker-symbols-too-large = File too large to list symbols
 workspace-picker-no-symbols = No symbols found in this file
 workspace-picker-no-matching-symbols = No matching symbols
 workspace-picker-folders-placeholder = Search folders by name or path…
+workspace-picker-languages-placeholder = Select a language…
 workspace-picker-folders-new-window = { $platform ->
     [macos] ⌥↩
    *[other] Alt+Enter
@@ -261,12 +343,8 @@ workspace-tip-diff-side-by-side = Switch to side-by-side view
 workspace-tip-open-diff = Open in diff view
 workspace-tip-close-esc = Close (Esc)
 workspace-tip-revert-to-left = Revert change (restore left side)
-workspace-tip-stage-change = Stage this change
-workspace-tip-stage-line = Stage this line
-workspace-tip-unstage-change = Unstage this change
-workspace-tip-unstage-line = Unstage this line
-workspace-tip-stage = Stage these changes
-workspace-tip-unstage = Unstage these changes
+workspace-tip-include-change = Include this change in the commit
+workspace-tip-include-line = Include this line in the commit
 workspace-tip-expand-unchanged = Expand all unchanged regions
 workspace-tip-collapse-unchanged = Collapse unchanged regions
 workspace-tip-close-tab = Close
@@ -307,9 +385,9 @@ workspace-status-vim-visual-block = VISUAL BLOCK
 workspace-status-vim-replace = REPLACE
 workspace-status-vim-recording = recording @{ $name }
 workspace-status-vim-confirm = replace with { $text }? (y/n/a/q/l)
-workspace-picker-vim-registers = Registers: Enter pastes
-workspace-picker-vim-marks = Marks: Enter jumps
-workspace-picker-vim-buffers = Documents: Enter switches
+workspace-picker-vim-registers = Registers: { common-key-enter } pastes
+workspace-picker-vim-marks = Marks: { common-key-enter } jumps
+workspace-picker-vim-buffers = Documents: { common-key-enter } switches
 workspace-picker-vim-empty = No matching items
 workspace-reopen-discard = Discard Changes and Reopen
 workspace-reopen-confirm = Discard changes and reopen with a different encoding?
@@ -387,8 +465,7 @@ workspace-font-missing = Couldn’t use the configured fonts { $fonts }; using t
 workspace-font-missing-item = { $key } “{ $name }”
 workspace-font-unusable = This font can’t be used; choose another font
 workspace-stdin-title = Standard Input
-workspace-stdin-read-failed = Error reading standard input: { $error }
+workspace-stdin-read-failed = Couldn’t read standard input: { $error }
 workspace-stdin-truncated = Only the first { $size } MB of standard input was read
 workspace-backup-locked = This folder is open in another Winc window; unsaved changes in this window won’t be backed up automatically
 workspace-backup-failed = Couldn’t back up unsaved changes: { $error }
-workspace-projects-start-page = Start Page

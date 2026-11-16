@@ -6,6 +6,8 @@ use winc_i18n::t;
 
 use super::*;
 
+use crate::app::scroll::editor::TopRow;
+
 /// 括号配对缓存的键：文档、版本号和光标位置都不变时，配对结果不变。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BraceKey {
@@ -42,7 +44,7 @@ impl App {
         let numbers = if self.config.line_numbers == Some(false) {
             0.0
         } else {
-            digits.max(2) as f32 * self.cell
+            digits.max(2) as f32 * self.metrics.cell
         };
         numbers + 2.0 * GUTTER_PADDING + self.blame_width()
     }
@@ -53,16 +55,16 @@ impl App {
     /// 下限取自调参：窗口极窄时每个显示行仍能显示若干字符。
     fn wrap_cells(&self) -> usize {
         let room = self.layout.text.w - TEXT_PAD - SCROLLBAR_HIT;
-        ((room / self.cell).floor() as usize).max(10)
+        ((room / self.metrics.cell).floor() as usize).max(10)
     }
 
     /// 文本区宽度是否正在逐帧变化：侧栏或终端面板的动画进行中，或正在拖动两者的分隔条。
     pub(in crate::app) fn text_width_changing(&self) -> bool {
-        self.sidebar.motion.is_some()
+        self.panels.sidebar.motion.is_some()
             || self.terminal.motion.is_some()
             || self.terminal.grow.is_some()
             || matches!(
-                self.drag,
+                self.pointer.drag,
                 Drag::Splitter { .. } | Drag::TerminalDivider { .. } | Drag::SplitDivider { .. }
             )
     }
@@ -95,8 +97,8 @@ impl App {
         // 设置「超长行完整显示」的变化在此生效：各行的宽度和段数随之变化。
         let whole = doc.show_whole_lines(self.config.whole_lines == Some(true));
         if whole {
-            self.line_widths.1.clear();
-            self.max_scroll_x = None;
+            self.caches.line_widths.1.clear();
+            self.caches.max_scroll_x = None;
         }
         doc.ensure_wrap(width, tab_width);
         let job = doc.take_wrap_job().map(|job| (doc.id, job));
@@ -108,12 +110,12 @@ impl App {
         let wrapping = doc.is_wrapping();
         if doc.wrap_width() != before || whole {
             place.restore(doc, wrapping);
-            self.sticky_cache = None;
-            self.fold_motion = None;
+            self.caches.sticky_cache = None;
+            self.motion.fold_motion = None;
             self.clamp_scroll();
         }
         if let Some((id, job)) = job {
-            let wraps = self.wraps.clone();
+            let wraps = self.caches.wraps.clone();
             self.spawn_blocking_then(UserEvent::Wrapped, move || {
                 let result = job.run();
                 wraps
@@ -133,10 +135,10 @@ impl App {
         doc.show_whole_line(line);
         let wrapping = doc.is_wrapping();
         place.restore(doc, wrapping);
-        self.line_widths.1.remove(&line);
-        self.max_scroll_x = None;
-        self.sticky_cache = None;
-        self.fold_motion = None;
+        self.caches.line_widths.1.remove(&line);
+        self.caches.max_scroll_x = None;
+        self.caches.sticky_cache = None;
+        self.motion.fold_motion = None;
         self.clamp_scroll();
         self.request_redraw();
     }
@@ -145,6 +147,7 @@ impl App {
     pub(in crate::app) fn poll_wraps(&mut self) {
         let results = std::mem::take(
             &mut *self
+                .caches
                 .wraps
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -162,9 +165,9 @@ impl App {
             }
         }
         if changed {
-            self.scroll_glide = None;
-            self.sticky_cache = None;
-            self.fold_motion = None;
+            self.scroll.glide = None;
+            self.caches.sticky_cache = None;
+            self.motion.fold_motion = None;
             self.clamp_scroll();
             self.request_redraw();
         }
@@ -173,7 +176,7 @@ impl App {
     /// 处理自动换行开关的变化：重新断行，视图顶部的文本行保持不动，并在状态栏提示结果。
     pub(in crate::app) fn word_wrap_changed(&mut self) {
         // 正在进行的平滑滚动按断行前的显示行计算，断行后已不再对应原先的内容。
-        self.scroll_glide = None;
+        self.scroll.glide = None;
         self.relayout();
         let message = match (self.config.word_wrap == Some(true), self.editor.active()) {
             (true, Some(doc)) if doc.diff.as_deref().is_some_and(|v| !v.is_wrapping()) => {
@@ -210,7 +213,8 @@ impl App {
 
     /// 返回绘制缩略图所需的状态：最上方显示的行、滑块的位置，以及滑块是否加深。
     pub(crate) fn minimap_view(&self) -> (usize, Rect, bool) {
-        let active = self.hover == Hover::Minimap || matches!(self.drag, Drag::Minimap { .. });
+        let active = self.pointer.hover == Hover::Minimap
+            || matches!(self.pointer.drag, Drag::Minimap { .. });
         let (first, slider) = self.minimap_place();
         (first, slider, active)
     }
@@ -226,7 +230,7 @@ impl App {
         } else {
             y
         };
-        self.drag = Drag::Minimap { from, scroll };
+        self.pointer.drag = Drag::Minimap { from, scroll };
         self.drag_minimap(y, from, scroll);
     }
 
@@ -248,10 +252,8 @@ impl App {
     /// 把当前文档滚动到第 `line` 行（可为小数），不播放平滑滚动。
     fn set_minimap_scroll(&mut self, line: f64) {
         let max = self.max_scroll_line();
-        self.scroll_glide = None;
-        if let Some(doc) = self.editor.active_mut() {
-            doc.scroll_line = line.clamp(0.0, max);
-        }
+        self.scroll.glide = None;
+        self.set_active_scroll(line.clamp(0.0, max));
         self.clamp_scroll();
         self.request_redraw();
     }
@@ -276,16 +278,6 @@ impl App {
     /// 返回翻页时移动的行数：可见行数减 1，至少为 1。
     fn page_lines(&self) -> usize {
         self.visible_lines().saturating_sub(1).max(1)
-    }
-
-    /// 返回 `scroll_line` 的最大值（显示行）：内容能完整显示时不滚动；否则滚动到底时，
-    /// 最后一行下方留出四成屏高的空白（[`OVERSCROLL`](crate::layout::OVERSCROLL)）。
-    pub(in crate::app) fn max_scroll_line(&self) -> f64 {
-        crate::layout::editor_max_scroll(
-            self.row_count(),
-            self.scroll_track().h,
-            self.fonts.line_height,
-        )
     }
 
     /// 返回编辑区内容的总高度（逻辑像素），供滚动条使用：可滚动的距离加一屏高度。
@@ -332,7 +324,7 @@ impl App {
         if row >= doc.row_count() {
             return Some(doc.text().end_pos());
         }
-        let cell = ((x - (t.x + TEXT_PAD - doc.scroll_x)) / self.cell)
+        let cell = ((x - (t.x + TEXT_PAD - doc.scroll_x)) / self.metrics.cell)
             .round()
             .max(0.0) as usize;
         if doc.is_wrapping() {
@@ -344,160 +336,11 @@ impl App {
         Some(winc_core::movement::snap_to_grapheme(doc.text(), pos))
     }
 
-    /// 在编辑区纵向滚动位置从 `from` 变为当前值后调用，距离较远时启动平滑滚动。
-    ///
-    /// 距离不小于 [`GLIDE_MIN_ROWS`] 行时按 [`ScrollGlide`] 平滑滚动，否则直接到达目标。
-    /// 已在滚动时从屏幕上的当前位置继续滚动，不跳回起点。
-    /// 动态效果关闭或没有窗口时不播放动画。
-    pub(in crate::app) fn glide_scroll(&mut self, from: f64) {
-        let Some(doc) = self.editor.active() else {
-            return;
-        };
-        let (id, to) = (doc.id, doc.scroll_line);
-        let shown = match &self.scroll_glide {
-            Some(g) if g.doc == id => g.clock.between_rows(g.from, from),
-            _ => from,
-        };
-        if (to - shown).abs() < GLIDE_MIN_ROWS {
-            // 距离较近时直接到达；同一文档正在进行的平滑滚动保留，继续滚向新目标。
-            if self.scroll_glide.as_ref().is_some_and(|g| g.doc != id) {
-                self.scroll_glide = None;
-            }
-            return;
-        }
-        self.scroll_glide = self
-            .clock(crate::app::animation::SCROLL_GLIDE)
-            .map(|clock| ScrollGlide {
-                doc: id,
-                from: shown,
-                clock,
-            });
-    }
-
-    /// 绘制前调用：正在平滑滚动时，将当前文档的滚动位置替换为本帧的插值位置，并返回目标位置。
-    ///
-    /// 绘制完成后由 [`Self::end_glide_frame`] 恢复目标位置。其余时刻滚动位置始终等于目标，
-    /// 翻页、跳转都按目标计算，连续触发时结果仍然正确。正在折叠或展开时取消平滑滚动，
-    /// 因为折叠动画假定滚动位置不变。
-    pub(in crate::app) fn begin_glide_frame(&mut self) -> Option<f64> {
-        let glide = self.scroll_glide.as_ref()?;
-        if self.fold_motion.is_some() {
-            self.scroll_glide = None;
-            return None;
-        }
-        let (doc_id, from, clock) = (glide.doc, glide.from, glide.clock);
-        let doc = self.editor.active_mut().filter(|d| d.id == doc_id)?;
-        let target = doc.scroll_line;
-        doc.scroll_line = clock.between_rows(from, target);
-        Some(target)
-    }
-
-    /// 绘制完一帧后将滚动位置恢复为目标位置，见 [`Self::begin_glide_frame`]。
-    pub(in crate::app) fn end_glide_frame(&mut self, target: Option<f64>) {
-        if let Some(target) = target
-            && let Some(doc) = self.editor.active_mut()
-        {
-            doc.scroll_line = target;
-        }
-    }
-
     /// 是否将键入送往编辑区：焦点位于编辑区，且窗口在前台。
     ///
     /// 返回 `false` 时选区按 `Palette::selection_inactive` 绘制。
     pub(crate) fn editor_focused(&self) -> bool {
         self.focus == Focus::Editor && self.window.focused
-    }
-
-    /// 滚动编辑区，使光标保持在可见范围内。
-    ///
-    /// 上下各留一行余量（顶部有固定行时，留出固定行占用的行数），左右各留 4 个单元格。
-    /// 选区的任一端处在折叠的块内（查找、转到行、撤销都可能把光标移到折叠处）时，先展开。
-    pub(in crate::app) fn ensure_caret_visible(&mut self) {
-        let before = self.editor.active().map(|d| d.scroll_line);
-        self.reveal_caret();
-        if let Some(before) = before {
-            self.glide_scroll(before);
-        }
-    }
-
-    /// 滚动编辑区使光标可见，不做平滑滚动；供 [`Self::ensure_caret_visible`] 调用。
-    fn reveal_caret(&mut self) {
-        if let Some(doc) = self.editor.active_mut() {
-            let selection = doc.selection;
-            doc.reveal(selection.anchor);
-            doc.reveal(selection.head);
-        }
-        let visible = self.visible_lines() as f64;
-        let caret_line = self
-            .editor
-            .active()
-            .map_or(0, |d| d.text().line_of(d.selection.head));
-        let top = (self.sticky_depth(caret_line) as f64).max(1.0);
-        let width = self.layout.text.w;
-        let cell = self.cell;
-        let tab_width = self.editor.active_tab_width();
-        let max_scroll = self.max_scroll_line();
-
-        let Some(doc) = self.editor.active_mut() else {
-            return;
-        };
-        let (line, col) = doc.text().pos_to_line_col(doc.selection.head);
-        // 自动换行时按光标所在的显示行计算，且无需横向滚动。
-        let row = doc.row_at(doc.selection.head) as f64;
-
-        if row < doc.scroll_line + top {
-            doc.scroll_line = (row - top).max(0.0);
-        } else if row > doc.scroll_line + visible - 2.0 {
-            doc.scroll_line = (row - visible + 2.0).max(0.0);
-        }
-
-        doc.scroll_line = doc.scroll_line.clamp(0.0, max_scroll.max(row));
-
-        if doc.is_wrapping() {
-            doc.scroll_x = 0.0;
-            return;
-        }
-        // 按列对齐的 CSV 先计算并记录当前版本的列信息，之后的换算和绘制都使用该结果。
-        doc.columns(tab_width);
-        // 不换行时每行只显示前 `MAX_LINE_CHARS` 个字符；光标超出时滚动到显示部分的末尾，
-        // 避免文本区滚动到没有内容的位置。
-        let col = col.min(doc.line_limit(line));
-        let caret_x = doc.col_to_cell(line, col, tab_width) as f32 * cell;
-        let margin = cell * 4.0;
-        let right = width - TEXT_PAD - margin - SCROLLBAR_HIT;
-
-        if caret_x < doc.scroll_x + margin {
-            doc.scroll_x = (caret_x - margin).max(0.0);
-        } else if caret_x > doc.scroll_x + right {
-            doc.scroll_x = caret_x - right;
-        }
-    }
-
-    /// 把当前文档的纵向和横向滚动位置限制在有效范围内。
-    pub(in crate::app) fn clamp_scroll(&mut self) {
-        let max_scroll = self.max_scroll_line();
-
-        let Some(doc) = self.editor.active_mut() else {
-            return;
-        };
-        doc.scroll_line = doc.scroll_line.clamp(0.0, max_scroll);
-        if doc.diff.is_some() {
-            // 差异的两侧共用一个横向滚动位置。
-            let max_x = self.diff_hscroll().map_or(0.0, |h| h.max);
-            if let Some(doc) = self.editor.active_mut() {
-                doc.scroll_x = doc.scroll_x.clamp(0.0, max_x);
-            }
-            return;
-        }
-        if doc.is_wrapping() {
-            doc.scroll_x = 0.0;
-            return;
-        }
-
-        let max_x = self.text_max_scroll_x();
-        if let Some(doc) = self.editor.active_mut() {
-            doc.scroll_x = doc.scroll_x.clamp(0.0, max_x);
-        }
     }
 
     /// 返回编辑区水平滚动条的轨道：文字区，右端让出竖直滚动条。
@@ -512,7 +355,7 @@ impl App {
     pub(crate) fn text_max_scroll_x(&mut self) -> f32 {
         let width = self.layout.text.w;
         let visible = self.visible_lines() + 1;
-        let cell = self.cell;
+        let cell = self.metrics.cell;
         let tab_width = self.editor.active_tab_width();
         let Some(doc) = self.editor.active_mut() else {
             return 0.0;
@@ -535,7 +378,7 @@ impl App {
             cell: cell.to_bits(),
             epoch: doc.long_lines_epoch(),
         };
-        if let Some((cached, max_x)) = &self.max_scroll_x
+        if let Some((cached, max_x)) = &self.caches.max_scroll_x
             && *cached == key
         {
             return *max_x;
@@ -549,7 +392,7 @@ impl App {
             .map_or(0, |c| c.starts.last().copied().unwrap_or(0));
 
         // 行宽按行缓存：滚动时每帧通常只有少数行新进入可见范围。
-        let widths = &mut self.line_widths;
+        let widths = &mut self.caches.line_widths;
         let widths_key = (doc.id, doc.revision, tab_width);
         if widths.0 != widths_key {
             // 编辑不影响改动之上的行，这些行宽仍然有效：在超长行中输入时无需每次按键重新测量整屏。
@@ -565,7 +408,7 @@ impl App {
             widths.1.clear();
         }
         // 截断的行之后有一句说明和「显示整行」，滚动范围为它们留出位置；遇到截断的行时才测量。
-        let (renderer, size) = (&self.renderer, self.fonts.ui_small);
+        let (renderer, size) = (&self.frame.renderer, self.fonts.ui_small);
         let mut note = None;
         let mut note_cells = || {
             *note.get_or_insert_with(|| {
@@ -602,7 +445,7 @@ impl App {
             widest = widest.max(shift + cells);
         }
         let max_x = (widest as f32 * cell - width + TEXT_PAD + cell * 8.0).max(0.0);
-        self.max_scroll_x = Some((key, max_x));
+        self.caches.max_scroll_x = Some((key, max_x));
         max_x
     }
 
@@ -610,39 +453,12 @@ impl App {
     ///
     /// `whole_line` 为 `true` 表示复制的是整行，粘贴到编辑区时插入当前行上方。
     pub(in crate::app) fn set_clipboard(&mut self, text: String, whole_line: bool) {
-        self.line_clipboard = whole_line.then(|| text.clone());
-
-        #[cfg(test)]
-        {
-            self.copied = Some(text);
-            self.copied_files.clear();
-            self.copied_image = None;
-        }
-        #[cfg(not(test))]
-        if let Some(clipboard) = self.system_clipboard() {
-            let _ = clipboard.set_text(text);
-        }
+        self.clipboard.set_text(text, whole_line);
     }
 
-    /// 返回剪贴板中的文本；测试中返回 `copied` 的内容，没有时返回 `None`。
+    /// 返回剪贴板中的文本；没有时返回 `None`。
     pub(in crate::app) fn clipboard_text(&mut self) -> Option<String> {
-        #[cfg(test)]
-        {
-            self.copied.clone()
-        }
-        #[cfg(not(test))]
-        {
-            self.system_clipboard()?.get_text().ok()
-        }
-    }
-
-    /// 返回系统剪贴板，首次调用时创建；创建失败时返回 `None`。
-    #[cfg(not(test))]
-    pub(super) fn system_clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
-        if self.clipboard.is_none() {
-            self.clipboard = arboard::Clipboard::new().ok();
-        }
-        self.clipboard.as_mut()
+        self.clipboard.text()
     }
 
     /// 复制选区（`cut` 为 `true` 时剪切）；没有选区时操作光标所在的整行。
@@ -803,8 +619,7 @@ impl App {
             .editor
             .active()
             .is_some_and(|d| d.selections().0.iter().all(|s| s.is_empty()));
-        let whole_line =
-            empty_selection && self.line_clipboard.as_deref() == Some(content.as_str());
+        let whole_line = empty_selection && self.clipboard.holds_line(&content);
         self.run(if whole_line {
             Command::InsertLinesAbove(content)
         } else {
@@ -869,47 +684,6 @@ impl App {
         self.ensure_caret_visible();
         self.reset_blink();
         self.request_redraw();
-    }
-}
-
-/// 触发平滑滚动的最小滚动距离（显示行）。
-///
-/// 键入或上下移动光标通常只滚动一两行，此时直接到达；否则连续按方向键时画面会滞后于光标。
-const GLIDE_MIN_ROWS: f64 = 2.0;
-
-/// 编辑区平滑滚动的状态。
-///
-/// 文档的滚动位置已经是目标，绘制时按时钟从 `from` 插值到目标。
-#[derive(Debug, Clone)]
-pub struct ScrollGlide {
-    /// 正在滚动的文档；切换标签后停止平滑滚动。
-    pub doc: DocumentId,
-    /// 开始时屏幕上的滚动位置（显示行）。
-    pub from: f64,
-    /// 本次平滑滚动的时钟。
-    pub clock: Clock,
-}
-
-/// 断行变化前屏幕顶部的位置：（行号，段号，显示行内的小数部分）。
-///
-/// 重新断行后按同一行、同一段恢复滚动位置，顶部文字不随上方各行段数的变化而移动。
-struct TopRow(usize, usize, f64);
-
-impl TopRow {
-    /// 记录 `doc` 当前的顶部位置。
-    fn of(doc: &winc_editor::Document) -> Self {
-        let (line, part) = doc.line_and_part(doc.scroll_line.max(0.0) as usize);
-        TopRow(line, part, doc.scroll_line.fract())
-    }
-
-    /// 按记录的位置恢复 `doc` 的滚动位置；`wrapping` 为 `true` 时横向滚动归零。
-    fn restore(&self, doc: &mut winc_editor::Document, wrapping: bool) {
-        let TopRow(line, part, fraction) = *self;
-        let part = part.min(doc.rows_of(line).saturating_sub(1));
-        doc.scroll_line = (doc.row_of(line) + part) as f64 + fraction;
-        if wrapping {
-            doc.scroll_x = 0.0;
-        }
     }
 }
 

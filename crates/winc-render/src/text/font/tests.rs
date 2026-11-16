@@ -154,7 +154,7 @@ fn italics_are_found_next_to_the_regular_face() {
 fn ascii_comments_take_the_fast_path_without_an_italic() {
     // Monaco 没有斜体：注释里的 ASCII 字符落到正体上，查 ASCII 表即可，不进哈希表。
     let monaco = FontSpec::Path("/System/Library/Fonts/Monaco.ttf".into());
-    let mut fonts = Fonts::load(Some(&monaco), None, None, 400).expect("Monaco 是 macOS 自带字体");
+    let mut fonts = Fonts::load(&[monaco], &[], &[], 400).expect("Monaco 是 macOS 自带字体");
     let regular = fonts.resolve(FontKind::Mono, 'a');
     assert_eq!(fonts.resolve(FontKind::MonoItalic, 'a'), regular);
     assert!(matches!(fonts.slots[MONO_ITALIC as usize], Slot::Missing));
@@ -169,7 +169,7 @@ fn ascii_comments_take_the_fast_path_without_an_italic() {
 #[test]
 fn the_terminal_uses_its_own_font_or_the_editor_font() {
     // 没有单独的终端字体：终端的正体、斜体与编辑区的相同。
-    let mut fonts = Fonts::load(None, None, None, 400).expect("系统里有等宽字体");
+    let mut fonts = Fonts::load(&[], &[], &[], 400).expect("系统里有等宽字体");
     assert_eq!(
         fonts.resolve(FontKind::Terminal, 'a'),
         fonts.resolve(FontKind::Mono, 'a')
@@ -179,7 +179,7 @@ fn the_terminal_uses_its_own_font_or_the_editor_font() {
 
     // 单独设置了终端字体：用终端自己的槽位。Monaco 没有斜体，终端的斜体落到终端的正体上。
     let monaco = FontSpec::Path("/System/Library/Fonts/Monaco.ttf".into());
-    let mut fonts = Fonts::load(None, None, Some(&monaco), 400).expect("Monaco 是 macOS 自带字体");
+    let mut fonts = Fonts::load(&[], &[], &[monaco], 400).expect("Monaco 是 macOS 自带字体");
     let (slot, glyph) = fonts.resolve(FontKind::Terminal, 'a');
     assert_eq!(slot, TERMINAL);
     assert_ne!(glyph, 0);
@@ -188,13 +188,13 @@ fn the_terminal_uses_its_own_font_or_the_editor_font() {
 
     // 指定的终端字体打不开时用编辑区的字体，不报错。
     let missing = FontSpec::Path("/nonexistent/font.ttf".into());
-    let mut fonts = Fonts::load(None, None, Some(&missing), 400).expect("系统里有等宽字体");
+    let mut fonts = Fonts::load(&[], &[], &[missing], 400).expect("系统里有等宽字体");
     assert_eq!(fonts.resolve(FontKind::Terminal, 'a').0, MONO);
 }
 
 #[test]
 fn italic_comments_fall_back_to_the_regular_face() {
-    let mut fonts = Fonts::load(None, None, None, 400).expect("系统里有等宽字体");
+    let mut fonts = Fonts::load(&[], &[], &[], 400).expect("系统里有等宽字体");
     // 有斜体时用斜体槽位，没有时用正体；两种情况下注释里的字符都画得出来。
     let (slot, glyph) = fonts.resolve(FontKind::MonoItalic, 'a');
     assert!(slot == MONO_ITALIC || slot == MONO);
@@ -215,29 +215,77 @@ fn italic_comments_fall_back_to_the_regular_face() {
 fn only_files_users_cannot_change_are_mapped() {
     let path = std::env::temp_dir().join(format!("winc-font-{}.ttf", std::process::id()));
     std::fs::write(&path, b"not really a font").unwrap();
-    let data = load(&File::open(&path).unwrap()).unwrap();
-    assert_eq!(&*data, b"not really a font");
+    let data = load(&path).unwrap();
+    assert_eq!(&data[..], b"not really a font");
     // 以 root 运行时（例如在容器中运行测试）自己建的文件也属于 root，按系统字体映射，此时
     // 截断会使映射失效，因此不做检查。
     let root = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(&path).unwrap()) == 0;
-    assert_eq!(matches!(data, FontData::Owned(_)), !root);
+    assert_eq!(matches!(*data, FontData::Owned(_)), !root);
     if !root {
         // 截断文件不影响已经读进来的内容。
         std::fs::write(&path, b"").unwrap();
-        assert_eq!(&*data, b"not really a font");
+        assert_eq!(&data[..], b"not really a font");
     }
     drop(data);
     std::fs::remove_file(&path).unwrap();
     // 属于 root 的文件仍然映射。
-    let system = load(&File::open("/etc/hosts").unwrap()).unwrap();
-    assert!(matches!(system, FontData::Mapped(_)));
+    let system = load(Path::new("/etc/hosts")).unwrap();
+    assert!(matches!(*system, FontData::Mapped(_)));
+}
+
+/// 回归：系统按需下载的字体属于系统的服务账号而不是 root，只映射 root 的文件时，这些字体
+/// 整份读进内存。
+#[cfg(unix)]
+#[test]
+fn files_of_other_accounts_are_not_modifiable() {
+    let (user, service) = (501, 242);
+    // 当前用户自己的文件。
+    assert!(is_modifiable(user, 0o644, user));
+    // root 的文件、其他账号的文件。
+    assert!(!is_modifiable(0, 0o644, user));
+    assert!(!is_modifiable(service, 0o644, user));
+    // 组或其他用户有写权限时，属主是谁都可能被修改。
+    assert!(is_modifiable(service, 0o664, user));
+    assert!(is_modifiable(0, 0o646, user));
+    // 以 root 运行：root 的文件照常映射，其他账号的文件可能被其属主修改。
+    assert!(!is_modifiable(0, 0o644, 0));
+    assert!(is_modifiable(user, 0o644, 0));
+}
+
+/// 同一个文件的内容只保留一份；文件被替换后重新读取，不再使用时释放。
+///
+/// 只在 Unix 上运行：Windows 上映射中的文件无法改写。
+#[cfg(unix)]
+#[test]
+fn faces_of_one_file_share_its_content() {
+    let path = std::env::temp_dir().join(format!("winc-shared-{}.ttf", std::process::id()));
+    std::fs::write(&path, b"first").unwrap();
+    let first = load(&path).unwrap();
+    assert!(Arc::ptr_eq(&first, &load(&path).unwrap()));
+    // 长度不同的新内容：已经载入的那一份不变，新的载入得到新内容。
+    std::fs::write(&path, b"second, longer").unwrap();
+    let second = load(&path).unwrap();
+    assert_eq!(&second[..], b"second, longer");
+    assert!(!Arc::ptr_eq(&first, &second));
+    let in_use = || {
+        let loaded = LOADED.lock().unwrap();
+        let live = |(source, data): &(Source, Weak<FontData>)| {
+            source.path == path && data.strong_count() > 0
+        };
+        loaded.iter().filter(|entry| live(entry)).count()
+    };
+    drop(first);
+    assert_eq!(in_use(), 1);
+    drop(second);
+    assert_eq!(in_use(), 0);
+    std::fs::remove_file(&path).unwrap();
 }
 
 /// 回归：旧版 OS/2 表（版本 1）没有 x 字高和大写字高，按 0 处理时界面文字的视觉中心算成
 /// 基线，整体偏上。
 #[test]
 fn fonts_without_stated_heights_measure_their_letters() {
-    let fonts = Fonts::load(None, None, None, 400).expect("系统中有等宽字体");
+    let fonts = Fonts::load(&[], &[], &[], 400).expect("系统中有等宽字体");
     let face = fonts.primary_face(FontKind::Mono).unwrap();
     let font = face.font();
     let stated = crate::text::glyphs::heights(font, &face.coords, 100.0);
@@ -350,7 +398,7 @@ fn chinese_text_finds_a_font_on_linux() {
     if !has_chinese {
         return;
     }
-    let mut fonts = Fonts::load(None, None, None, 400).expect("系统里有等宽字体");
+    let mut fonts = Fonts::load(&[], &[], &[], 400).expect("系统里有等宽字体");
     for kind in [FontKind::Ui, FontKind::Mono] {
         let (_, glyph) = fonts.resolve(kind, '中');
         assert_ne!(glyph, 0, "{kind:?}");
@@ -448,4 +496,30 @@ fn weight_follows_the_axis_and_the_rest_is_emboldened() {
         crate::BOLD_RATIO
     );
     assert_eq!(Face::open_at(&monaco, -100).unwrap().embolden, 0.0);
+}
+
+/// 字体列表：第一个字体缺的字依次用列表中后面的字体，排在界面字体和平台后备字体之前；打不开的
+/// 字体略过。界面字体缺的字同样先用等宽字体的列表。
+#[cfg(target_os = "macos")]
+#[test]
+fn font_lists_fall_back_in_order() {
+    let path = |p: &str| FontSpec::Path(p.into());
+    let mono = [
+        path("/System/Library/Fonts/Monaco.ttf"),
+        path("/nonexistent/font.ttf"),
+        path("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+    ];
+    let mut fonts = Fonts::load(&mono, &[], &[], 400).expect("Monaco 是 macOS 自带字体");
+    assert_eq!(fonts.resolve(FontKind::Mono, 'a').0, MONO);
+    let (slot, glyph) = fonts.resolve(FontKind::Mono, '中');
+    assert!(fonts.listed[0].contains(&slot), "{slot} {:?}", fonts.listed);
+    assert_ne!(glyph, 0);
+    assert!(fonts.listed[0].start >= fonts.fallbacks.end);
+    assert_eq!(fonts.resolve(FontKind::MonoItalic, '中').0, slot);
+    assert_eq!(fonts.resolve(FontKind::Terminal, '中').0, slot);
+    assert_eq!(fonts.resolve(FontKind::Ui, '中').0, slot);
+
+    // 第一个字体打不开时，第一个能打开的字体成为主字体。
+    let mut fonts = Fonts::load(&mono[1..], &[], &[], 400).expect("冬青黑体是 macOS 自带字体");
+    assert_eq!(fonts.resolve(FontKind::Mono, '中').0, MONO);
 }

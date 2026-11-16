@@ -100,6 +100,11 @@ pub struct Config {
     pub language: Option<LocaleChoice>,
     /// Markdown 预览是否联网加载网址的图片（README 里的徽章、截图），默认为是。
     pub markdown_remote_images: Option<bool>,
+    /// Markdown 预览正文的最大宽度，默认为 [`TextWidth::Standard`]。
+    pub markdown_text_width: Option<TextWidth>,
+    /// Markdown 预览是否显示行号，默认为是：可编辑的预览在左侧写原文行号，其余预览在代码块中
+    /// 写从 1 起的行号。
+    pub markdown_line_numbers: Option<bool>,
     /// 是否定时检查更新（启动后 5 秒、之后每天一次），默认为是。
     ///
     /// 关闭后仍可从菜单「检查更新…」手动检查。
@@ -180,12 +185,25 @@ pub struct Config {
     /// 终端面板是否放在编辑区右边（配置里的 `"position": "right"`）；否则（`"bottom"` 或
     /// 没写）放在下面。
     pub terminal_right: Option<bool>,
+    /// 是否启用远程模块（经 `ssh` 打开其他主机上的目录），默认为否。
+    pub remote_enabled: Option<bool>,
     /// 是否启用 Git 模块（文件状态、分支、变更视图），默认为否。
     pub git_enabled: Option<bool>,
     /// 发布、推送或同步分支前是否先确认目标远程仓库，默认为是。
     ///
     /// 提示框上勾选「不再询问」后写成 `false`，可在设置中重新打开。
     pub git_confirm_push: Option<bool>,
+    /// `git` 访问网络时是否跟随系统的代理设置，默认为是；`git` 自己配置了代理或环境里已有代理
+    /// 变量时以它们为准。
+    pub git_system_proxy: Option<bool>,
+    /// 是否在光标所在行的末尾淡淡地显示最后修改这一行的作者、时间和提交说明，默认为是。
+    pub git_inline_blame: Option<bool>,
+    /// 是否定时在后台获取远程仓库的更新，默认为否：获取会连接远程，需要认证的远程可能每次都
+    /// 要求操作。
+    pub git_auto_fetch: Option<bool>,
+    /// 提交视图是否显示暂存区：分出「已暂存的更改」一组，各项的状态取自暂存区；默认为否，
+    /// 用勾选决定提交的内容。
+    pub git_staging_area: Option<bool>,
     /// 在打开的目录下查找仓库的层数，默认见 [`Config::REPOSITORY_SCAN_DEPTH`]，可用范围见
     /// [`Config::REPOSITORY_SCAN_DEPTH_RANGE`]。
     pub repository_scan_depth: Option<usize>,
@@ -318,6 +336,23 @@ impl RenderWhitespace {
         RenderWhitespace::Trailing,
         RenderWhitespace::All,
     ];
+}
+
+/// Markdown 预览正文的最大宽度：更宽的预览中正文居中、两侧留白。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextWidth {
+    /// 适合连续阅读的宽度。
+    #[default]
+    Standard,
+    /// 比标准宽，适合宽表格和代码较多的文档。
+    Wide,
+    /// 铺满预览区域。
+    Full,
+}
+
+impl TextWidth {
+    /// 全部选项，顺序与设置中菜单的顺序一致。
+    pub const ALL: [TextWidth; 3] = [TextWidth::Standard, TextWidth::Wide, TextWidth::Full];
 }
 
 /// 背景图在窗口中的显示方式。
@@ -554,7 +589,11 @@ impl Config {
     /// 读取项目配置（`root` 下的 `.winc/config.json`），只认 `format` 一节，其他内容报告后忽略。
     ///
     /// 文件不存在时返回 `None`；无法读取或无法理解的部分与用户配置相同，退回默认值并报告。
+    /// 远端主机上的目录没有项目配置：这里只读本机的文件，项目配置管的格式化也只在本机运行。
     pub fn load_project(root: &Path) -> Option<(Config, Vec<String>)> {
+        if winc_backend::is_remote(root) {
+            return None;
+        }
         let text = match std::fs::read_to_string(project_config_path(root)) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,

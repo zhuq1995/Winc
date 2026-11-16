@@ -9,6 +9,8 @@ use winc_editor::scopes::Scope;
 
 use super::*;
 
+use crate::app::scroll::set_scroll_line;
+
 /// 固定行数的上限（行）。
 ///
 /// 取自调参：限制深层嵌套时固定区域占用的高度。实际行数还受 [`sticky_limit`] 限制，
@@ -119,14 +121,14 @@ impl App {
         // `scroll_line` 带小数时，顶部第一行的上半部分已滚到固定区域之下。
         let partial = scroll.fract() > 0.0;
 
-        let fresh = self.sticky_cache.as_ref().is_some_and(|c| {
+        let fresh = self.caches.sticky_cache.as_ref().is_some_and(|c| {
             c.settled
                 && (c.id, c.revision, &c.rows, c.partial, c.max, c.tab_width)
                     == (doc.id, doc.revision, &rows, partial, max, tab_width)
         });
         if !fresh {
             let (scopes, settled) = doc.sticky_scopes(&rows, partial, max, tab_width);
-            self.sticky_cache = Some(StickyCache {
+            self.caches.sticky_cache = Some(StickyCache {
                 id: doc.id,
                 revision: doc.revision,
                 rows,
@@ -137,7 +139,7 @@ impl App {
                 scopes,
             });
         }
-        let Some(cache) = &self.sticky_cache else {
+        let Some(cache) = &self.caches.sticky_cache else {
             return Vec::new();
         };
 
@@ -194,7 +196,7 @@ impl App {
     pub(in crate::app) fn click_sticky(&mut self, row: StickyRow, x: f32) {
         let tab_width = self.editor.active_tab_width();
         let origin = self.layout.text.x + TEXT_PAD;
-        let cell = self.cell;
+        let cell = self.metrics.cell;
         let max = self.max_scroll_line();
         let Some(doc) = self.editor.active_mut() else {
             return;
@@ -206,7 +208,10 @@ impl App {
         doc.selection = Selection::point(winc_core::movement::snap_to_grapheme(doc.text(), pos));
         doc.goal_cell = None;
         let before = doc.scroll_line;
-        doc.scroll_line = (doc.row_of(row.line) as f64 - row.depth as f64).clamp(0.0, max.max(0.0));
+        set_scroll_line(
+            doc,
+            (doc.row_of(row.line) as f64 - row.depth as f64).clamp(0.0, max.max(0.0)),
+        );
         self.glide_scroll(before);
         self.focus = Focus::Editor;
         self.reset_blink();

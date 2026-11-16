@@ -162,3 +162,86 @@ fn runaway_output_is_cut_off() {
     );
     assert!(matches!(result, Err(RunError::TooLarge)), "{result:?}");
 }
+
+#[cfg(unix)]
+#[test]
+fn remote_questions_are_answered_by_the_local_askpass_program() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("winc-remote-askpass-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("askpass");
+    let script = "#!/bin/sh\n[ \"$1\" = refuse ] && exit 1\n\
+                  printf '%s|%s|%s\\n' \"$WINC_GIT_ASKPASS\" \"$SSH_ASKPASS_PROMPT\" \"$1\"\n";
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, PermissionsExt::from_mode(0o755)).unwrap();
+
+    let mut command = Command::new("git");
+    command.arg("fetch").env("LC_ALL", "C");
+    assert!(Askpass::of(&command).is_none());
+    command
+        .env("GIT_ASKPASS", &program)
+        .env("SSH_ASKPASS", &program)
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env(crate::git::ASKPASS_ENDPOINT, "the-endpoint");
+    let askpass = Askpass::of(&command).unwrap();
+    let ask = |mode: &str, prompt: &str| winc_backend::remote::Ask {
+        mode: mode.into(),
+        prompt: prompt.into(),
+    };
+    let answer = |mode, prompt| askpass.answer(&ask(mode, prompt));
+    assert_eq!(
+        answer("", "Password: ").as_deref(),
+        Some(&b"the-endpoint||Password: "[..])
+    );
+    assert_eq!(
+        answer("confirm", "Trust?").as_deref(),
+        Some(&b"the-endpoint|confirm|Trust?"[..])
+    );
+    assert_eq!(answer("", "refuse"), None);
+    // 本机的 askpass 程序和端点不发到远端，其余显式设置的变量照常传递。
+    let mut plain = Command::new("git");
+    plain.arg("fetch").env("LC_ALL", "C");
+    let sent = |command: &Command| format!("{:?}", remote_exec(command, Vec::new()));
+    assert_eq!(sent(&command), sent(&plain));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// 运行途中读到的输出随时交给观察者：第一行在程序结束之前就到了，不用等它全部运行完。
+#[test]
+fn output_reaches_the_watcher_while_the_program_is_still_running() {
+    use std::sync::{Arc, Mutex};
+
+    let seen: Arc<Mutex<Vec<(String, Instant)>>> = Arc::default();
+    let watch: Watch = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |bytes: &[u8]| {
+            let text = String::from_utf8_lossy(bytes).into_owned();
+            seen.lock().unwrap().push((text, Instant::now()));
+        })
+    };
+    let mut command = sh("echo first; sleep 1; echo second >&2");
+    command.stderr(Stdio::piped());
+    let timeout = Duration::from_secs(20);
+    let output = run_watched(
+        &mut command,
+        Vec::new(),
+        timeout,
+        &Cancel::default(),
+        Some(watch),
+    );
+    let finished = Instant::now();
+    let output = output.unwrap();
+    // 返回的结果不受影响：两路输出都完整。
+    assert_eq!(output.stdout, b"first\n");
+    assert_eq!(output.stderr, b"second\n");
+    let seen = seen.lock().unwrap();
+    let first = seen
+        .iter()
+        .find(|(text, _)| text.contains("first"))
+        .unwrap();
+    assert!(seen.iter().any(|(text, _)| text.contains("second")));
+    // 第一行比程序结束至少早半秒（程序中间睡了一秒）。
+    assert!(finished.duration_since(first.1) > Duration::from_millis(500));
+}

@@ -18,22 +18,11 @@ use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-/// zsh 的启动脚本：`.zshenv` 把 `ZDOTDIR` 恢复成用户原来的值，`winc.zsh` 安装钩子。
-const ZSH: &[(&str, &str)] = &[
-    ("zsh/.zshenv", include_str!("../../shell/zshenv.zsh")),
-    ("zsh/winc.zsh", include_str!("../../shell/winc.zsh")),
-];
-/// bash 的启动脚本，由 `--rcfile` 读入。
-const BASH: &[(&str, &str)] = &[("bash/winc.bash", include_str!("../../shell/winc.bash"))];
-/// fish 的启动脚本，放在 `vendor_conf.d` 里由 fish 自动读入。
-const FISH: &[(&str, &str)] = &[(
-    "fish/fish/vendor_conf.d/winc.fish",
-    include_str!("../../shell/winc.fish"),
-)];
+use winc_pty::scripts::{BASH, FISH, ZSH};
 
 /// 在 WSL 发行版内启动 shell 并注入集成脚本的脚本。
 #[cfg(any(windows, test))]
-const WSL: &[(&str, &str)] = &[("wsl.sh", include_str!("../../shell/wsl.sh"))];
+const WSL: &[(&str, &str)] = winc_pty::scripts::LAUNCH;
 
 /// 在发行版内运行 `WSL` 脚本的命令，`$0` 是脚本目录的 Windows 路径。
 ///
@@ -119,6 +108,33 @@ pub fn inject(
             set(env, b"XDG_DATA_DIRS", dirs);
         }
     }
+    Some(nonce)
+}
+
+/// 为经 `ssh` 在远端主机上启动的 shell 准备注入：`args` 的最后一项（在远端运行的命令）里有
+/// [`winc_pty::scripts::REMOTE_NONCE`] 时，把最后一处换成新生成的随机数并返回它。
+///
+/// 脚本已由 winc 经它自己的连接写到远端；命令里没有该记号（没有启用集成、脚本没有写好）时
+/// 不注入，返回 `None`。
+pub fn inject_remote(program: &[u8], args: &mut [Vec<u8>]) -> Option<String> {
+    let name = program
+        .rsplit(|&b| b == b'/' || b == b'\\')
+        .next()
+        .unwrap_or(program);
+    if !name.eq_ignore_ascii_case(b"ssh") && !name.eq_ignore_ascii_case(b"ssh.exe") {
+        return None;
+    }
+    let mark = winc_pty::scripts::REMOTE_NONCE.as_bytes();
+    let command = args.last_mut()?;
+    let at = command.windows(mark.len()).rposition(|part| part == mark)?;
+    let nonce = match nonce() {
+        Ok(nonce) => nonce,
+        Err(error) => {
+            eprintln!("winc-pty: 无法生成 shell 集成的随机数：{error}");
+            return None;
+        }
+    };
+    command.splice(at..at + mark.len(), nonce.bytes());
     Some(nonce)
 }
 
@@ -231,12 +247,12 @@ fn random_bytes() -> io::Result<[u8; 16]> {
 
 /// 内容不同的脚本重写一遍。
 ///
-/// 先写入同目录的临时文件再改名，同时启动的 shell 不会读到未写完的脚本。换行符统一为 LF：源码在
-/// Windows 上可能以 CRLF 检出，而这些脚本由 Linux 上的 shell 读取。
+/// 先写入同目录的临时文件再改名，同时启动的 shell 不会读到未写完的脚本。换行符统一为 LF（见
+/// [`winc_pty::scripts::unix_lines`]），与写到远端主机上的相同。
 fn write_scripts(dir: &Path, scripts: &[(&str, &str)]) -> io::Result<()> {
     for (relative, content) in scripts {
         let path = dir.join(relative);
-        let content = content.replace("\r\n", "\n");
+        let content = winc_pty::scripts::unix_lines(content);
         if fs::read(&path).is_ok_and(|old| old == content.as_bytes()) {
             continue;
         }
@@ -244,7 +260,7 @@ fn write_scripts(dir: &Path, scripts: &[(&str, &str)]) -> io::Result<()> {
             fs::create_dir_all(parent)?;
         }
         let temp = path.with_extension(format!("tmp{}", std::process::id()));
-        fs::write(&temp, content)?;
+        fs::write(&temp, content.as_bytes())?;
         fs::rename(&temp, &path)?;
     }
     Ok(())

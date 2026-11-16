@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::app::scroll::set_scroll_line;
+
 impl App {
     /// 当前标签是差异且两侧都没有光标时，把只读光标放在窗口顶部一行的行首，返回是否已放置。
     ///
@@ -42,7 +44,7 @@ impl App {
         let Some(view) = doc.diff.as_deref() else {
             return 0;
         };
-        let parts = diff_parts(self.layout.editor, view, self.cell);
+        let parts = diff_parts(self.layout.editor, view, self.metrics.cell);
         let visible = f64::from(parts.body.h / self.fonts.line_height);
         let rows = view.rows[side].len();
         let top = view.row_under(side, doc.scroll_line.max(0.0), visible, 0.0);
@@ -72,7 +74,7 @@ impl App {
         let text = &view.side(side).text;
         let (line, col) = text.pos_to_line_col(pos);
         let cell = winc_core::text::col_to_cell(text.line(line), col, tab_width);
-        doc.scroll_line = (doc.scroll_line + lines).max(0.0);
+        set_scroll_line(doc, (doc.scroll_line + lines).max(0.0));
         self.diff_scroll_to(index, side, (line, col), cell);
         self.request_redraw();
     }

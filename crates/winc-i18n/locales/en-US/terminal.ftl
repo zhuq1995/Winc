@@ -2,6 +2,8 @@
 
 terminal-dock-bottom = Dock to bottom
 terminal-dock-right = Dock to right
+terminal-maximize-panel = Maximize panel
+terminal-restore-panel = Restore panel
 terminal-hide-panel = Hide terminal panel
 terminal-show-panel = Show terminal panel
 terminal-tab-default-name = Terminal
@@ -13,7 +15,7 @@ terminal-helper-missing = Couldn’t find the terminal helper; reinstall Winc
 terminal-helper-start-failed = Couldn’t start the terminal helper: { $error }
 terminal-helper-exited = The terminal helper exited
 terminal-helper-version-mismatch = The terminal helper’s version doesn’t match Winc; reinstall Winc
-terminal-process-exited = Process exited (code { $code })
+terminal-process-exited = Process exited (exit code { $code })
 terminal-disconnected = Terminal connection lost
 terminal-restart = Restart
 terminal-restart-confirm = Restart this terminal?

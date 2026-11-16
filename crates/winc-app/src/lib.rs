@@ -5,6 +5,9 @@
 //! `macos` 放直接调用 `AppKit` 的能力。Windows 上是图形界面程序：从命令行启动时接上该命令行的
 //! 控制台，`--help` 和错误信息输出到该控制台（`windows::attach_console`）。
 
+// 测试直接在本机的临时目录中准备和检查文件。
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 mod app;
 mod askpass;
 mod bench;
@@ -24,6 +27,7 @@ mod macos;
 mod portal;
 #[cfg(any(windows, test))]
 mod recents;
+mod release_notes;
 mod shell_command;
 mod system;
 mod theme;
@@ -34,9 +38,12 @@ mod updates;
 mod view;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod wayland;
+mod web;
 mod winc;
 #[cfg(windows)]
 mod windows;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod x11;
 
 /// 大块内存释放后立即归还给系统。
 #[cfg(target_os = "macos")]
@@ -65,6 +72,18 @@ pub fn run() {
     }
     shell_command::enter_real_path();
     crash::install();
+    // 本线程是界面线程：不等待远端主机的应答，访问远端文件的操作都在后台线程上进行。
+    winc_backend::remote::forbid_blocking();
+    // 连接断开时各项操作失败的原因原样出现在提示里：用界面语言说明。
+    winc_backend::remote::describe_unavailable(|what| {
+        use winc_backend::remote::Unavailable;
+        match what {
+            Unavailable::Lost => winc_i18n::t!("workspace-remote-error-lost").to_owned(),
+            Unavailable::NotConnected => {
+                winc_i18n::t!("workspace-remote-error-not-connected").to_owned()
+            }
+        }
+    });
     #[cfg(windows)]
     windows::attach_console();
     // `--help` 和无法识别的选项不需要窗口，先处理参数；用法与错误信息按系统语言输出。
@@ -164,7 +183,7 @@ pub fn run() {
         app::restore_at_launch(&mut editor, session, backup_root.as_deref())
     };
     let silent = bench.silent();
-    // 上次退出时其他项目开着的目录：没有命令行目标时与恢复上次的现场一样全部打开，各占一个项目。
+    // 上次退出时其他窗口开着的目录：没有命令行目标时与恢复上次的现场一样全部打开，各占一个窗口。
     let others = if args.targets.is_empty() && !args.one_off() {
         state.others.clone()
     } else {
@@ -220,8 +239,15 @@ pub fn run() {
     let mut winc = Winc::new(Some(event_loop.create_proxy()), template);
     let (key, proxy) = winc.reserve();
     let mut app = App::new(editor, proxy, bench, config);
-    app.config_path = config_path;
-    app.commit.set_flat(!state.commit_tree);
+    app.watch_git_output();
+    winc_editor::git::follow_system_proxy(app.config.git_system_proxy != Some(false));
+    app.store.config_path = config_path;
+    app.git.commit.set_flat(!state.commit_tree);
+    let sort = crate::app::CommitSort::from_key(&state.commit_sort);
+    app.git.commit.set_sort(sort);
+    app.git
+        .commit
+        .set_staging(app.config.git_staging_area == Some(true));
     app.editor.diff_unified = app.config.diff_inline == Some(true);
     app.state = state;
     app.restore_panel_width();
@@ -230,27 +256,22 @@ pub fn run() {
     if args.one_off() {
         app.start_one_off(&args);
     } else {
-        app.state_path = state_path;
+        app.store.state_path = state_path;
         app.backup.root = backup_root;
         app.adopt_restored(restored);
+        // 测量时没有状态文件：不记录版本，开始页也不显示「首次设置」。
+        if app.store.state_path.is_some() {
+            app.note_version();
+        }
         // 从命令行打开的目录同样记入「最近打开」。
         app.remember_workspace();
+        // 上次开着的是远端的目录：启动时没有连接，无法像本机目录那样直接打开，在后台重新连接。
+        if args.targets.is_empty() {
+            app.restore_remote_folder();
+        }
     }
 
     winc.add(key, app);
-    // 命令行给了多个目录时，其余目录各开一个项目；仍停在第一个项目上。
-    let folders: Vec<std::path::PathBuf> = args
-        .targets
-        .iter()
-        .filter(|target| target.path.is_dir())
-        .map(|target| target.path.clone())
-        .collect();
-    if folders.len() > 1 {
-        winc.open_folders(&folders);
-    }
-    if args.targets.is_empty() && !args.one_off() {
-        winc.restore_empty_project();
-    }
     winc.restore_windows(&others);
     // 指定了 `--new-instance` 的进程不接收之后启动的 winc 交来的目录和文件，这些仍交给原来
     // 运行着的 winc。
@@ -267,34 +288,25 @@ pub fn run() {
 
 /// 按命令行参数打开目录和文件，返回需要提示用户的 `Vec<String>`。
 ///
-/// 给出多个文件时，以第一个文件所在的目录作为项目；`文件:行` 形式的目标会跳到对应行
-/// （行号和列号从 0 起）。临时打开（`--wait`、`-`）时不打开项目，只打开给出的文件。
-/// 给出多个目录时，第一个开在这个项目里，其余各开一个项目。
+/// 只给出文件时不打开其所在的目录；`文件:行` 形式的目标会跳到对应行（行号和列号从 0 起）。
+/// 临时打开（`--wait`、`-`）时不接受目录。
 pub(crate) fn open_targets(editor: &mut Editor, args: &cli::Args) -> Vec<String> {
     let mut problems = Vec::new();
     let mut first_file = None;
-    let mut folder_opened = false;
     for target in &args.targets {
-        if target.path.is_dir() {
+        if winc_backend::fs::is_dir(&target.path) {
             if args.one_off() {
                 let path = target.path.display().to_string();
                 problems.push(winc_i18n::t!("cmd-cli-wait-folder", path = path));
                 continue;
             }
-            // 多个目录时只把第一个开在当前项目里，其余的由应用层各开一个项目。
-            if folder_opened {
-                continue;
-            }
-            match editor.open_folder(&target.path) {
-                Ok(()) => folder_opened = true,
-                Err(e) => {
-                    let (path, error) = (target.path.display().to_string(), e.to_string());
-                    problems.push(winc_i18n::t!(
-                        "cmd-cli-open-failed",
-                        path = path,
-                        error = error
-                    ));
-                }
+            if let Err(e) = editor.open_folder(&target.path) {
+                let (path, error) = (target.path.display().to_string(), e.to_string());
+                problems.push(winc_i18n::t!(
+                    "cmd-cli-open-failed",
+                    path = path,
+                    error = error
+                ));
             }
             continue;
         }
@@ -362,5 +374,5 @@ fn set_encoding_region() {
 /// 目录已不存在时不做任何事，开始页的最近列表仍保留该条目。标签由 `app::restore_tabs`
 /// 按现场恢复。
 pub(crate) fn open_session_folder(editor: &mut Editor, session: &Session) -> bool {
-    session.folder.is_dir() && editor.open_folder(&session.folder).is_ok()
+    winc_backend::fs::is_dir(&session.folder) && editor.open_folder(&session.folder).is_ok()
 }

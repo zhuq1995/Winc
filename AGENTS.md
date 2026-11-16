@@ -63,11 +63,12 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
   | macOS 关闭窗口 | 只隐藏窗口，其他平台照常退出 |
 
 - 测试：`app/snapshot/windows.rs`、`app/lifecycle/closing/tests.rs`、`app/lifecycle/events/tests.rs`、`app/lifecycle/window/tests.rs`、`app/snapshot/terminal/editor.rs`、`winc/tests.rs`。
+- 当前 `dev` 上这套实现随上游窗口重构被移除，恢复工作见 `.trellis/tasks/11-16-migrate-projects-window/`；恢复后本节的行为与不变量照旧适用。
 
 #### 真实暂存区
 
 - 行为：提交面板分成已暂存和未暂存两组，暂存与取消暂存写真实 Git 索引，与终端里的 `git add`／`git reset` 共享状态；提交只取暂存区内容。块级和行级的部分暂存生成只含目标改动的统一差异，交给 `git apply --cached`；索引为空时提交先提示全部暂存。
-- 代码：`winc-editor/src/git/staging.rs`（自有文件）、`app/git/commit/stage.rs`（自有文件）、`app/diff.rs` 的 `stage_diff_hunk`／`stage_diff_line`、`view/diff.rs` 的 `DiffTarget::StageHunk`／`StageLine` 命中区域。
+- 代码：`crates/winc-core/src/diff/staging.rs` 的 `staged_picks`／`stage`／`unstage`（纯计算，带单元测试）、`app/git/commit/staging.rs` 的 `stage_part` 与 `StageJob::{Add,Remove,Part}` 队列、`app/git/commit.rs` 的 `staging` 视图开关；差异块与行用 `view/diff.rs` 的 `DiffTarget::Include`／`IncludeLine` 复选框，文件行用 `CommitTarget::StageFile` 的 ＋／−。
 - 不变量：
 
   | 场景 | 要求 |
@@ -76,9 +77,10 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
   | 提交视图的行身份 | `(CommitGroup, 路径)`；浏览历史差异时隐藏暂存控件并跳过其命中区域 |
   | 部分暂存的目标 | 符号链接只提供整文件暂存（`git-stage-partial-symlink`），不按链接目标的内容做部分暂存 |
   | 暂存写入期间关闭项目 | 写完释放 worktree 占用，不泄漏 |
-  | 上游同名的 `Git::stage` | 只保留 `git.rs` 中返回 `Result<String, String>` 的那个，`staging.rs` 不重复定义，调用点补 `.map(|_| ())` |
+  | `Git::stage` | 只有 `winc-editor/src/git.rs` 一个实现，返回 `Result<String, String>`；fork 的 `staging.rs` 副本已删除 |
 
 - 测试：`app/snapshot/git/commit.rs`、`app/snapshot/git/diff.rs`、`app/git/changes/tests.rs`、`winc-editor/src/git/tests.rs`。
+- 只保留这一套实现：fork 旧的 `git/staging.rs`、`app/git/commit/stage.rs`、`stage_diff_hunk`／`stage_diff_line`、`DiffTarget::StageHunk`／`StageLine` 已删除，后续合并也不恢复。
 
 #### 格式化保存编号
 
@@ -108,14 +110,14 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 | 上游改动 | fork 取值 |
 | --- | --- |
-| 提交列表勾选框（`Include`／`IncludeLine`、`toggle_diff_*`、`reset_checks`） | fork 的 ＋／− 暂存：`DiffTarget::StageHunk`／`StageLine`、`stage_diff_*`、`commit.staging` 互斥 |
-| `Git::stage` 签名 | 只保留 `git.rs` 中的 `Result<String, String>`，`staging.rs` 不重复定义；调用点补 `.map(|_| ())` |
+| 提交列表勾选框（`Include`／`IncludeLine`、`toggle_diff_*`、`reset_checks`） | 采纳上游复选框与 `toggle_diff_part`；fork 的 `StageHunk`／`StageLine` 已删除 |
+| `Git::stage` 签名 | 只有 `git.rs` 中的 `Result<String, String>` 一份实现 |
 | 每帧命中区域 | 采纳上游 `App::hits`（`hits.commit`、`hits.tree_tools` 等）；项目列表的 `projects_hits`／`projects_close`／`projects_keys` 是自有字段，留在 `App` 上 |
 | 字段分组 | 采纳上游 `tree`／`sidebar`／`picker`／`find`／`closing`；`deferred_close`（推迟的关闭请求）与 `closing.confirming`（终端确认）是两个概念，保持分开 |
 | 暂存、提交视图行身份、格式化作业号 | 见上文「自有化功能」，按其中的不变量取舍 |
-| 项目栏与窗口生命周期 | fork 的单窗口逻辑优先（`layout.projects`、`traffic_lights_moved`、`Target::Blocked` 等），采纳上游新增分支与文案 |
+| 项目栏与窗口生命周期 | 窗口层采纳上游 `WindowKey`／`Request`／`Slot`；项目列表基于它恢复（见 `11-16-migrate-projects-window`），`traffic_lights_moved`、`Target::Blocked` 等自有分支保留 |
 
-测试注意：Git 相关测试需要 `PATH` 含 Git 的 `cmd` 目录（`sh` 由它提供），否则本地远程测试失败。
+测试注意：Git 相关测试需要 `PATH` 含 Git 的 `cmd` 目录（`sh` 由它提供），否则本地远程测试失败。全局 `core.autocrlf` 为 `true` 时新建的测试仓库把工作区写成 CRLF，`app/snapshot/git/*` 的文本断言失败：跑之前设 `git config --global core.autocrlf false`，或临时用 `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=false`。
 ### Windows 打包（NSIS 安装包）
 
 发布流水线是 `.github/workflows/release-windows.yml`，产出 MSI、NSIS 安装包和便携 zip，并做代码签名与更新签名。本机打包只出 NSIS 安装包：不签名，不产 MSI，自动更新关闭。

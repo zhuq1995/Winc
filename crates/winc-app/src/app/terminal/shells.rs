@@ -3,6 +3,11 @@
 //! 首次启动终端时在后台线程检测：Windows 上列出 WSL 发行版需要启动 `wsl.exe`，不能占用界面线程。
 //! 启动命令按空白分词，双引号括起的部分不拆开（[`command_words`]），含空白的路径加上双引号。
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "只访问本机：列出本机安装的 shell"
+)]
+
 use super::HeaderHit;
 use crate::app::input::context_menu::{MenuButton, MenuTarget, menu_below};
 use crate::app::{App, UserEvent};
@@ -241,7 +246,7 @@ impl App {
         if std::mem::replace(&mut self.terminal.shells_detected, true) {
             return;
         }
-        let Some(proxy) = self.proxy.clone() else {
+        let Some(proxy) = self.link.proxy.clone() else {
             return;
         };
         std::thread::spawn(move || {

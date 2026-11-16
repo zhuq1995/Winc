@@ -4,10 +4,11 @@ use super::*;
 
 impl App {
     /// 测试用：在 `root` 里做完了「拉取」，收下结果。
+    #[cfg(unix)] // 只有 Unix 上的 Git 测试用到
     pub(in crate::app) fn pulled_in(&mut self, root: &Path) {
         let what = "拉取".to_owned();
         // 换目录之前起的操作：编号比后来起的都小。
-        let _ = self.branch.results.0.send(Done {
+        let _ = self.git.branch.results.0.send(Done {
             id: 0,
             root: Some(root.into()),
             what,
@@ -27,6 +28,8 @@ fn branch(name: &str, remote: bool, current: bool, upstream: Option<&str>) -> Br
         oid: String::new(),
         time: 0,
         local: String::new(),
+        ahead: 0,
+        behind: 0,
     }
 }
 
@@ -108,16 +111,10 @@ fn branch_ops_are_grouped_with_separators() {
             MenuEntry::Separator,
             item(Rename, 1),
             item(Delete, 1),
-            MenuEntry::Separator,
-            item(CopyName, 1),
         ]
     );
-    // 空的组不留分隔线：当前分支只能重命名、复制分支名，远程分支最后没有删除。
-    assert_eq!(
-        branch_ops(0, &branches, &[], &[], false),
-        [item(Rename, 0), MenuEntry::Separator, item(CopyName, 0)]
-    );
+    // 空的组不留分隔线：当前分支只能重命名，远程分支最后没有删除。
+    assert_eq!(branch_ops(0, &branches, &[], &[], false), [item(Rename, 0)]);
     let remote = branch_ops(2, &branches, &[], &[], false);
-    assert!(!remote.contains(&item(Delete, 2)));
-    assert!(remote.contains(&item(CopyName, 2)));
+    assert_eq!(remote.last(), Some(&item(Rebase, 2)));
 }

@@ -207,6 +207,9 @@ pub fn log_commit_menu(enabled: bool, branch: &str, tags: &[&str]) -> Vec<MenuEn
         Item(LogCopyOid, true),
         Item(LogCopyShortOid, true),
         Item(LogCopyMessage, true),
+        Item(LogCopyPatch, true),
+        Separator,
+        Item(LogGoTo, true),
     ]);
     menu
 }
@@ -222,6 +225,7 @@ pub fn log_file_menu(exists: bool, in_workspace: bool) -> Vec<MenuEntry> {
 
     vec![
         Item(GitShowDiff, true),
+        Item(LogCompareWithLocal, exists),
         Item(GitOpenFile, exists),
         Item(FileHistory, true),
         Separator,
@@ -253,27 +257,32 @@ pub fn form_base_menu(branches: &[winc_editor::git::Branch]) -> Vec<MenuEntry> {
     menu
 }
 
-/// 返回提交视图里一个文件的菜单项：显示差异、打开文件，暂存或取消暂存，回滚，在文件树中显示、
-/// 在文件管理器中显示，复制路径。
+/// 返回提交视图里一个文件的菜单项：显示差异、打开文件，回滚、储藏、加入 `.gitignore`，在文件
+/// 树中显示、在文件管理器中显示，复制路径。
 ///
 /// `exists` 表示文件还在磁盘上，删掉的文件不能打开、不能在文件管理器中显示；`in_workspace`
-/// 表示它在打开的目录里；`stage` 表示这个文在「更改」里（菜单写「暂存」）。
-pub fn commit_file_menu(exists: bool, in_workspace: bool, stage: bool) -> Vec<MenuEntry> {
+/// 表示它在打开的目录里。`ignore` 是可以加入 `.gitignore` 的各种范围，只有未跟踪的文件才有；
+/// 为空时没有这个子菜单。
+pub fn commit_file_menu(
+    exists: bool,
+    in_workspace: bool,
+    ignore: &[crate::app::git::commit::IgnoreKind],
+) -> Vec<MenuEntry> {
     use MenuCommand::*;
-    use MenuEntry::{Item, Separator};
+    use MenuEntry::{Item, Separator, Submenu};
 
+    let mut changes = vec![Item(GitRollbackFile, true), Item(GitStashFiles, true)];
+    if !ignore.is_empty() {
+        let kinds = ignore.iter().map(|&kind| Item(GitIgnore(kind), true));
+        changes.push(Submenu(t!("menu-git-ignore").to_owned(), kinds.collect()));
+    }
     let mut menu = vec![
         Item(GitShowDiff, true),
         Item(GitOpenFile, exists),
         Separator,
     ];
-    menu.push(if stage {
-        Item(CommitStage, true)
-    } else {
-        Item(CommitUnstage, true)
-    });
+    menu.extend(changes);
     menu.extend([
-        Item(GitRollbackFile, true),
         Separator,
         Item(RevealInTree, exists && in_workspace),
         Item(Reveal, exists),
@@ -285,26 +294,23 @@ pub fn commit_file_menu(exists: bool, in_workspace: bool, stage: bool) -> Vec<Me
 }
 
 /// 返回提交视图里选中了多个文件、右键点在其中一个上时的菜单项：打开（`any_exists`：有还在
-/// 磁盘上的）、暂存或取消暂存（`stage`：选区在「更改」里）、回滚、复制路径、复制相对路径，都
-/// 作用于选中的各个文件。
-pub fn commit_selection_menu(any_exists: bool, stage: bool) -> Vec<MenuEntry> {
+/// 磁盘上的）、暂存、取消暂存、回滚、储藏、复制路径、复制相对路径，都作用于选中的各个文件。
+pub fn commit_selection_menu(any_exists: bool) -> Vec<MenuEntry> {
     use MenuCommand::*;
     use MenuEntry::{Item, Separator};
 
-    let mut menu = vec![Item(GitOpenFile, any_exists), Separator];
-    menu.push(if stage {
-        Item(CommitStage, true)
-    } else {
-        Item(CommitUnstage, true)
-    });
-    menu.extend([
+    vec![
+        Item(GitOpenFile, any_exists),
+        Separator,
+        Item(CommitCheck(true), true),
+        Item(CommitCheck(false), true),
         Separator,
         Item(GitRollbackFile, true),
+        Item(GitStashFiles, true),
         Separator,
         Item(CopyPath, true),
         Item(CopyRelativePath, true),
-    ]);
-    menu
+    ]
 }
 
 /// 返回全局搜索结果里一行的菜单项：打开；文件行是复制路径、复制相对路径、在文件树中显示，
@@ -424,11 +430,17 @@ pub fn diff_menu(right: bool, on_hunk: bool) -> Vec<MenuEntry> {
 ///
 /// `recent` 为最近列表的长度，`current` 为当前目录在最近列表中的位置，`opened` 表示是否已经
 /// 打开目录（没有打开时「关闭目录」不可用）。
+///
+/// `hosts` 为 `ssh` 配置中的主机数，远程模块关闭时为 `None`：模块开着时有「连接到 SSH 主机」，
+/// 配置了主机时它是子菜单，按主机列出，末尾是「其他主机…」。`connected` 表示打开的目录在远端
+/// 主机上：这时「关闭目录」之前有「断开 SSH 连接」。
 pub fn project_menu(
     recent: usize,
     current: Option<usize>,
     opened: bool,
     distros: usize,
+    hosts: Option<usize>,
+    connected: bool,
 ) -> Vec<MenuEntry> {
     use MenuEntry::{Alternate, Item, Separator, Submenu};
 
@@ -453,8 +465,22 @@ pub fn project_menu(
             items.collect(),
         ));
     }
+    match hosts {
+        None => {}
+        Some(0) => menu.push(Item(MenuCommand::RemoteConnect, true)),
+        Some(hosts) => {
+            let mut items: Vec<MenuEntry> = (0..hosts)
+                .map(|i| Item(MenuCommand::RemoteHost(i), true))
+                .collect();
+            items.push(Separator);
+            items.push(Item(MenuCommand::RemoteOther, true));
+            menu.push(Submenu(t!("workspace-remote-submenu").to_owned(), items));
+        }
+    }
+    if connected {
+        menu.push(Item(MenuCommand::RemoteDisconnect, true));
+    }
     menu.push(Item(MenuCommand::CloseFolder, opened));
-    menu.push(Item(MenuCommand::CloseProject, true));
     menu
 }
 
@@ -521,6 +547,13 @@ pub fn zoom_menu() -> Vec<MenuEntry> {
         .collect()
 }
 
+/// 返回「正文宽度」菜单的菜单项，当前的选择打勾。
+pub fn text_width_menu() -> Vec<MenuEntry> {
+    (0..winc_config::TextWidth::ALL.len())
+        .map(|i| MenuEntry::Item(MenuCommand::TextWidth(i), true))
+        .collect()
+}
+
 /// 返回「背景显示方式」菜单的菜单项，当前的选择打勾。
 pub fn background_fit_menu() -> Vec<MenuEntry> {
     (0..winc_config::BackgroundFit::ALL.len())
@@ -563,32 +596,111 @@ pub fn default_shell_menu(shells: usize) -> Vec<MenuEntry> {
     menu
 }
 
-/// 返回字体菜单的菜单项：第一项是「系统默认」（终端字体为「跟随编辑器」），其后是已安装的
-/// 字族，当前的选择打勾。
+/// 字体菜单中直接列出的常用编程字体：各平台自带的等宽字体和常见的开源编程字体，按字母顺序。
 ///
-/// 编辑器和终端的字体直接列出等宽字体，其余字体收进子菜单；界面字体全部直接列出。
-pub fn font_menu(setting: Setting) -> Vec<MenuEntry> {
+/// 系统声明等宽的字体还包括泰文、日文字体和符号字体，全部直接列出时难以找到编程字体，因此只
+/// 直接列出这些，其余的等宽字体排在「其他字体」的最前面。
+pub(crate) const COMMON_FONTS: &[&str] = &[
+    "Cascadia Code",
+    "Cascadia Mono",
+    "Consolas",
+    "Courier New",
+    "DejaVu Sans Mono",
+    "Fira Code",
+    "Hack",
+    "IBM Plex Mono",
+    "Iosevka",
+    "JetBrains Mono",
+    "Liberation Mono",
+    "Menlo",
+    "Monaco",
+    "Roboto Mono",
+    "SF Mono",
+    "Source Code Pro",
+    "Ubuntu Mono",
+];
+
+/// 界面字体菜单中直接列出的常用界面字体：各平台的系统界面字体及其中文字体和常见的开源界面
+/// 字体，按字母顺序。
+pub(crate) const COMMON_UI_FONTS: &[&str] = &[
+    "Cantarell",
+    "DejaVu Sans",
+    "Helvetica Neue",
+    "Hiragino Sans GB",
+    "Inter",
+    "Microsoft YaHei",
+    "Noto Sans",
+    "Noto Sans SC",
+    "PingFang SC",
+    "Roboto",
+    "SF Pro",
+    "Segoe UI",
+    "Source Han Sans SC",
+    "Ubuntu",
+];
+
+/// 返回字体菜单的菜单项：第一项是「系统默认」（终端字体为「跟随编辑器」），其后是已安装的
+/// 字族，当前的选择打勾；最后一组是子菜单「其他字体」和「后备字体」（见 [`fallback_font_menu`]）。
+///
+/// 直接列出已安装的常用字体（编辑器和终端为 [`COMMON_FONTS`]，界面为 [`COMMON_UI_FONTS`]）和
+/// 当前的字体（`current` 中的第一个）。编辑器和终端的「其他字体」中先列其余的等宽字体，再列
+/// 非等宽字体。
+pub fn font_menu(setting: Setting, current: Option<&str>) -> Vec<MenuEntry> {
     use MenuEntry::{Item, Separator, Submenu};
 
     let item = |(i, _)| Item(MenuCommand::Font(i), true);
     let fonts = winc_render::installed_fonts().iter().enumerate();
-    let (first, rest): (Vec<_>, Vec<_>) = if setting != Setting::UiFont {
-        fonts.partition(|(_, family)| family.monospace)
-    } else {
-        (fonts.collect(), Vec::new())
-    };
+    let primary = winc_config::font_list(current).first().copied();
+    let ui = setting == Setting::UiFont;
+    let common = if ui { COMMON_UI_FONTS } else { COMMON_FONTS };
+    let (first, rest): (Vec<_>, Vec<_>) = fonts.partition(|(_, family)| {
+        common.contains(&family.name.as_str()) || primary == Some(family.name.as_str())
+    });
+    let (mono, other): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(_, f)| !ui && f.monospace);
     let mut menu = vec![Item(MenuCommand::FontDefault, true)];
     if !first.is_empty() {
         menu.push(Separator);
         menu.extend(first.into_iter().map(item));
     }
-    if !rest.is_empty() {
-        menu.push(Separator);
-        menu.push(Submenu(
-            t!("settings-font-others").to_owned(),
-            rest.into_iter().map(item).collect(),
-        ));
+    menu.push(Separator);
+    if !mono.is_empty() || !other.is_empty() {
+        let mut others: Vec<MenuEntry> = mono.into_iter().map(item).collect();
+        if !others.is_empty() && !other.is_empty() {
+            others.push(Separator);
+        }
+        others.extend(other.into_iter().map(item));
+        menu.push(Submenu(t!("settings-font-others").to_owned(), others));
     }
+    menu.push(Submenu(
+        t!("settings-font-fallbacks").to_owned(),
+        fallback_font_menu(current),
+    ));
+    menu
+}
+
+/// 返回「后备字体」子菜单的菜单项：第一个字体缺字时依次使用的字体，点击一项即加入或移出字体
+/// 列表。
+///
+/// 已在列表中的字体按列表的顺序排在前面并打勾，其后是其余已安装的字族；第一个字体本身不列出。
+/// 没有设置字体时各项不可用：此时用的是平台默认字体，后备字体由系统决定，要先选择字体。
+pub fn fallback_font_menu(current: Option<&str>) -> Vec<MenuEntry> {
+    use MenuEntry::{Item, Separator};
+
+    let list = winc_config::font_list(current);
+    let (first, listed) = list
+        .split_first()
+        .map_or((None, &[][..]), |(f, l)| (Some(*f), l));
+    let fonts = winc_render::installed_fonts();
+    let index = |name: &str| fonts.iter().position(|family| family.name == name);
+    let chosen: Vec<usize> = listed.iter().filter_map(|&name| index(name)).collect();
+    let item = |i| Item(MenuCommand::FallbackFont(i), first.is_some());
+    let mut menu: Vec<MenuEntry> = chosen.iter().map(|&i| item(i)).collect();
+    let primary = first.and_then(index);
+    let rest = (0..fonts.len()).filter(|&i| !chosen.contains(&i) && Some(i) != primary);
+    if !menu.is_empty() {
+        menu.push(Separator);
+    }
+    menu.extend(rest.map(item));
     menu
 }
 

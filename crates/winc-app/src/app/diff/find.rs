@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::app::scroll::set_scroll_line;
+
 impl App {
     /// 返回当前标签中右侧没有对应工作区文件的差异，例如从 Git 日志打开的提交；
     /// 当前标签不是这类差异时返回 `None`。
@@ -36,10 +38,11 @@ impl App {
         let side = read.map_or(if view.new.missing { LEFT } else { RIGHT }, |s| s.side);
         let selection =
             read.map_or_else(Selection::default, |s| Selection::new(s.range.0, s.range.1));
-        if self.search.snapshot_side(doc) != Some(side) {
-            self.find.pending_jump = None;
+        if self.bars.search.snapshot_side(doc) != Some(side) {
+            self.bars.find.pending_jump = None;
         }
-        self.search
+        self.bars
+            .search
             .update_snapshot(doc, side, &view.side(side).text);
         Some((doc.id, selection))
     }
@@ -67,16 +70,16 @@ impl App {
         let text = &view.side(side).text;
         let (line, col) = text.pos_to_line_col(start);
         let last_line = text.line_of(end.saturating_sub(1).max(start));
-        let parts = diff_parts(self.layout.editor, view, self.cell);
+        let parts = diff_parts(self.layout.editor, view, self.metrics.cell);
         let pane = parts.panes[side].text;
         let cells = |col: usize| winc_core::text::col_to_cell(text.line(line), col, tab_width);
-        let x = cells(col) as f32 * self.cell;
+        let x = cells(col) as f32 * self.metrics.cell;
         // 跨行的匹配只按第一行计算右端。
         let end_col = match text.pos_to_line_col(end) {
             (end_line, end_col) if end_line == line => end_col,
             _ => text.line(line).len_chars(),
         };
-        let x_end = (cells(end_col) as f32 * self.cell).max(x + self.cell);
+        let x_end = (cells(end_col) as f32 * self.metrics.cell).max(x + self.metrics.cell);
         let visible = f64::from(parts.body.h / self.fonts.line_height);
         let covered = if self.layout.search.x < pane.right() && self.layout.search.h > 0.0 {
             f64::from((self.layout.search.bottom() - parts.body.y) / self.fonts.line_height)
@@ -97,17 +100,19 @@ impl App {
         } else {
             (row, view.side_scroll(side, doc.scroll_line, visible))
         };
+        let wrapping = view.is_wrapping();
         if row < top + covered.max(sticky) || row + 1.0 > top + visible {
             let top = (row - visible / 2.0).max(0.0);
-            doc.scroll_line = if view.is_unified() {
+            let row = if view.is_unified() {
                 top
             } else {
                 view.pos_of_top(side, top, visible)
             };
             view.focus = None;
+            set_scroll_line(doc, row);
         }
-        if !view.is_wrapping() {
-            let width = (pane.w - 2.0 * DIFF_TEXT_PAD).max(self.cell);
+        if !wrapping {
+            let width = (pane.w - 2.0 * DIFF_TEXT_PAD).max(self.metrics.cell);
             if x < doc.scroll_x || x_end > doc.scroll_x + width {
                 // 匹配的起点放在中间；匹配较长时右移到能显示其末端，但不越过起点。
                 let centered = (x - width / 2.0).max(0.0);

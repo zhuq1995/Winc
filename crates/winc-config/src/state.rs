@@ -22,6 +22,21 @@ const _: () = assert!(
     "最近列表中的每个目录必须使用不同的颜色"
 );
 
+/// 记住的提交信息的条数上限，与输入框的输入历史相同。
+pub const MAX_COMMIT_MESSAGES: usize = 50;
+
+impl State {
+    /// 把提交过的信息 `message` 记为最新的一条：相同的旧条目移到最前，超过上限时丢掉最旧的。
+    pub fn remember_commit_message(&mut self, message: &str) {
+        if message.is_empty() {
+            return;
+        }
+        self.commit_messages.retain(|m| m != message);
+        self.commit_messages.insert(0, message.to_owned());
+        self.commit_messages.truncate(MAX_COMMIT_MESSAGES);
+    }
+}
+
 /// 由程序维护的运行状态：最近目录、各目录的现场和项目工具选择。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct State {
@@ -31,8 +46,8 @@ pub struct State {
     pub sessions: Vec<Session>,
     /// 上次退出时开着的目录；退出时没有打开目录则为 `None`，下次启动显示开始页。
     pub last: Option<PathBuf>,
-    /// 上次退出时其他项目开着的目录（`last` 是当前项目的），下次启动时各开一个项目；没有
-    /// 打开目录的项目不记录。
+    /// 上次退出时其他窗口开着的目录（`last` 是当前窗口的），下次启动时各开一个窗口；没有
+    /// 打开目录的窗口不记录。
     ///
     /// 只在退出时写入。
     pub others: Vec<PathBuf>,
@@ -40,8 +55,35 @@ pub struct State {
     ///
     /// `false`（默认）时平铺，每个文件一行。所有窗口和仓库共用，下次启动沿用。
     pub commit_tree: bool,
+    /// 提交视图中各组里文件的排序方式：`name` 按文件名，`status` 按更改的类型；为空（默认）时按
+    /// 路径。所有窗口和仓库共用，下次启动沿用。
+    pub commit_sort: String,
+    /// 提交视图是否在当前仓库的更改之后列出打开的目录中其他仓库的更改。
+    ///
+    /// `None`（没有选过）时由提交视图的样式决定：勾选式列出，暂存区视图只显示当前仓库。所有
+    /// 窗口共用，下次启动沿用。
+    pub commit_all_repositories: Option<bool>,
+    /// Git 日志左侧是否显示分支面板；`None`（没有选过）时显示。所有窗口共用，下次启动沿用。
+    pub log_branches: Option<bool>,
+    /// Git 日志列表右边显示的列（`author`、`date`、`hash`）；`None`（没有选过）时显示作者和
+    /// 日期。所有窗口共用，下次启动沿用。
+    pub log_columns: Option<Vec<String>>,
+    /// 提交过的信息，最新的在前，最多 `MAX_COMMIT_MESSAGES` 条。提交信息框里按 `↑` 翻阅，
+    /// 提交按钮的菜单里列出最近的几条；所有窗口和仓库共用，下次启动沿用。
+    pub commit_messages: Vec<String>,
+    /// 提交前检查这次新增的内容里有没有 TODO、FIXME，有时先确认。所有窗口和仓库共用。
+    pub commit_check_todo: bool,
+    /// 提交前用格式化工具整理要提交的文件。所有窗口和仓库共用。
+    pub commit_reformat: bool,
+    /// 提交时附加签署行（`Signed-off-by`）的仓库，元素是仓库的根目录。
+    ///
+    /// 在提交按钮的菜单中逐个仓库打开；所有窗口共用，下次启动沿用。
+    pub sign_off_repos: Vec<PathBuf>,
     /// PDF 预览是否隐藏页面缩略图栏；默认显示。所有窗口共用，下次启动沿用。
     pub pdf_thumbnails_hidden: bool,
+    /// Markdown 预览左侧的标题列表是否钉住、一直展开；默认只在鼠标停留时展开。所有窗口共用，
+    /// 下次启动沿用。
+    pub markdown_toc_pinned: bool,
     /// 侧栏宽度（逻辑像素）；`None` 表示没有调整过。所有视图、窗口和仓库共用，下次启动沿用。
     pub panel_width: Option<f32>,
     /// 能预览的文件（SVG、Markdown、表格）打开时的显示方式：`"split"`（分栏）或 `"preview"`
@@ -50,6 +92,12 @@ pub struct State {
     pub preview_mode: Option<String>,
     /// 上次关闭的窗口的大小和位置；没有记录时为 `None`。
     pub window: Option<WindowFrame>,
+    /// 上次运行的程序的版本号（如 `0.1.626`）；没有记录时为 `None`。启动时与当前版本比较，
+    /// 得知这是否为更新之后的第一次启动。
+    pub version: Option<String>,
+    /// 首次设置（第一次运行时开始页上的语言、外观、主题和模块）是否尚未完成：第一次运行时
+    /// 置位，用户点击「完成」后清除；未完成时下次启动仍然显示。
+    pub setup_pending: bool,
     /// 从磁盘映像等位置运行时不询问是否移到「应用程序」文件夹：用户曾选择不移动并勾选「不再
     /// 询问」。仅在 macOS 上使用。
     pub stay_outside_applications: bool,
@@ -68,6 +116,10 @@ pub struct State {
     ///
     /// 仓库的配置变了（指纹不同）要重新确认。
     trusted_repos: Vec<(PathBuf, u64)>,
+    /// 用户为远端主机指定的密钥文件：（连接目标的文字，密钥文件的路径），按目标排序。
+    ///
+    /// 只记路径，不读取也不保存密钥的内容；路径原样交给 `ssh`。
+    remote_keys: Vec<(String, String)>,
     /// Vim 模式的大写标记：名字、文件路径、行号与列号（都从 0 起），按名字排序。
     pub vim_marks: Vec<(char, PathBuf, usize, usize)>,
     /// Vim 模式命令行的历史，从旧到新，最多 `MAX_VIM_HISTORY` 条。
@@ -122,6 +174,10 @@ pub struct Session {
     ///
     /// 位置记为视口顶边所在的页（页号从 0 起），以及视口顶边到该页顶边的距离与页高之比。
     pub pdf_places: Vec<(PathBuf, (usize, f32))>,
+    /// 各 EPUB 文件的阅读位置，包括当前未打开的文件；位于书的开头的文件不记录。
+    ///
+    /// 位置记为视口顶边所在的顶层块（从 0 起），以及视口顶边到该块上边缘的距离与块高之比。
+    pub book_places: Vec<(PathBuf, (usize, f32))>,
     /// 终端面板；终端里没有标签时为 `None`。
     pub terminal: Option<TerminalSession>,
     /// 选中的运行配置的名字。
@@ -150,6 +206,8 @@ pub struct TerminalSession {
     pub height: f32,
     /// 面板在编辑区右边时的宽度（逻辑像素），0 表示默认值。
     pub width: f32,
+    /// 面板是否最大化（铺满编辑区）。
+    pub maximized: bool,
 }
 
 /// 现场里的一个标签：已保存的文件，或未保存文档的备份。
@@ -294,26 +352,8 @@ impl State {
                         .collect()
                 })
                 .unwrap_or_default();
-            let pdf_places = s
-                .get("pdfPlaces")
-                .and_then(Json::as_object)
-                .map(|files| {
-                    let place = |place: &Json| match place.as_array()? {
-                        [page, at] => {
-                            let page = page.as_number()?;
-                            let at = at.as_number().filter(|n| n.is_finite())?;
-                            (page >= 0.0 && page.fract() == 0.0)
-                                .then_some((page as usize, at as f32))
-                        }
-                        _ => None,
-                    };
-                    files
-                        .iter()
-                        .filter(|(path, _)| !path.is_empty())
-                        .filter_map(|(path, at)| Some((PathBuf::from(path), place(at)?)))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let pdf_places = read_places(s.get("pdfPlaces"));
+            let book_places = read_places(s.get("bookPlaces"));
             let terminal = s.get("terminal").and_then(Json::as_object).and_then(|t| {
                 let number = |key| {
                     t.get(key)
@@ -343,6 +383,7 @@ impl State {
                     open: t.get("open").and_then(Json::as_bool).unwrap_or(false),
                     height: number("height").unwrap_or(0.0) as f32,
                     width: number("width").unwrap_or(0.0) as f32,
+                    maximized: t.get("maximized").and_then(Json::as_bool).unwrap_or(false),
                 })
             });
             Some(Session {
@@ -353,6 +394,7 @@ impl State {
                 outline,
                 folds,
                 pdf_places,
+                book_places,
                 terminal,
                 run: s.get("run").and_then(Json::as_str).map(str::to_owned),
                 sidebar_hidden: (s.get("sidebarHidden").and_then(Json::as_bool)).unwrap_or(false),
@@ -402,6 +444,17 @@ impl State {
             .take(MAX_TOOL_CHOICES)
             .collect();
 
+        let remote_keys = root
+            .get("remoteKeys")
+            .and_then(Json::as_object)
+            .map(|items| {
+                (items.iter())
+                    .filter_map(|(target, key)| Some((target.clone(), key.as_str()?.to_owned())))
+                    .filter(|(_, key)| !key.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let vim_marks = vim_marks(root);
         let vim_commands = vim_history(root, "vimCommands");
         let vim_searches = vim_history(root, "vimSearches");
@@ -411,6 +464,7 @@ impl State {
             badges,
             tool_choices,
             trusted_repos,
+            remote_keys,
             vim_marks,
             vim_commands,
             vim_searches,
@@ -441,10 +495,33 @@ impl State {
             .get("commitTree")
             .and_then(Json::as_bool)
             .unwrap_or(false);
+        state.commit_sort = root
+            .get("commitSort")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        state.commit_all_repositories = root.get("commitAllRepositories").and_then(Json::as_bool);
+        state.log_branches = root.get("logBranches").and_then(Json::as_bool);
+        state.log_columns = (root.get("logColumns").and_then(Json::as_array)).map(|columns| {
+            let names = columns.iter().filter_map(Json::as_str);
+            names.map(str::to_owned).collect()
+        });
+        state.commit_messages = (root.get("commitMessages").and_then(Json::as_array))
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Json::as_str)
+            .filter(|m| !m.is_empty())
+            .take(MAX_COMMIT_MESSAGES)
+            .map(str::to_owned)
+            .collect();
+        state.commit_check_todo = root.get("commitCheckTodo").and_then(Json::as_bool) == Some(true);
+        state.commit_reformat = root.get("commitReformat").and_then(Json::as_bool) == Some(true);
         state.pdf_thumbnails_hidden = root
             .get("pdfThumbnailsHidden")
             .and_then(Json::as_bool)
             .unwrap_or(false);
+        state.markdown_toc_pinned =
+            root.get("markdownTocPinned").and_then(Json::as_bool) == Some(true);
         state.stay_outside_applications = root
             .get("stayOutsideApplications")
             .and_then(Json::as_bool)
@@ -457,6 +534,12 @@ impl State {
             .get("window")
             .and_then(Json::as_object)
             .and_then(window_frame);
+        state.setup_pending = root.get("setupPending").and_then(Json::as_bool) == Some(true);
+        state.version = root
+            .get("version")
+            .and_then(Json::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned);
         state.preview_mode = root
             .get("previewMode")
             .and_then(Json::as_str)
@@ -465,6 +548,11 @@ impl State {
         for path in paths(root.get("otherWindows")) {
             if !state.others.contains(&path) && state.others.len() < MAX_RECENT {
                 state.others.push(path);
+            }
+        }
+        for path in paths(root.get("signOffRepos")) {
+            if !state.sign_off_repos.contains(&path) {
+                state.sign_off_repos.push(path);
             }
         }
 
@@ -516,9 +604,10 @@ impl State {
 
     /// 序列化为 `state.json` 的内容，末尾带一个换行符。
     ///
-    /// `last`、`previewMode` 没有值，`otherWindows`、`toolChoices`、`trustedRepos`、`vimMarks`、
-    /// `vimCommands`、`vimSearches` 为空，`commitTree`、`pdfThumbnailsHidden`、
-    /// `stayOutsideApplications` 为假时省略对应的键。
+    /// `last`、`previewMode` 没有值，`otherWindows`、`signOffRepos`、`toolChoices`、
+    /// `trustedRepos`、`vimMarks`、`vimCommands`、`vimSearches` 为空，`commitTree`、
+    /// `commitAllRepositories`、`pdfThumbnailsHidden`、`stayOutsideApplications` 为假时省略
+    /// 对应的键。
     pub fn to_json(&self) -> String {
         let path = |p: &PathBuf| Json::String(p.to_string_lossy().into_owned());
         let mut fields = vec![(
@@ -539,8 +628,40 @@ impl State {
         if self.commit_tree {
             fields.push(("commitTree", Json::Bool(true)));
         }
+        if !self.commit_sort.is_empty() {
+            fields.push(("commitSort", Json::String(self.commit_sort.clone())));
+        }
+        if !self.sign_off_repos.is_empty() {
+            fields.push((
+                "signOffRepos",
+                Json::Array(self.sign_off_repos.iter().map(path).collect()),
+            ));
+        }
+        if let Some(all) = self.commit_all_repositories {
+            fields.push(("commitAllRepositories", Json::Bool(all)));
+        }
+        if let Some(shown) = self.log_branches {
+            fields.push(("logBranches", Json::Bool(shown)));
+        }
+        if let Some(columns) = &self.log_columns {
+            let names = columns.iter().map(|c| Json::String(c.clone()));
+            fields.push(("logColumns", Json::Array(names.collect())));
+        }
+        if !self.commit_messages.is_empty() {
+            let messages = self.commit_messages.iter().map(|m| Json::String(m.clone()));
+            fields.push(("commitMessages", Json::Array(messages.collect())));
+        }
+        if self.commit_check_todo {
+            fields.push(("commitCheckTodo", Json::Bool(true)));
+        }
+        if self.commit_reformat {
+            fields.push(("commitReformat", Json::Bool(true)));
+        }
         if self.pdf_thumbnails_hidden {
             fields.push(("pdfThumbnailsHidden", Json::Bool(true)));
+        }
+        if self.markdown_toc_pinned {
+            fields.push(("markdownTocPinned", Json::Bool(true)));
         }
         if self.stay_outside_applications {
             fields.push(("stayOutsideApplications", Json::Bool(true)));
@@ -550,6 +671,12 @@ impl State {
         }
         if let Some(mode) = &self.preview_mode {
             fields.push(("previewMode", Json::String(mode.clone())));
+        }
+        if let Some(version) = &self.version {
+            fields.push(("version", Json::String(version.clone())));
+        }
+        if self.setup_pending {
+            fields.push(("setupPending", Json::Bool(true)));
         }
         if let Some(frame) = &self.window {
             let mut window = vec![
@@ -608,13 +735,10 @@ impl State {
                 items.push(("outline", Json::Object(files.collect())));
             }
             if !session.pdf_places.is_empty() {
-                // 比例保留四位小数：一页高 10000 逻辑像素时误差为 1 逻辑像素。
-                let files = session.pdf_places.iter().map(|(file, (page, at))| {
-                    let at = (f64::from(*at) * 1e4).round() / 1e4;
-                    let place = vec![Json::Number(*page as f64), Json::Number(at)];
-                    (file.to_string_lossy().into_owned(), Json::Array(place))
-                });
-                items.push(("pdfPlaces", Json::Object(files.collect())));
+                items.push(("pdfPlaces", write_places(&session.pdf_places)));
+            }
+            if !session.book_places.is_empty() {
+                items.push(("bookPlaces", write_places(&session.book_places)));
             }
             if let Some(t) = &session.terminal {
                 let number = |n: f32| Json::Number(f64::from(n));
@@ -625,6 +749,10 @@ impl State {
                     ("height", number(t.height)),
                     ("width", number(t.width)),
                 ];
+                // 没有最大化时不写。
+                if t.maximized {
+                    fields.push(("maximized", Json::Bool(true)));
+                }
                 // 都没起名字时不写。
                 if t.names.iter().any(|n| !n.is_empty()) {
                     let names = t.names.iter().map(|n| Json::String(n.clone()));
@@ -648,6 +776,11 @@ impl State {
         });
         fields.push(("sessions", Json::Array(sessions.collect())));
 
+        if !self.remote_keys.is_empty() {
+            let keys = (self.remote_keys.iter())
+                .map(|(target, key)| (target.clone(), Json::String(key.clone())));
+            fields.push(("remoteKeys", Json::object(keys)));
+        }
         if !self.tool_choices.is_empty() {
             let choices = self.tool_choices.iter().map(|(folder, run)| {
                 Json::object(vec![("folder", path(folder)), ("run", Json::Bool(*run))])
@@ -731,6 +864,22 @@ impl State {
             self.last = None;
         }
         self.assign_badges();
+    }
+
+    /// 返回用户为连接目标 `target` 指定的密钥文件；没有指定时返回 `None`。
+    pub fn remote_key(&self, target: &str) -> Option<&str> {
+        (self.remote_keys.iter())
+            .find(|(known, _)| known == target)
+            .map(|(_, key)| key.as_str())
+    }
+
+    /// 记下连接目标 `target` 使用的密钥文件 `key`；`key` 为空时去掉这条记录。
+    pub fn set_remote_key(&mut self, target: &str, key: &str) {
+        self.remote_keys.retain(|(known, _)| known != target);
+        if !key.is_empty() {
+            self.remote_keys.push((target.to_owned(), key.to_owned()));
+            self.remote_keys.sort();
+        }
     }
 
     /// 返回 `folder` 中项目自带格式化工具的上次选择：运行该目录中的程序（`true`），
@@ -929,6 +1078,37 @@ fn window_frame(json: &std::collections::BTreeMap<String, Json>) -> Option<Windo
             .and_then(Json::as_bool)
             .unwrap_or(false),
     })
+}
+
+/// 读出各文件的阅读位置（`pdfPlaces`、`bookPlaces`）：每项是文件路径到 `[序号, 比例]`，序号
+/// 为负数或小数、比例不是有限的数、缺少一项的记录跳过。
+fn read_places(value: Option<&Json>) -> Vec<(PathBuf, (usize, f32))> {
+    let place = |place: &Json| match place.as_array()? {
+        [index, at] => {
+            let index = index.as_number()?;
+            let at = at.as_number().filter(|n| n.is_finite())?;
+            (index >= 0.0 && index.fract() == 0.0).then_some((index as usize, at as f32))
+        }
+        _ => None,
+    };
+    (value.and_then(Json::as_object))
+        .map(|files| {
+            (files.iter())
+                .filter(|(path, _)| !path.is_empty())
+                .filter_map(|(path, at)| Some((PathBuf::from(path), place(at)?)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 写出各文件的阅读位置；比例保留四位小数：一页（一块）高 10000 逻辑像素时误差为 1 逻辑像素。
+fn write_places(places: &[(PathBuf, (usize, f32))]) -> Json {
+    let files = places.iter().map(|(file, (index, at))| {
+        let at = (f64::from(*at) * 1e4).round() / 1e4;
+        let place = vec![Json::Number(*index as f64), Json::Number(at)];
+        (file.to_string_lossy().into_owned(), Json::Array(place))
+    });
+    Json::Object(files.collect())
 }
 
 #[cfg(test)]
