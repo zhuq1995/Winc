@@ -123,7 +123,7 @@ impl App {
     ///
     /// 两种方式的记录互不相通：切换后勾选回到默认，暂存区中已有的内容不变。
     pub(in crate::app) fn apply_staging_view(&mut self) {
-        let on = self.config.git_staging_area == Some(true);
+        let on = self.config.git_staging_area != Some(false);
         self.git.commit.set_staging(on);
         self.sync_index_texts();
         // 没有选过「显示全部仓库」时它随样式开关：换到列出其他仓库的样式后读它们的状态。

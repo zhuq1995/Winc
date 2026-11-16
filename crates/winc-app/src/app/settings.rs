@@ -758,7 +758,7 @@ impl App {
             Setting::GitInlineBlame => self.config.git_inline_blame != Some(false),
             Setting::GitAutoFetch => self.config.git_auto_fetch == Some(true),
             Setting::GitTree => !self.git.commit.flat(),
-            Setting::GitStagingArea => self.config.git_staging_area == Some(true),
+            Setting::GitStagingArea => self.config.git_staging_area != Some(false),
             Setting::TerminalModule => self.terminal_enabled(),
             Setting::RemoteModule => self.remote_enabled(),
             Setting::TerminalCopyOnSelect => self.config.terminal_copy_on_select == Some(true),

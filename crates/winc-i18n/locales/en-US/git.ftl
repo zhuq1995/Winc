@@ -43,6 +43,7 @@ git-branch-force-delete-confirm = Branch “{ $name }” isn’t fully merged. D
 git-branch-force-delete-confirm-detail = Commits that exist only on this branch may be lost.
 git-branch-force-delete-confirm-button = Delete Anyway
 git-branch-compare-with-current = Compare with Current Branch
+git-branch-copy-name = Copy Branch Name
 git-stash-group = Stashes
 git-stash-more-files = { $count ->
     [one] { $count } more file
@@ -474,6 +475,7 @@ git-worktree-picker-empty = No matching worktrees
 git-location-main-worktree = Main worktree
 git-location-only-one = This folder has only one repository and worktree
 git-location-new-window = Open in New Window
+git-location-copy-name = Copy Worktree Name
 git-location-remove = Remove Worktree…
 git-location-prune = Prune Stale Worktrees
 git-location-new-worktree-in = New Worktree in “{ $repository }”

@@ -248,7 +248,7 @@ pub fn run() {
     app.git.commit.set_sort(sort);
     app.git
         .commit
-        .set_staging(app.config.git_staging_area == Some(true));
+        .set_staging(app.config.git_staging_area != Some(false));
     app.editor.diff_unified = app.config.diff_inline == Some(true);
     app.state = state;
     app.restore_panel_width();

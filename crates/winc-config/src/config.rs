@@ -201,8 +201,8 @@ pub struct Config {
     /// 是否定时在后台获取远程仓库的更新，默认为否：获取会连接远程，需要认证的远程可能每次都
     /// 要求操作。
     pub git_auto_fetch: Option<bool>,
-    /// 提交视图是否显示暂存区：分出「已暂存的更改」一组，各项的状态取自暂存区；默认为否，
-    /// 用勾选决定提交的内容。
+    /// 提交视图是否显示暂存区：分出「已暂存的更改」一组，各项的状态取自暂存区；默认为是，
+    /// 关掉后改用勾选决定提交的内容。
     pub git_staging_area: Option<bool>,
     /// 在打开的目录下查找仓库的层数，默认见 [`Config::REPOSITORY_SCAN_DEPTH`]，可用范围见
     /// [`Config::REPOSITORY_SCAN_DEPTH_RANGE`]。

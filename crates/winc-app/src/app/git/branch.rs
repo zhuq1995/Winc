@@ -39,15 +39,18 @@ pub enum BranchOp {
     Delete,
     /// 和当前分支比较：打开日志，列出从当前分支到它改了的文件。
     Compare,
+    /// 把分支名复制到剪贴板，不改仓库。
+    CopyName,
 }
 
 impl BranchOp {
-    /// 操作菜单的各组，顺序就是菜单里的顺序：切换和新建、比较、合到当前分支、删除。
-    const GROUPS: [&[BranchOp]; 4] = [
+    /// 操作菜单的各组，顺序就是菜单里的顺序：切换和新建、比较、合到当前分支、删除、复制分支名。
+    const GROUPS: [&[BranchOp]; 5] = [
         &[BranchOp::Checkout, BranchOp::NewWorktree, BranchOp::NewFrom],
         &[BranchOp::Compare],
         &[BranchOp::Merge, BranchOp::Rebase],
         &[BranchOp::Rename, BranchOp::Delete],
+        &[BranchOp::CopyName],
     ];
 
     /// 菜单里的文字：不写分支名。菜单是从这个分支的那一行弹出来的，另一边总是当前分支。
@@ -61,6 +64,7 @@ impl BranchOp {
             BranchOp::Rename => t!("git-branch-rename"),
             BranchOp::Delete => t!("git-branch-delete"),
             BranchOp::Compare => t!("git-branch-compare-with-current"),
+            BranchOp::CopyName => t!("git-branch-copy-name"),
         }
     }
 }
@@ -316,7 +320,7 @@ pub(crate) fn branch_ops(
             .copied()
             .filter(|op| match op {
                 // 当前分支不能签出、合并、变基、删除自己。
-                _ if branch.current => matches!(op, BranchOp::Rename),
+                _ if branch.current => matches!(op, BranchOp::Rename | BranchOp::CopyName),
                 // 已经在其他工作树里签出着、又是当前分支（`origin/main` 在 `main` 上）：
                 // 不能再签出该分支。
                 BranchOp::NewWorktree => {
@@ -526,6 +530,7 @@ impl App {
             BranchOp::Rename => self.open_rename_prompt(name),
             BranchOp::Delete => self.confirm_delete_branch(name),
             BranchOp::Compare => self.git_compare_branch(&name),
+            BranchOp::CopyName => self.set_clipboard(name, false),
         }
     }
 

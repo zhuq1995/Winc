@@ -926,7 +926,7 @@ impl Winc {
         app.git.commit.set_sort(sort);
         app.git
             .commit
-            .set_staging(app.config.git_staging_area == Some(true));
+            .set_staging(app.config.git_staging_area != Some(false));
         app.restore_panel_width();
         app.editor.diff_unified = app.config.diff_inline == Some(true);
         app.apply_preview_state();

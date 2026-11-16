@@ -135,6 +135,8 @@ pub enum MenuCommand {
     LocationNewWindow,
     /// 位置选择器的操作菜单：在系统的文件管理器里显示。
     LocationReveal,
+    /// 位置选择器的操作菜单：复制工作树的目录名。
+    LocationCopyName,
     /// 位置选择器的操作菜单：移除这个工作树。
     LocationRemove,
     /// 位置选择器的操作菜单：清理目录已不存在的工作树。
@@ -475,6 +477,7 @@ impl MenuCommand {
                 .map_or("", |&choice| crate::layout::option_as_meta_label(choice)),
             MenuCommand::NewWorktree => t!("menu-new-worktree"),
             MenuCommand::LocationNewWindow => t!("git-location-new-window"),
+            MenuCommand::LocationCopyName => t!("git-location-copy-name"),
             MenuCommand::LocationRemove => t!("git-location-remove"),
             // 文字来自当时的分支和位置（`App::menu_label`）。
             MenuCommand::StatusPlace(_) => "",
