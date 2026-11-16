@@ -232,7 +232,9 @@ impl App {
                 self.git.status.as_ref()?.entries.get(i)?.path.clone()
             }
             // 目录：菜单作用于它下面的各个文件（都已在选区里时作用于整个选区）。
-            CommitTarget::Dir(row) | CommitTarget::DirCheck(row) => {
+            CommitTarget::Dir(row)
+            | CommitTarget::DirCheck(row)
+            | CommitTarget::DirStage(row, _) => {
                 let files = self.commit_dir_files(row);
                 let first = files.first()?.clone();
                 if !files.iter().all(|f| self.commit_is_selected(f)) {

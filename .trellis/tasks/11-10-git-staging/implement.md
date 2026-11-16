@@ -1,5 +1,16 @@
 # 实施计划：Git 暂存管理
 
+## 目录按钮修复
+
+- 开发分支：`feat/restore-directory-staging`，集成目标：`dev`；本节限定目录批量暂存入口。
+- [x] 目录行新增 `DirStage` 命中，复用 `stage_paths` 与现有暂存队列；按当前组展开折叠子目录。
+- [x] 接入普通与顶部固定目录的悬停、图标、提示、长名展开和菜单；历史、勾选式与冲突目录隐藏按钮。
+- [x] 跨平台回归模块覆盖真实 Git 索引、鼠标点击、组边界、首次提交前取消暂存和过期命中。
+- [x] 运行 `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test -p winc-app`，记录执行平台与审阅结果。
+- [x] 将目录入口与测试路径补入功能保留清单，提交本次修复并合回 `dev`。
+- 检查平台：Windows。格式检查与 workspace Clippy（`-D warnings`）通过；`cargo test -p winc-app` 为 769 通过、88 忽略。目录模块 6 个用例运行真实 Git，包含长名与固定目录被部分推出时的可见范围和点击。
+- 本轮包含目录控件、当前组批量范围与保留清单；原任务的其他平台和视觉验收状态沿用下文。
+
 ## 实施前门槛
 
 - [ ] 用户在最终规划摘要之后明确批准实施。

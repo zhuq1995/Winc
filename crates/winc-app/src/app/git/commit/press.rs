@@ -15,6 +15,7 @@ impl App {
                 | CommitTarget::StageFile(..)
                 | CommitTarget::Dir(_)
                 | CommitTarget::DirCheck(_)
+                | CommitTarget::DirStage(..)
                 | CommitTarget::Stash(_)
                 | CommitTarget::StashFile(_)
                 | CommitTarget::StashApply(_)
@@ -48,6 +49,7 @@ impl App {
             | CommitTarget::GroupRevert(_)
             | CommitTarget::Dir(_)
             | CommitTarget::DirCheck(_)
+            | CommitTarget::DirStage(..)
             | CommitTarget::Check(_)
             | CommitTarget::File(_)
             | CommitTarget::Sticky(..)
@@ -254,6 +256,26 @@ impl App {
                 if let Some(path) = self.commit_entry(i).map(|e| e.path.clone()) {
                     self.stage_paths(&[path], on);
                 }
+            }
+            CommitTarget::DirStage(row, on) => {
+                let rows = self.commit_rows();
+                let (Some(CommitRow::Dir { group, dir, .. }), Some(status)) =
+                    (rows.get(row), self.git.status.as_ref())
+                else {
+                    return;
+                };
+                if !self.git.commit.staging()
+                    || *group == CommitGroup::Conflicts
+                    || on != (*group != CommitGroup::Staged)
+                {
+                    return;
+                }
+                let paths: Vec<PathBuf> = rows
+                    .dir(*group, dir)
+                    .iter()
+                    .map(|&i| status.entries[i].path.clone())
+                    .collect();
+                self.stage_paths(&paths, on);
             }
             CommitTarget::GroupStage(group) => {
                 let Some(status) = self.git.status.as_ref() else {

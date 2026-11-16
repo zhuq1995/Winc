@@ -254,8 +254,24 @@ fn draw_dir_row(
     let level = depth + 1;
     let hovered = matches!(
         app.pointer.hover,
-        Hover::Commit(CommitTarget::Dir(r) | CommitTarget::DirCheck(r)) if r == i
+        Hover::Commit(
+            CommitTarget::Dir(r) | CommitTarget::DirCheck(r)
+            | CommitTarget::DirStage(r, _) | CommitTarget::Sticky(r, _)
+        ) if r == i
     );
+    let action =
+        (hovered && r.staging && !r.browse && group != CommitGroup::Conflicts).then(|| {
+            full.and_then(|o| o.dir_action)
+                .unwrap_or_else(|| file_actions(band).1)
+        });
+    let text_clip = action.map_or(text_clip, |button| {
+        text_clip.intersect(Rect::new(
+            list.x,
+            y,
+            (button.x - 4.0 - list.x).max(0.0),
+            COMMIT_ROW,
+        ))
+    });
     // 多选时下面的文件都选中了：画成选中状态。
     let members = rows.dir(group, dir);
     // 选中的文件比目录下面的少时不可能都选中，不必逐个查。
@@ -276,6 +292,10 @@ fn draw_dir_row(
         .commit
         .names
         .sync(&key, cause, &parts, shown_width(width, room));
+    let action = action.map(|rect| {
+        let lag = (width - view.width).max(0.0);
+        Rect::new(rect.x - lag, rect.y, rect.w, rect.h)
+    });
     let retracting = !wanted && view.progress < 1.0 && text_x + view.width > text_clip.right();
     let color = if retracting {
         retracting_color(p, is_selected, focused, view.progress)
@@ -311,6 +331,14 @@ fn draw_dir_row(
     } else {
         text_clip
     };
+    let name_clip = action.map_or(name_clip, |button| {
+        name_clip.intersect(Rect::new(
+            list.x,
+            y,
+            (button.x - 4.0 - list.x).max(0.0),
+            COMMIT_ROW,
+        ))
+    });
     draw_name(
         app,
         frame,
@@ -318,6 +346,15 @@ fn draw_dir_row(
         (&parts, &view),
         name_clip,
     );
+    if let Some(rect) = action {
+        let target = CommitTarget::DirStage(i, group != CommitGroup::Staged);
+        let on = app.pointer.hover == Hover::Commit(target);
+        draw_button(frame, p, rect, list, on, false);
+        let color = if on { p.text } else { p.text_muted };
+        draw_action_icon(frame, target, center(rect), color, list);
+        let clip = full.map_or(list, |overflow| overflow.clip);
+        hits.push((rect.intersect(clip), target));
+    }
     if let Some(spill) = spill {
         // 显示全名的这一行覆盖列表右边的滚动条（见 `draw_commit_overflow`）：行底色右边到
         // 侧栏边缘的区域同样属于这一行，鼠标移入时全名保持显示。

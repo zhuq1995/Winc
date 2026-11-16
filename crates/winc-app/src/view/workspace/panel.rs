@@ -1000,11 +1000,16 @@ pub(in crate::view) fn tooltip(app: &App) -> Option<(Rect, String)> {
             };
             Some((rect, label.to_owned()))
         }
-        Hover::Commit(target @ (CommitTarget::StageFile(..) | CommitTarget::GroupStage(_))) => {
+        Hover::Commit(
+            target @ (CommitTarget::StageFile(..)
+            | CommitTarget::DirStage(..)
+            | CommitTarget::GroupStage(_)),
+        ) => {
             let rect = app.hits.commit.iter().find(|(_, t)| *t == target)?.0;
             let unstage = matches!(
                 target,
                 CommitTarget::StageFile(_, false)
+                    | CommitTarget::DirStage(_, false)
                     | CommitTarget::GroupStage(crate::app::CommitGroup::Staged)
             );
             let label = if unstage {

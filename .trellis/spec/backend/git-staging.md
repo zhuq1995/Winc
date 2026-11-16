@@ -30,7 +30,9 @@ pub fn commit(&self, root: &Path, message: &str, amend: bool) -> Result<String, 
 
 ## 3. 契约
 
-- **行内入口**：组标题、目录、文件行最右是 ＋／−（`GroupStage`／`DirStage`／`FileStage`），悬停时出现；暂存区没有回滚按钮（− 即撤回到更改区），整组回滚只在更改区。命中区域存在 `App::hits.commit`（`crates/winc-app/src/app/hits.rs`），不另建字段。
+- **行内入口**：组标题、目录、文件行最右是 ＋／−（`GroupStage`／`DirStage`／`StageFile`），悬停时出现；暂存区没有回滚按钮（− 即撤回到更改区），整组回滚只在更改区。命中区域存在 `App::hits.commit`（`crates/winc-app/src/app/hits.rs`），不另建字段。
+- **目录批量范围**：`CommitTarget::DirStage(row, on)` 通过 `commit_rows().dir(group, dir)` 取得当前组内的全部成员，包含折叠的子目录；复用 `App::stage_paths` 排队写入。已暂存组使用 −，更改与未跟踪组使用 ＋；浏览历史、勾选式与冲突目录不提供此按钮。绘制后的状态代次变化时拒绝旧命中，名称裁剪、悬停提示与鼠标移入按钮后的命中保持一致。
+- **目录长名与固定行**：暂存按钮跟在展开后的目录全名之后；`CommitOverflow::dir_action` 保存终点，列表内外的文字与按钮采用相同的展开进度和裁剪边界。按钮命中先于目录溢出命中；顶部固定目录按固定行的纵向范围裁剪，保留侧栏外按钮的横向命中。
 - **行身份**：`(仓库根目录, CommitGroup, 路径)`。同一路径可以同时出现在“已暂存的更改”和“更改”，禁止用 `Status::entries` 下标或单独路径区分。改名条目还带 `Entry::from`，整文件操作覆盖新旧两个路径。
 - **分组**：合并更改（有冲突时）／已暂存的更改（`staged.is_some()`）／更改（`unstaged.is_some()`）。未跟踪未忽略文件在“更改”。
 - **差异基准**：已暂存 = `HEAD` ↔ `index_content`，只读；更改 = `index_content` ↔ 当前文档或磁盘。`HEAD` 不变而 index 变化时也要刷新两侧。
@@ -73,6 +75,7 @@ pub fn commit(&self, root: &Path, message: &str, amend: bool) -> Result<String, 
 - 特殊字符路径：`partial_staging_does_not_touch_files_with_similar_names`。
 - 空暂存提交：`committing_an_unsaved_document_saves_it_before_staging`。
 - 双组身份与唯一基准：`a_file_staged_in_the_terminal_appears_in_both_groups`。
+- 目录按钮、组内范围与折叠后批量操作：`crates/winc-app/src/app/snapshot/directory_staging.rs` 在各平台直接编译，使用离屏鼠标点击与真实 Git 索引断言，覆盖首次提交前取消暂存、过期命中、历史与勾选式视图、临界长度与超出侧栏的目录名，以及顶部固定目录的按钮点击。
 
 测试仓库在 `git init` 后设置 `core.autocrlf=false`，不依赖本机全局配置。
 
