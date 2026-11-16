@@ -651,6 +651,8 @@ pub const ISLAND_GAP: f32 = 6.0;
 /// 顶栏下边缘的纵坐标：卡片上方的留白加顶栏高度。
 pub const TOP_BAR_END: f32 = ISLAND_MARGIN + TOP_BAR;
 /// 状态栏高度。
+/// 项目列表的宽度：只在开着多个项目时占位置（见 `App::projects_width`）。
+pub const PROJECTS_WIDTH: f32 = 190.0;
 pub const STATUS_HEIGHT: f32 = 26.0;
 /// 侧栏第二行（项目、分支和当前视图的工具）的高度。
 pub const SIDEBAR_HEADER: f32 = 32.0;

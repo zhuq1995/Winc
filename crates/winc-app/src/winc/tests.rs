@@ -43,6 +43,11 @@ impl Winc {
         self.window_for(targets)
     }
 
+    /// 测试用：执行重排请求（`after_event` 里由事件循环执行）。
+    pub(crate) fn move_project_for_test(&mut self, key: WindowKey, index: usize) {
+        self.move_project(key, index);
+    }
+
     /// 测试用：记下其他窗口开着的目录。
     pub(crate) fn remember_windows_for_test(&mut self) {
         self.remember_windows();

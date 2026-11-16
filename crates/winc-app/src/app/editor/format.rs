@@ -129,6 +129,11 @@ impl FormatState {
         self.next_id += 1;
         self.next_id
     }
+
+    /// 是否有文档正在格式化后再保存（保存、关闭请求要等它结束）。
+    pub(in crate::app) fn save_pending(&self) -> bool {
+        !self.saving.is_empty()
+    }
 }
 
 /// 一次格式化在选好工具之后要用到的内容。
@@ -842,7 +847,10 @@ impl App {
         }
         if let Some(prompt) = closing {
             self.save_then_close(prompt);
+            return;
         }
+        // 保存结束：等这次格式化而推迟的关闭可以继续。
+        self.resume_deferred_close();
     }
 
     /// 是否已把格式化结果 `changes`（相对于送去格式化时的内容 `sent`）应用到文档 `id`。

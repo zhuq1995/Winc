@@ -469,3 +469,4 @@ workspace-stdin-read-failed = Couldn’t read standard input: { $error }
 workspace-stdin-truncated = Only the first { $size } MB of standard input was read
 workspace-backup-locked = This folder is open in another Winc window; unsaved changes in this window won’t be backed up automatically
 workspace-backup-failed = Couldn’t back up unsaved changes: { $error }
+workspace-projects-start-page = Start Page

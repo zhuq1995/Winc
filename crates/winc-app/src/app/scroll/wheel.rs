@@ -155,6 +155,20 @@ impl App {
         self.scroll_by_wheel(delta, false);
     }
 
+    /// 滚动项目列表：`dy` 为向上的滚动量（逻辑像素）。
+    fn scroll_projects(&mut self, dy: f32) {
+        let len = self.link.shared.projects().len();
+        let max = crate::layout::projects_max_scroll(len, self.layout.projects.h);
+        let scroll = (self.projects_scroll - dy).clamp(0.0, max);
+        if scroll != self.projects_scroll {
+            self.projects_scroll = scroll;
+            self.projects_hits.clear();
+            self.projects_close.clear();
+            self.set_hover(Hover::None);
+            self.request_redraw();
+        }
+    }
+
     /// 处理滚轮事件 `delta`：滚动鼠标所在区域对应的内容。
     ///
     /// `gesture` 为 `true` 时触控板的滚动在整个手势中只沿手势开始时的主方向（见
@@ -194,6 +208,17 @@ impl App {
         }
         let (dx, dy) = axis.keep(dx, dy);
 
+        // 项目列表自己滚动：条目不与下方部件共用滚动位置。
+        if !self.overlays.picker.open
+            && self
+                .layout
+                .projects
+                .contains(self.pointer.mouse.0, self.pointer.mouse.1)
+        {
+            self.scroll_projects(dy);
+            self.pace_wheel_frame();
+            return;
+        }
         let origin = self.pointer.mouse;
         let target = self.scroll_target_at(origin.0, origin.1);
         // 滚轮和触控板由用户直接控制：该区域的跳转过渡停在屏幕上显示的位置，从该位置继续。

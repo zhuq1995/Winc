@@ -4,6 +4,11 @@ use super::*;
 
 use crate::app::scroll::set_scroll_line;
 
+use crate::layout::{PROJECT_GAP, PROJECT_PAD, PROJECT_ROW};
+
+/// 拖动项目条目前需要移动的距离（逻辑像素）：小于它时按点击处理。
+const PROJECT_DRAG_THRESHOLD: f32 = 4.0;
+
 impl App {
     /// 处理鼠标移动到窗口坐标 (`x`, `y`)（逻辑像素）：更新悬停、指针样式和进行中的拖动。
     pub(in crate::app) fn on_mouse_move(&mut self, x: f32, y: f32) {
@@ -74,6 +79,35 @@ impl App {
         }
         self.drag_terminal_tab(x);
 
+        // 拖动项目条目：超过阈值后才算拖动，落点按列表的滚动位置换算；拖动期间不更新悬停。
+        if let Drag::Project {
+            key,
+            start_y,
+            from,
+            drop,
+        } = self.pointer.drag
+        {
+            if drop.is_none() && (y - start_y).abs() < PROJECT_DRAG_THRESHOLD {
+                return;
+            }
+            let count = self.link.shared.projects().len();
+            let top = self.layout.projects.y + PROJECT_PAD - self.projects_scroll;
+            let gap = ((y - top) / (PROJECT_ROW + PROJECT_GAP)).round();
+            let gap = gap.clamp(0.0, count as f32) as usize;
+            let target = (gap != from && gap != from + 1).then_some(gap);
+            if target != drop {
+                self.pointer.drag = Drag::Project {
+                    key,
+                    start_y,
+                    from,
+                    drop: target,
+                };
+                self.request_redraw();
+            }
+            self.update_cursor_icon();
+            return;
+        }
+
         self.set_hover(self.hover_at(x, y));
         let code = self
             .hits
@@ -91,6 +125,8 @@ impl App {
 
         match self.pointer.drag {
             Drag::Picture { at } => self.drag_picture(x, y, at),
+            // 项目条目的拖动已在上面处理，落点不取决于鼠标位置以外的状态。
+            Drag::Project { .. } => {}
             Drag::TerminalSelect | Drag::TerminalMouse(_) => self.terminal_mouse_drag(x, y),
             Drag::None if self.layout.terminal.contains(x, y) => self.terminal_mouse_hover(x, y),
             Drag::Select { by_word, origin } => self.drag_select(x, y, by_word, origin),

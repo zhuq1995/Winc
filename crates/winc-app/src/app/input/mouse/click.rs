@@ -27,6 +27,42 @@ impl App {
             return;
         }
 
+        // 项目列表：按住条目开始拖动，松开时按是否移动决定切换还是重排；点右端的 ✕ 关掉那个项目
+        // （先切过去，让它的确认显示在窗口里）。列表之外的区域不受影响。
+        if l.projects.contains(x, y) {
+            if matches!(button, MouseButton::Middle | MouseButton::Right) {
+                return;
+            }
+            if button == MouseButton::Left {
+                if self.overlays.picker.open {
+                    self.close_picker();
+                    return;
+                }
+                if let Some(target) = self.project_at(x, y) {
+                    match target {
+                        Hover::Project(key) => {
+                            if let Some(from) = self.projects_keys.iter().position(|k| *k == key) {
+                                self.pointer.drag = Drag::Project {
+                                    key,
+                                    start_y: y,
+                                    from,
+                                    drop: None,
+                                };
+                            }
+                        }
+                        Hover::ProjectClose(key) => {
+                            self.link
+                                .shared
+                                .request(crate::winc::Request::CloseProject(key));
+                        }
+                        _ => {}
+                    }
+                    self.set_hover(target);
+                }
+                return;
+            }
+        }
+
         // 鼠标侧面的两个键：后退、前进。
         if matches!(button, MouseButton::Back | MouseButton::Forward) {
             if !self.settings.open && self.overlays.form_dialog.is_none() {

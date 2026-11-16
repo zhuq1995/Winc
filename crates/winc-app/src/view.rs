@@ -103,6 +103,9 @@ pub fn draw(app: &mut App, frame: &mut Frame<'_>) {
 
     app.begin_scrollbars();
 
+    if layout.projects.w > 0.0 {
+        workspace::projects::draw_projects(app, frame);
+    }
     if layout.sidebar.right() > 0.0 {
         draw_sidebar(app, frame);
     }

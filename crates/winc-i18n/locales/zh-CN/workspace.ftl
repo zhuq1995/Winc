@@ -388,3 +388,4 @@ workspace-stdin-read-failed = 无法读取标准输入：{ $error }
 workspace-stdin-truncated = 仅读取了标准输入的前 { $size } MB
 workspace-backup-locked = 此目录已在另一个 Winc 窗口中打开，此窗口未保存的修改不会自动备份
 workspace-backup-failed = 无法备份未保存的修改：{ $error }
+workspace-projects-start-page = 开始页

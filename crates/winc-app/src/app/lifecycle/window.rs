@@ -64,6 +64,163 @@ impl App {
         }
     }
 
+    /// 项目列表的宽度：只有一个项目时没有可切换的对象，列表不占位置，界面与没有项目列表时一样。
+    pub(crate) fn projects_width(&self) -> f32 {
+        if self.link.shared.projects().len() > 1 {
+            crate::theme::PROJECTS_WIDTH
+        } else {
+            0.0
+        }
+    }
+
+    /// 是否已经接上系统窗口和渲染资源（[`App::put_window`]）。
+    pub(crate) fn has_window(&self) -> bool {
+        self.window.handle.is_some() && self.frame.renderer.is_some()
+    }
+
+    /// 取出窗口交接时保留的状态，并把本项目当作离开窗口处理。
+    pub(in crate::app) fn take_window_state(&mut self) -> crate::winc::ShellState {
+        self.note_window_frame();
+        let state = crate::winc::ShellState {
+            frame: self.window.frame,
+            controls: self.window.controls,
+            modifiers: self.pointer.modifiers,
+            option_side: self.pointer.option_side,
+            mouse: self.pointer.mouse,
+            cursor_inside: self.pointer.cursor_inside,
+            cursor_icon: self.pointer.cursor_icon,
+            dark: self.palette.dark,
+        };
+        // 切走等于离开窗口：开启了自动保存时先保存有修改的文件。
+        let ids: Vec<DocumentId> = self
+            .editor
+            .documents
+            .iter()
+            .filter(|doc| doc.is_dirty())
+            .map(|doc| doc.id)
+            .collect();
+        self.auto_save(&ids);
+        self.blur_terminal_tab();
+        self.window.focused = false;
+        self.set_recording(false);
+        self.drop_drags();
+        self.set_hover(Hover::None);
+        self.pointer.cursor_inside = false;
+        self.overlays.tooltip.since = None;
+        self.overlays.tooltip.shown = false;
+        self.ime.preedit.clear();
+        self.ime.field_preedit.clear();
+        self.ime.cursor = None;
+        self.ime.last_area = None;
+        state
+    }
+
+    /// 把交接来的状态设回本项目：主题、焦点和前后台按本项目重算。
+    pub(in crate::app) fn put_window_state(
+        &mut self,
+        state: crate::winc::ShellState,
+        focused: bool,
+    ) {
+        self.window.frame = state.frame;
+        self.window.controls = state.controls;
+        self.pointer.modifiers = state.modifiers;
+        self.pointer.option_side = state.option_side;
+        self.pointer.mouse = state.mouse;
+        self.pointer.cursor_inside = state.cursor_inside;
+        self.pointer.cursor_icon = state.cursor_icon;
+        self.ime.preedit.clear();
+        self.ime.field_preedit.clear();
+        self.window.focused = focused;
+        let theme = match self.theme_choice {
+            ThemeChoice::Dark => Theme::Dark,
+            ThemeChoice::Light => Theme::Light,
+            ThemeChoice::Auto if state.dark => Theme::Dark,
+            ThemeChoice::Auto => Theme::Light,
+        };
+        self.set_theme(theme);
+        self.update_foreground(focused && !self.window.occluded);
+        if focused {
+            self.terminal_window_focused();
+        }
+        self.after_terminal_frame();
+    }
+
+    /// 取出系统窗口和渲染资源，交给另一个项目（[`App::put_window`]）。
+    ///
+    /// 编辑器、终端和后台任务都留在本项目里继续运行，只是不再绘制、不再收到窗口事件。
+    pub(crate) fn take_window(&mut self) -> Option<crate::winc::Shell> {
+        if !self.has_window() {
+            return None;
+        }
+        let state = self.take_window_state();
+        let window = self.window.handle.take()?;
+        let renderer = self.frame.renderer.take()?;
+        window.set_ime_allowed(false);
+        Some(crate::winc::Shell {
+            state,
+            window,
+            renderer,
+            #[cfg(target_os = "macos")]
+            traffic_lights: self.link.traffic_lights.take(),
+            #[cfg(target_os = "macos")]
+            display_link: self.frame.display_link.take(),
+            #[cfg(windows)]
+            display_link: self.frame.display_link.take(),
+            occluded: self.window.occluded,
+        })
+    }
+
+    /// 接上 [`App::take_window`] 取出的窗口和渲染资源：按本项目当前的状态重排、重画，并显示窗口。
+    pub(crate) fn put_window(&mut self, shell: crate::winc::Shell) {
+        let window = shell.window.clone();
+        self.window.handle = Some(shell.window);
+        self.frame.renderer = Some(shell.renderer);
+        #[cfg(target_os = "macos")]
+        {
+            self.link.traffic_lights = shell.traffic_lights;
+            self.frame.display_link = shell.display_link;
+        }
+        #[cfg(windows)]
+        {
+            self.frame.display_link = shell.display_link;
+        }
+        self.window.occluded = shell.occluded;
+        self.window.hidden = false;
+        let mut state = shell.state;
+        let theme = super::appearance::forced_theme(&self.theme_choice);
+        window.set_theme(theme);
+        if self.theme_choice == ThemeChoice::Auto
+            && let Some(theme) = theme.or_else(|| window.theme())
+        {
+            state.dark = theme == Theme::Dark;
+        }
+        self.put_window_state(state, window.has_focus());
+        window.set_ime_allowed(true);
+        self.measure_fonts();
+        self.sync_zoom();
+        self.update_window_title();
+        self.place_traffic_lights();
+        self.relayout();
+        if self.pointer.cursor_inside {
+            self.update_cursor_icon();
+        }
+        self.ensure_caret_visible();
+        self.reset_blink();
+        // 先画好一帧再显示，切换时不会先露出上一个项目的画面。
+        self.request_redraw();
+        self.redraw();
+        window.set_minimized(false);
+        window.set_visible(true);
+        window.focus_window();
+    }
+
+    /// 没有可交接的窗口（进程里的第一个项目）：窗口由 [`crate::winc::Winc`] 调用 `resumed` 建立。
+    pub(crate) fn wake_window(&mut self) {
+        if self.has_window() {
+            self.request_redraw();
+        }
+    }
+
     /// 设置窗口标题（程序坞和「窗口」菜单中显示的名字）。
     ///
     /// `AppKit` 修改标题时会重排标题栏并把那三个控制按钮恢复到默认位置，因此随后重新摆放
@@ -301,6 +458,7 @@ impl App {
         self.layout = Layout::compute(
             w,
             h,
+            self.projects_width(),
             panel,
             shown,
             rows,

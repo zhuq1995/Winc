@@ -50,6 +50,27 @@ impl App {
             self.release_tab();
         }
 
+        // 项目条目：松开时按落点重排；没有拖动（或在原位松开）时照旧切换过去。
+        if button == MouseButton::Left
+            && let Drag::Project {
+                key, from, drop, ..
+            } = self.pointer.drag
+        {
+            match drop {
+                Some(gap) => {
+                    let len = self.link.shared.projects().len();
+                    let index = if gap > from { gap - 1 } else { gap };
+                    let index = index.min(len.saturating_sub(1));
+                    self.link
+                        .shared
+                        .request(crate::winc::Request::MoveProject(key, index));
+                }
+                None => self.link.shared.request(crate::winc::Request::Focus(key)),
+            }
+            self.pointer.drag = Drag::None;
+            self.request_redraw();
+        }
+
         if matches!(button, MouseButton::Left | MouseButton::Middle)
             && let Some(id) = self.pointer.close_pressed.take()
             && let Some((index, _)) = self.tab_at(self.pointer.mouse.0, self.pointer.mouse.1)

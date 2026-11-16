@@ -540,6 +540,10 @@ pub enum Hover {
     Log(git::log::LogTarget),
     /// 逐行追溯栏中的一行，参数为行序号（从 0 起）。
     Blame(usize),
+    /// 项目列表中的一个条目。
+    Project(crate::winc::WindowKey),
+    /// 项目条目右端的关闭按钮。
+    ProjectClose(crate::winc::WindowKey),
 }
 
 impl Hover {
@@ -721,6 +725,16 @@ enum Drag {
         unit: diff::SelectUnit,
         origin: (usize, usize),
     },
+    /// 拖动项目列表中的条目：按下处的鼠标纵坐标、条目序号，以及当前落点的间隙序号。
+    ///
+    /// 间隙序号 `0` 表示第一个条目之前，项目数表示最后一个条目之后；落点等于条目原位时
+    /// `drop` 为 `None`。
+    Project {
+        key: crate::winc::WindowKey,
+        start_y: f32,
+        from: usize,
+        drop: Option<usize>,
+    },
 }
 
 /// 一次鼠标按下的记录，用于识别连击。
@@ -825,6 +839,16 @@ pub struct App {
     // 布局，以及绘制时记录、点击时使用的几何
     /// 上一帧的布局：各区域的位置与大小，点击时据此确定点击目标。
     pub layout: Layout,
+    /// 项目列表中每个条目的可点击区域与对应的项目。
+    pub(crate) projects_hits: Vec<(Rect, crate::winc::WindowKey)>,
+    /// 项目条目右端关闭按钮的区域与对应的项目。
+    pub(crate) projects_close: Vec<(Rect, crate::winc::WindowKey)>,
+    /// 上一帧项目列表中各项目的编号，按显示顺序。
+    pub(crate) projects_keys: Vec<crate::winc::WindowKey>,
+    /// 项目列表的滚动位置（逻辑像素）。
+    pub(crate) projects_scroll: f32,
+    /// 切换项目后把当前项目滚到可见范围内。
+    pub(crate) projects_reveal: bool,
     /// 标签栏的标签和滚动状态。
     pub tabs: TabBar,
     /// 差异视图的界面状态。
@@ -895,6 +919,10 @@ pub struct App {
     pub trash: fn(&Path) -> std::io::Result<()>,
     /// 关闭与退出流程的状态。
     pub closing: lifecycle::closing::Closing,
+    /// 保存或格式化期间被推迟的关闭请求，本次询问结束后继续（见 `Closing::resume_deferred_close`）。
+    pub(crate) deferred_close: Option<lifecycle::closing::CloseRequest>,
+    /// 项目已关闭：应用层在下一个事件后把窗口交给相邻的项目，并把它从列表中移除。
+    pub(crate) project_closed: bool,
     /// 退出前是否需要询问用户（各窗口共用同一个值，见 [`crate::winc::Shared::ask_on_quit`]）。
     pub(crate) ask_on_quit: Arc<AtomicBool>,
 
@@ -1089,6 +1117,18 @@ impl App {
         self.pointer.drag = Drag::None;
         self.pointer.close_pressed = None;
         self.pointer.control_pressed = None;
+    }
+
+    /// 正在拖动的项目条目：项目编号与当前落点的间隙序号；没有形成拖动时为 `None`。
+    pub(crate) fn dragged_project(&self) -> Option<(crate::winc::WindowKey, usize)> {
+        match self.pointer.drag {
+            Drag::Project {
+                key,
+                drop: Some(drop),
+                ..
+            } => Some((key, drop)),
+            _ => None,
+        }
     }
 
     fn reset_blink(&mut self) {

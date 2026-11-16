@@ -561,10 +561,10 @@ impl App {
             (CloseRequest::Switch(_), None) => {
                 t!("terminal-switch-folder-confirm-many", count = count)
             }
-            (CloseRequest::CloseFolder, Some(name)) => {
+            (CloseRequest::CloseFolder | CloseRequest::CloseProject, Some(name)) => {
                 t!("terminal-close-folder-confirm-one", name = name)
             }
-            (CloseRequest::CloseFolder, None) => {
+            (CloseRequest::CloseFolder | CloseRequest::CloseProject, None) => {
                 t!("terminal-close-folder-confirm-many", count = count)
             }
             (_, Some(name)) => t!("terminal-close-window-confirm-one", name = name),
@@ -576,7 +576,7 @@ impl App {
                 t!("terminal-switch-folder-confirm-detail"),
                 t!("terminal-switch-folder-confirm-button"),
             ),
-            CloseRequest::CloseFolder => (
+            CloseRequest::CloseFolder | CloseRequest::CloseProject => (
                 t!("terminal-close-folder-confirm-detail"),
                 t!("cmd-close-folder"),
             ),
@@ -905,7 +905,7 @@ impl App {
     }
 
     /// 要离开正在看的标签：告诉里面的程序失去了焦点（开了焦点上报时），否则它一直以为自己在前台。
-    fn blur_terminal_tab(&mut self) {
+    pub(in crate::app) fn blur_terminal_tab(&mut self) {
         let t = &mut self.terminal;
         if !std::mem::take(&mut t.focus_sent) {
             return;

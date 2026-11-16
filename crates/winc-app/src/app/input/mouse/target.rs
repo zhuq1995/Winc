@@ -188,12 +188,21 @@ impl App {
         // 拖动文件树中的项或标签时没有悬停目标；文件树中高亮的是放置目标目录，而不是鼠标所在的行。
         match self.pointer.drag {
             Drag::Scrollbar { bar, .. } => return Hover::Scrollbar(bar),
-            _ if self.tree_dragging().is_some() || self.dragged_tab().is_some() => {
+            _ if self.tree_dragging().is_some()
+                || self.dragged_tab().is_some()
+                || self.dragged_project().is_some() =>
+            {
                 return Hover::None;
             }
             _ => {}
         }
 
+        // 项目列表在最左侧，压在其余部件之上：先判断它。
+        if !self.overlays.picker.open
+            && let Some(target) = self.project_at(x, y)
+        {
+            return target;
+        }
         match self.target_at(x, y) {
             Target::WindowControl(control) => Hover::WindowControl(control),
             Target::ResizeEdge(direction) => Hover::ResizeEdge(direction),
@@ -269,6 +278,10 @@ impl App {
     /// 只依据位置，不区分按键；设置浮层、右键和中键由调用方先行处理。
     pub(super) fn target_at(&self, x: f32, y: f32) -> Target {
         let l = &self.layout;
+        // 项目列表占据最左侧一列，其中的条目由 `project_at` 判断。
+        if l.projects.contains(x, y) {
+            return Target::Blocked;
+        }
         // 窗口最外圈的细边用于改变窗口大小，位于所有部件之上；窗口按钮位于顶栏右端。
         if let Some(direction) = self.resize_edge_at(x, y) {
             return Target::ResizeEdge(direction);
@@ -804,6 +817,8 @@ impl App {
             } else {
                 CursorIcon::Default
             }
+        } else if self.dragged_project().is_some() {
+            CursorIcon::Grabbing
         } else if matches!(self.pointer.drag, Drag::OutlineDivider { .. })
             || self.pointer.hover == Hover::OutlineDivider
         {

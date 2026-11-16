@@ -19,6 +19,8 @@ pub enum CloseRequest {
     Switch(PathBuf),
     /// 关闭目录，回到开始页。
     CloseFolder,
+    /// 关闭项目：关闭所有标签和终端，从侧栏的项目列表中移除。
+    CloseProject,
 }
 
 /// 提示框上被点击的按钮。
@@ -118,6 +120,44 @@ impl App {
             || self.closing.confirming == Some(CloseRequest::Quit)
     }
 
+    /// 关闭项目（侧栏项目条目右端的 ✕）：关闭标签、目录和终端，窗口交给相邻的项目。
+    ///
+    /// 还有别的项目在时窗口移交过去；这是最后一个项目时留在开始页上。正在保存或格式化时
+    /// 请求记下来，等这次询问结束后继续。
+    pub(crate) fn request_close_project(&mut self) {
+        if self.closing_pending() || self.format.save_pending() {
+            self.defer_close(CloseRequest::CloseProject);
+            return;
+        }
+        if !self.confirm_terminal_quit(CloseRequest::CloseProject) {
+            self.request_close(CloseRequest::CloseProject);
+        }
+    }
+
+    /// 记下保存或格式化期间推迟的关闭；退出优先于关闭项目。
+    fn defer_close(&mut self, request: CloseRequest) {
+        let quit = request == CloseRequest::Quit || self.deferred_close == Some(CloseRequest::Quit);
+        if quit {
+            self.deferred_close = Some(CloseRequest::Quit);
+        } else if self.deferred_close.is_none() {
+            self.deferred_close = Some(request);
+        }
+    }
+
+    /// 上一次关闭结束后，继续被推迟的那次关闭。
+    pub(in crate::app) fn resume_deferred_close(&mut self) {
+        let Some(request) = self.deferred_close.take() else {
+            return;
+        };
+        match request {
+            CloseRequest::Quit => self.request_quit(),
+            CloseRequest::CloseProject => self.request_close_project(),
+            CloseRequest::Tabs(ids) => self.request_close(CloseRequest::Tabs(ids)),
+            CloseRequest::CloseFolder => self.close_folder(),
+            CloseRequest::Switch(folder) => self.switch_folder(&folder),
+            CloseRequest::CloseWindow => self.request_close_window(),
+        }
+    }
     /// 关闭目录（项目名菜单中的「关闭目录」）：先记录它的现场，再关闭所有标签和终端，回到开始页。
     pub(in crate::app) fn close_folder(&mut self) {
         if self.editor.workspace.is_none() {
@@ -161,7 +201,8 @@ impl App {
                 CloseRequest::Quit
                 | CloseRequest::CloseWindow
                 | CloseRequest::Switch(_)
-                | CloseRequest::CloseFolder => true,
+                | CloseRequest::CloseFolder
+                | CloseRequest::CloseProject => true,
             })
             .map(|d| d.id)
             .collect();
@@ -258,7 +299,8 @@ impl App {
         };
 
         match choice {
-            SaveChoice::Cancel => {}
+            // 取消这次关闭，推迟的关闭也一并取消。
+            SaveChoice::Cancel => self.deferred_close = None,
             SaveChoice::Discard => self.finish_close(prompt.request),
             SaveChoice::Save => self.save_then_close(prompt),
         }
@@ -318,9 +360,19 @@ impl App {
                 self.set_terminal_open(false);
                 self.close_folder_now();
             }
+            // 与关闭目录相同，另外告诉应用层把这个项目从列表中移除。
+            CloseRequest::CloseProject => {
+                self.remove_all_tabs();
+                self.close_all_terminal_tabs();
+                self.set_terminal_open(false);
+                self.close_folder_now();
+                self.project_closed = true;
+            }
         }
         self.relayout();
         self.request_redraw();
+        // 保存或格式化期间推迟的关闭（例如关项目时又按了 ⌘Q）在这里继续。
+        self.resume_deferred_close();
     }
 
     /// 关闭窗口而不退出应用（macOS）；询问过的文档都已保存或放弃。

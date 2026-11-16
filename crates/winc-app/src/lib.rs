@@ -159,7 +159,8 @@ pub fn run() {
         std::process::exit(i32::from(failed));
     }
 
-    for problem in open_targets(&mut editor, &args) {
+    let (problems, projects) = open_targets(&mut editor, &args);
+    for problem in problems {
         eprintln!("winc: {problem}");
     }
     // `--wait` 给的全是打不开的目标（例如目录）时没有标签可等，窗口在命令行目标处理完之后
@@ -272,6 +273,7 @@ pub fn run() {
     }
 
     winc.add(key, app);
+    winc.open_projects(projects);
     winc.restore_windows(&others);
     // 指定了 `--new-instance` 的进程不接收之后启动的 winc 交来的目录和文件，这些仍交给原来
     // 运行着的 winc。
@@ -290,14 +292,24 @@ pub fn run() {
 ///
 /// 只给出文件时不打开其所在的目录；`文件:行` 形式的目标会跳到对应行（行号和列号从 0 起）。
 /// 临时打开（`--wait`、`-`）时不接受目录。
-pub(crate) fn open_targets(editor: &mut Editor, args: &cli::Args) -> Vec<String> {
+/// 打开命令行给的目标：第一个目录成为编辑器的工作区，其余目录各占一个项目
+/// （见 [`Winc::open_projects`](crate::winc::Winc::open_projects)），文件都开在当前项目里。
+pub(crate) fn open_targets(
+    editor: &mut Editor,
+    args: &cli::Args,
+) -> (Vec<String>, Vec<std::path::PathBuf>) {
     let mut problems = Vec::new();
+    let mut projects = Vec::new();
     let mut first_file = None;
     for target in &args.targets {
         if winc_backend::fs::is_dir(&target.path) {
             if args.one_off() {
                 let path = target.path.display().to_string();
                 problems.push(winc_i18n::t!("cmd-cli-wait-folder", path = path));
+                continue;
+            }
+            if editor.root().is_some() {
+                projects.push(target.path.clone());
                 continue;
             }
             if let Err(e) = editor.open_folder(&target.path) {
@@ -324,7 +336,7 @@ pub(crate) fn open_targets(editor: &mut Editor, args: &cli::Args) -> Vec<String>
     if let Some(index) = first_file {
         editor.active = Some(index);
     }
-    problems
+    (problems, projects)
 }
 
 /// 是否已将要打开的目录和文件交给正在运行的 winc，由该进程切到打开该目录的窗口、新建窗口或

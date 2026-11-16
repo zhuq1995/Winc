@@ -56,14 +56,14 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
   | 场景 | 要求 |
   | --- | --- |
   | 切换项目 | 保留窗口句柄、渲染器、主题、修饰键和焦点，只换项目数据 |
-  | 交接给待处理提示 | 有模态界面（提示、另存为、终端确认、macOS sheet）的项目不接收窗口，见 `can_handoff_for_prompt` |
+  | 交接给待处理提示 | 项目自己的提示（保存确认、另存为、终端确认、快速打开）留在内存里随项目走，切回来继续显示；同一时刻只有一个项目持有窗口，不并行显示两处提示 |
   | 保存或格式化进行中的关闭 | 请求并入 `deferred_close`，退出优先于关闭项目 |
   | 退出进行中 | 不再新建项目 |
   | 关闭项目 | 复用已有的保存、备份、终端确认流程；最后一个项目停在开始页 |
   | macOS 关闭窗口 | 只隐藏窗口，其他平台照常退出 |
 
-- 测试：`app/snapshot/windows.rs`、`app/lifecycle/closing/tests.rs`、`app/lifecycle/events/tests.rs`、`app/lifecycle/window/tests.rs`、`app/snapshot/terminal/editor.rs`、`winc/tests.rs`。
-- 当前 `dev` 上这套实现随上游窗口重构被移除，恢复工作见 `.trellis/tasks/11-16-migrate-projects-window/`；恢复后本节的行为与不变量照旧适用。
+- 测试：`app/snapshot/projects.rs`（列表宽度、条目、点击切换、拖动排序、关闭项目）、`app/snapshot/windows.rs`、`app/lifecycle/closing/tests.rs`、`app/lifecycle/events/tests.rs`、`app/lifecycle/window/tests.rs`、`app/snapshot/terminal/editor.rs`、`winc/tests.rs`。
+- 窗口层采用上游的 `WindowKey`／`Request`／`Slot`：一个项目对应一个 `Slot`，`Winc::windows` 是项目列表；`Request::NewWindow` 新建项目（窗口由 `App::take_window`／`put_window` 移交），`Focus` 切换项目，`MoveProject` 重排，`CloseProject` 关闭。新建项目不调用 `App::resumed`，否则会再建一个系统窗口。
 
 #### 真实暂存区
 

@@ -850,7 +850,7 @@ fn waiting_quits_once_the_files_are_closed_and_leaves_no_trace() {
     let args = crate::cli::Args { wait: true, ..args };
 
     let mut editor = Editor::default();
-    assert!(crate::open_targets(&mut editor, &args).is_empty());
+    assert!(crate::open_targets(&mut editor, &args).0.is_empty());
     // 临时打开模式不打开项目。
     assert!(editor.workspace.is_none());
     let mut app = App::new(editor, None, Bench::from_env(), Config::default());
@@ -884,7 +884,7 @@ fn waiting_asks_about_other_unsaved_files_before_quitting() {
     let args = crate::cli::parse([message.into_os_string()]).unwrap();
     let args = crate::cli::Args { wait: true, ..args };
     let mut editor = Editor::default();
-    assert!(crate::open_targets(&mut editor, &args).is_empty());
+    assert!(crate::open_targets(&mut editor, &args).0.is_empty());
     let mut app = App::new(editor, None, Bench::from_env(), Config::default());
     app.start_one_off(&args);
     let mut winc = crate::winc::Winc::new(None, None);
@@ -918,7 +918,7 @@ fn files_given_with_a_line_open_there() {
     let arg = format!("{}:3:5", main.display());
     let args = crate::cli::parse([arg.into()]).unwrap();
     let mut editor = Editor::default();
-    assert!(crate::open_targets(&mut editor, &args).is_empty());
+    assert!(crate::open_targets(&mut editor, &args).0.is_empty());
     let doc = editor.active().unwrap();
     let (line, col) = doc.text().pos_to_line_col(doc.selection.head);
     assert_eq!((line, col), (2, 4));
@@ -969,6 +969,28 @@ fn the_sidebar_state_is_remembered_per_folder() {
     assert!(!app.panels.sidebar.visible);
     let session = app.state.session_for(&root).unwrap();
     assert!(!session.sidebar_hidden);
+
+    std::fs::remove_dir_all(&first).unwrap();
+    std::fs::remove_dir_all(&second).unwrap();
+}
+
+#[test]
+fn extra_folders_on_the_command_line_open_as_separate_projects() {
+    let first = sample_folder("projects-first");
+    let second = sample_folder("projects-second");
+    let args = crate::cli::parse([
+        first.clone().into_os_string(),
+        second.clone().into_os_string(),
+    ])
+    .unwrap();
+
+    let mut editor = Editor::default();
+    let (problems, projects) = crate::open_targets(&mut editor, &args);
+    assert!(problems.is_empty(), "{problems:?}");
+    // 第一个目录开在当前项目里，其余目录各占一个项目。
+    assert_eq!(editor.root(), Some(first.as_path()));
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0], second);
 
     std::fs::remove_dir_all(&first).unwrap();
     std::fs::remove_dir_all(&second).unwrap();
