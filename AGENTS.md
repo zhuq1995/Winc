@@ -125,10 +125,11 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 需要的工具：`x86_64-pc-windows-msvc` 工具链；`x86_64-unknown-linux-musl` target（链接器用 `rust-lld`），`cargo xtask server` 会自己 `rustup target add` 这个目标和 `aarch64-unknown-linux-musl`；NSIS（`C:\Program Files (x86)\NSIS\makensis.exe`）；Node；PowerShell 7 的 `pwsh`（`release/windows/conpty.ps1` 用了 `-MaximumRetryCount`，Windows PowerShell 5.1 不认这个参数）。
 
 ```bash
-# 1. 编译主程序与 WSL 文件监视器，并生成图标
+# 1. 编译主程序、WSL 文件监视器和远端服务进程，并生成图标
 cargo build --release --locked --target x86_64-pc-windows-msvc -p winc -p winc-pty
 CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
   cargo build --release --locked --target x86_64-unknown-linux-musl -p winc-watch
+cargo xtask server
 cargo xtask icons target/x86_64-pc-windows-msvc/release/bundle/icons
 
 # 2. 取微软的 conpty.dll 与 OpenConsole.exe（NuGet 固定版本，校验 SHA-256）
