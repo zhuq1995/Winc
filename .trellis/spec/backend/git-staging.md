@@ -36,13 +36,14 @@ pub fn commit(&self, root: &Path, message: &str, amend: bool) -> Result<String, 
 - **行身份**：`(仓库根目录, CommitGroup, 路径)`。同一路径可以同时出现在“已暂存的更改”和“更改”，禁止用 `Status::entries` 下标或单独路径区分。改名条目还带 `Entry::from`，整文件操作覆盖新旧两个路径。
 - **分组**：合并更改（有冲突时）／已暂存的更改（`staged.is_some()`）／更改（`unstaged.is_some()`）。未跟踪未忽略文件在“更改”。
 - **差异基准**：已暂存 = `HEAD` ↔ `index_content`，只读；更改 = `index_content` ↔ 当前文档或磁盘。`HEAD` 不变而 index 变化时也要刷新两侧。
+- **比较类型**：`crates/winc-app/src/app/git.rs` 的 `Compare` 是唯一来源——`Working`（暂存区↔工作区：更改组、`git_show_changes`、文件树预览）、`Staged`（`HEAD`↔暂存区：已暂存组）、`Head`（`HEAD`↔工作区：勾选式与冲突中的文件）。差异标签按 `DiffTab::compare` 决定块／行操作写入还是退回暂存区，`DiffTab::index` 记录比较时的暂存区指纹（`App::index_stamp`）。显示暂存区时文件行的命中是 `CommitTarget::FileIn(index, group)`，勾选式仍是 `CommitTarget::File(index)`。行号栏改动标记与回滚以暂存区为基准，界面写入暂存区后调用 `LineChanges::index_changed` 作废。
 - **提交**：`git commit --file=- --cleanup=whitespace`，修改上次提交时加 `--amend`。提交整个真实 index，不使用 `--only`，不在提交时把工作区内容加入 index。
 - **路径**：“全部”指当前仓库，不是列表前 `STATUS_LIMIT` 项。交给 Git 的路径使用 `:(literal)` 前缀，重命名、删除与目录展开一并处理。
 - **字节**：patch 比较 Git blob；展示文本经过滤器转换。`content_at`／`index_content` 返回检出形式，可与磁盘内容逐行比较。
 - **保存**：暂存前保存所操作文件并等待在途保存与保存前格式化；保存失败、磁盘冲突或选择失效时停止，不改 index。
 - **互斥**：暂存、提交、分支写操作互斥。占用按规范化工作树根目录记录，在后台写入结束时释放，不能依赖界面收取结果。
 - **空暂存提交**：暂存区为空且有工作区改动时先确认“暂存全部并提交”（包含未跟踪且未忽略文件），顺序为保存 → 暂存全部 → 提交；取消不改动任何状态；提交失败保留 index 与提交信息。
-- **差异视图**：`crates/winc-app/src/view/diff.rs` 的 `draw_body` 同时接收上游折叠过渡 `(scroll, shift): (Scroll, Option<&FoldShift>)` 与 fork 的暂存目标 `file: Option<&CommitFile>`，`drawn_rows` 用上游签名。横向滚动沿用上游 `DiffHScroll`／`DIFF_HSCROLL`，两侧滑块由同一个滚动位置驱动。
+- **差异视图**：`crates/winc-app/src/view/diff.rs` 的 `draw_body` 同时接收上游折叠过渡 `(scroll, shift): (Scroll, Option<&FoldShift>)`、fork 的暂存目标 `file: Option<&CommitFile>` 与差异基准 `compare: Option<Compare>`，`drawn_rows` 用上游签名。横向滚动沿用上游 `DiffHScroll`／`DIFF_HSCROLL`，两侧滑块由同一个滚动位置驱动。
 - **文案**：`en-US` 与 `zh-CN` 成对增删；`winc-i18n` 的键一致与未使用消息测试必须保持通过。
 
 ## 4. 校验与错误
