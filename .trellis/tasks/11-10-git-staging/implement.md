@@ -73,3 +73,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 - [x] 行号栏改动标记与回滚改为相对暂存区；暂存区变化（界面写入或其他程序执行 `git add`）时重新计算。
 - [x] 差异缓存按暂存区指纹失效；同一路径同时列在两组时，命中带组信息，各自打开对应的基准。
 - 检查平台：Windows。`cargo test -p winc-app` 769 通过、88 忽略；`cargo test -p winc-core` 96 通过；`cargo test -p winc-i18n` 9 通过。`snapshot::git` 的用例位于 `#[cfg(unix)]` 模块，本机临时启用后运行得到 227 通过、26 失败，与改动前的 27 个平台失败相比修复 1 个、无新增，运行后已还原模块开关。
+
+## 本地 Windows 打包
+
+- 构建提交 `ef77ec8`（`dev`），版本 `0.1.733`，`msiVersion` `0.1.733`。
+- 产物：`target/x86_64-pc-windows-msvc/release/bundle/nsis/Winc-0.1.733-windows-x64-setup.exe`（5749304 字节）、`…/bundle/portable/Winc-0.1.733-windows-x64-portable.zip`。
+- 包内 `winc.exe`、`bundle/stage/winc.exe` 与 release 构建的 SHA-256 同为 `5c59c5f3cd8a9f91d6b9f716715cc8cc07b23bed873714ac8b5a2e9daf3f38c4`；`winc-server-Linux-x86_64` 与 `target/remote-server` 同哈希；便携包 `unzip -t` 无错误，安装包版本资源为 `0.1.733`。
+- 本机未配置 Authenticode 与更新公钥：安装包未签名，安装后的程序不检查更新。
