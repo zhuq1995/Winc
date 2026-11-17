@@ -20,7 +20,7 @@ use std::path::Path;
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
-use winc_core::diff::{Pick, StageLine};
+use winc_core::diff::StageLine;
 use winc_core::{Lines, Selection, movement};
 
 use winc_editor::background;
@@ -32,6 +32,7 @@ use winit::event::KeyEvent;
 use winit::keyboard::{Key, NamedKey};
 
 use super::animation::{Clock, FOLD_ANIMATION};
+use super::git::Compare;
 use super::git::changes::replace_lines;
 use super::git::commit::stages_by_hunk;
 use super::lifecycle::notice::FLASH_DURATION;
@@ -508,9 +509,15 @@ impl App {
 
     /// 暂存或取消暂存当前差异标签中的第 `hunk` 处改动；`line` 不为 `None` 时只操作其中这一行。
     ///
-    /// 暂存区按磁盘上的内容写入：右侧的文档有未保存的修改时先保存。保存改动了文档（保存时
-    /// 格式化）时各处改动已经不同，不再继续。
+    /// 与暂存区比较的差异都是未暂存的改动，操作是暂存；与上次提交比较的差异（「已暂存的更改」）
+    /// 都已暂存，操作是取消暂存。暂存区按磁盘上的内容写入：右侧的文档有未保存的修改时先保存。
     fn toggle_diff_part(&mut self, hunk: usize, line: Option<StageLine>) {
+        let Some(index) = self.editor.active else {
+            return;
+        };
+        let Some(compare) = self.diff_compare(index) else {
+            return;
+        };
         let Some(doc) = self.editor.active() else {
             return;
         };
@@ -521,10 +528,10 @@ impl App {
         else {
             return;
         };
+        let (target, source) = (target.clone(), view.source);
         if !stages_by_hunk(&entry) {
             return;
         }
-        let (target, source) = (target.clone(), view.source);
         if !self.save_dirty_documents(std::slice::from_ref(&entry.path)) {
             return;
         }
@@ -535,27 +542,16 @@ impl App {
             self.request_redraw();
             return;
         }
-        let (head, work) = (view.old.text.to_string(), view.new.text.to_string());
-        // 暂存区中没有内容时与上次提交相同；全部暂存、内容尚未读到时与工作区相同。
-        let index = match self.git.commit.index_text(&entry.path) {
-            _ if entry.staged.is_none() => head.clone(),
-            Some(text) => text.to_owned(),
-            None if entry.unstaged.is_none() => work.clone(),
-            None => return,
+        let (old, new) = (view.old.text.to_string(), view.new.text.to_string());
+        // 三份文本按 `stage`/`unstage` 的参数顺序：上次提交、暂存区、工作区。与暂存区比较时左侧
+        // 就是暂存区，与上次提交比较时右侧就是暂存区；另一次暂存操作完成后会重新读取状态，界面
+        // 上先按未能读取的那一份近似。
+        let (texts, on) = match compare {
+            Compare::Working => ([old.as_str(), old.as_str(), new.as_str()], true),
+            Compare::Staged => ([old.as_str(), new.as_str(), new.as_str()], false),
+            Compare::Head => return,
         };
-        let pick =
-            winc_core::diff::staged_picks(&head, &index, &work, std::slice::from_ref(&target));
-        let staged = match (&pick[0], line) {
-            (Pick::Apply, _) => true,
-            (Pick::Skip, _) | (Pick::Lines(_), None) => false,
-            (Pick::Lines(left), Some(StageLine::Old(at))) => {
-                !left.old.contains(&(at - target.old.start))
-            }
-            (Pick::Lines(left), Some(StageLine::New(at))) => {
-                !left.new.contains(&(at - target.new.start))
-            }
-        };
-        self.stage_part(&entry, [&head, &index, &work], (target, line), !staged);
+        self.stage_part(&entry, texts, (target, line), on);
     }
 
     /// 返回右侧对应的文档下标；未打开且 `open` 为 `true` 时就地打开，但不切换当前标签。

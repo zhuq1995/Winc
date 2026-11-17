@@ -1,6 +1,7 @@
 //! 并排差异的测试：打开与逐处跳转、编辑右侧、从左侧取回改动、滚动、点击，以及跟随文件更新。
 
 use super::*;
+use crate::app::git::Compare;
 
 mod edit;
 mod side;
@@ -398,11 +399,12 @@ fn diff_scrollbar_stays_below_the_header_and_new_files_have_no_replace() {
 }
 
 #[test]
-fn status_refreshes_rediff_a_git_diff_tab_only_when_head_moves() {
+fn status_refreshes_rediff_a_git_diff_tab_when_its_left_side_moves() {
     let Some((mut app, root)) = git_app("git-diff-refresh", false) else {
         return;
     };
-    app.open_path(&root.join("src/main.rs"));
+    let file = root.join("src/main.rs");
+    app.open_path(&file);
     assert!(app.run_action(Action::GitShowChanges));
     let view = |app: &App| {
         let view = app.editor.active().unwrap().diff.as_deref().unwrap();
@@ -417,7 +419,29 @@ fn status_refreshes_rediff_a_git_diff_tab_only_when_head_moves() {
     // `HEAD` 改变：重新读取左侧内容。
     git_in(&root, &["commit", "-q", "--allow-empty", "-m", "second"]);
     app.git_refresh();
-    assert_ne!(view(&app), before);
+    let after = view(&app);
+    assert_ne!(after, before);
+
+    // 显示暂存区时「更改」比较暂存区与工作区：暂存区变了就重新比较左侧，不必等 `HEAD` 移动。
+    app.git.commit.set_staging(true);
+    app.preview_changes(&file, Compare::Working);
+    paint(&mut app);
+    let before = view(&app);
+    std::fs::write(
+        &file,
+        "fn main() { staged(); }
+",
+    )
+    .unwrap();
+    git_in(&root, &["add", "--", "src/main.rs"]);
+    app.git_refresh();
+    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
+    assert_ne!(std::ptr::from_ref(view) as usize, before);
+    assert!(
+        view.old.text.to_string().contains("staged()"),
+        "{}",
+        view.old.text
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -787,7 +811,7 @@ fn diffs_follow_the_file_and_skip_binaries_and_stale_previews() {
         return;
     };
     let main = root.join("src/main.rs");
-    app.git_preview_changes(&main);
+    app.preview_changes(&main, app.commit_compare(None));
     let id = app.editor.active().unwrap().id;
     let new_text = |app: &App| {
         let doc = app.editor.document(id).unwrap();
@@ -834,7 +858,7 @@ fn diffs_follow_the_file_and_skip_binaries_and_stale_previews() {
 
     // 二进制文件不显示差异，在状态栏说明。
     std::fs::write(root.join("blob.bin"), [0u8, 1, 2, 0, 3]).unwrap();
-    app.git_preview_changes(&root.join("blob.bin"));
+    app.preview_changes(&root.join("blob.bin"), app.commit_compare(None));
     assert!(
         app.status
             .message

@@ -1,6 +1,7 @@
 //! 暂存区视图的测试：各项的状态取自暂存区，提交取暂存区的内容。
 
 use super::*;
+use crate::app::git::Compare;
 
 /// 返回 `root` 中 `HEAD` 里的 `src/main.rs`。
 fn head_main(root: &Path) -> String {
@@ -33,9 +34,11 @@ fn file_state(app: &App, path: &Path) -> Option<bool> {
 
 /// 返回当前差异标签中各段改动的暂存状态。
 fn picks(app: &App) -> Vec<winc_core::diff::Pick> {
-    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
+    let index = app.editor.active.unwrap();
+    let view = app.editor.documents[index].diff.as_deref().unwrap();
     let entry = app.diff_entry(view).unwrap();
-    app.git.commit.hunk_inclusions(entry, view)
+    let compare = app.diff_compare(index).expect("the diff has a compare");
+    app.git.commit.hunk_inclusions(entry, view, compare)
 }
 
 #[test]
@@ -53,9 +56,10 @@ fn only_the_staged_hunks_are_committed() {
     }
     let root = app.git.root.clone().unwrap();
     let file = root.join("src/main.rs");
-    app.git_preview_changes(&file);
+    app.preview_changes(&file, app.commit_compare(None));
     paint(&mut app);
-    // 两处改动各有一个勾选框，都没有暂存；勾上第一处（`value_5` 改成 500），文件变成「部分」。
+    // 两处改动各有一个勾选框，都没有暂存；勾上第一处（`value_5` 改成 500），它进入暂存区并从
+    // 「更改」中消失，文件变成「部分」。
     assert!(
         app.hits
             .diff
@@ -65,7 +69,7 @@ fn only_the_staged_hunks_are_committed() {
     assert_eq!(picks(&app), [Pick::Skip, Pick::Skip]);
     assert_eq!(file_state(&app, &file), None);
     app.press_diff(DiffTarget::Include(0));
-    assert_eq!(picks(&app), [Pick::Apply, Pick::Skip]);
+    assert_eq!(picks(&app), [Pick::Skip]);
     assert_eq!(file_state(&app, &file), Some(false));
     // 暂存区里只有这一处：与在终端里看到的一致。
     let staged = staged_diff(&root);
@@ -137,7 +141,16 @@ fn the_staging_view_groups_staged_changes_and_has_plus_and_minus() {
         app.on_mouse_move(row.x + 40.0, row.y + 4.0);
         paint(app);
     };
-    hover(&mut app, CommitTarget::File(0));
+    // 显示暂存区时文件行的命中带组信息（见 `CommitTarget::FileIn`），按文件下标找。
+    let file_row = |app: &App, index: usize| {
+        (app.hits.commit.iter())
+            .find(|(_, t)| matches!(t, CommitTarget::File(i) | CommitTarget::FileIn(i, _) if *i == index))
+            .map(|(rect, _)| *rect)
+            .unwrap()
+    };
+    let row = file_row(&app, 0);
+    app.on_mouse_move(row.x + 40.0, row.y + 4.0);
+    paint(&mut app);
     assert!(hit(&app, CommitTarget::StageFile(0, false)).is_none());
     let plus = hit(&app, CommitTarget::StageFile(0, true)).unwrap();
     click(&mut app, (plus.x + 4.0, plus.y + 4.0));
@@ -262,10 +275,11 @@ fn only_the_staged_lines_are_committed() {
     )
     .unwrap();
     app.git_refresh();
-    app.git_preview_changes(&file);
+    app.preview_changes(&file, app.commit_compare(None));
     paint(&mut app);
 
-    // 暂存 `added_b` 所在的那处改动，再把 `added_b` 这一行取消暂存；另一处改动不暂存。
+    // 暂存 `added_b` 所在的那处改动（`value_5` 的改动与两行新增在同一处），它从「更改」中消失；
+    // 再打开「已暂存的更改」的差异，把 `added_b` 这一行取消暂存；另一处改动不暂存。
     let view = app.editor.active().unwrap().diff.as_deref().unwrap();
     let text = std::fs::read_to_string(&file).unwrap();
     let line = text.lines().position(|l| l == "let added_b = 2;").unwrap();
@@ -275,16 +289,23 @@ fn only_the_staged_lines_are_committed() {
         .position(|h| h.new.contains(&line))
         .unwrap();
     app.press_diff(DiffTarget::Include(hunk));
-    assert_eq!(picks(&app)[hunk], winc_core::diff::Pick::Apply);
+    let staged = staged_diff(&root);
+    assert!(
+        staged.contains("+let added_a = 1;") && staged.contains("+let added_b = 2;"),
+        "{staged}"
+    );
+    app.preview_changes(&file, Compare::Staged);
+    paint(&mut app);
+    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
+    // 右侧是暂存区中的内容：`added_b` 在这一侧的行号。
+    let line = view
+        .new
+        .text
+        .lines()
+        .position(|l| l.to_string().trim_end() == "let added_b = 2;")
+        .unwrap();
     app.press_diff(DiffTarget::IncludeLine(RIGHT, line));
     paint(&mut app);
-    assert!(
-        app.hits
-            .diff
-            .iter()
-            .any(|(_, t)| *t == DiffTarget::IncludeLine(RIGHT, line))
-    );
-    assert!(matches!(picks(&app)[hunk], winc_core::diff::Pick::Lines(_)));
     assert_eq!(file_state(&app, &file), Some(false));
     let staged = staged_diff(&root);
     assert!(staged.contains("+let added_a = 1;") && !staged.contains("added_b"));
@@ -299,18 +320,11 @@ fn only_the_staged_lines_are_committed() {
     assert!(std::fs::read_to_string(&file).unwrap().contains("added_b"));
 
     // 再暂存这一行：这处改动全部暂存。
-    app.git_preview_changes(&file);
+    app.preview_changes(&file, app.commit_compare(None));
     paint(&mut app);
-    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
     let text = std::fs::read_to_string(&file).unwrap();
     let line = text.lines().position(|l| l == "let added_b = 2;").unwrap();
-    let hunk = view
-        .hunks
-        .iter()
-        .position(|h| h.new.contains(&line))
-        .unwrap();
     app.press_diff(DiffTarget::IncludeLine(RIGHT, line));
-    assert_eq!(picks(&app)[hunk], winc_core::diff::Pick::Apply);
     assert!(staged_diff(&root).contains("+let added_b = 2;"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -337,12 +351,11 @@ fn a_file_edited_after_staging_is_partly_staged() {
     app.git_refresh();
     assert_eq!(file_state(&app, &file), Some(false));
 
-    // 三处改动：`value_5` 暂存后又改过，`value_30` 是新的改动，删掉的 `value_50` 已暂存。
-    app.git_preview_changes(&file);
+    // 两处改动：`value_5` 与 `value_30` 都是暂存之后又改的，都没有暂存；删掉的 `value_50` 已经
+    // 在暂存区里，不出现在「更改」中。
+    app.preview_changes(&file, app.commit_compare(None));
     paint(&mut app);
-    let now = picks(&app);
-    assert!(matches!(now[0], Pick::Lines(_)), "{now:?}");
-    assert_eq!(now[1..], [Pick::Skip, Pick::Apply]);
+    assert_eq!(picks(&app), [Pick::Skip, Pick::Skip]);
 
     app.git.commit.message.set_text("暂存时的内容");
     app.git_commit();
@@ -353,11 +366,10 @@ fn a_file_edited_after_staging_is_partly_staged() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// 两处改动内容相同（加入了同样的一行）时各自暂存：暂存其中一处只有这一处进入暂存区，再点
-/// 一次取消；提交时也只有暂存的那一处。
+/// 两处改动内容相同（加入了同样的一行）时各自暂存：暂存其中一处只有这一处进入暂存区，再在
+/// 「已暂存的更改」的差异里取消；提交时也只有暂存的那一处。
 #[test]
 fn identical_changes_are_staged_one_by_one() {
-    use winc_core::diff::Pick;
     let dir = search_folder("git-identical-hunks-staging");
     if !long_repo(&dir) {
         return;
@@ -382,7 +394,7 @@ fn identical_changes_are_staged_one_by_one() {
         );
     std::fs::write(&file, &disk).unwrap();
     app.git_refresh();
-    app.git_preview_changes(&file);
+    app.preview_changes(&file, app.commit_compare(None));
     paint(&mut app);
     let view = app.editor.active().unwrap().diff.as_deref().unwrap();
     let same: Vec<usize> = (0..view.hunks.len())
@@ -391,18 +403,29 @@ fn identical_changes_are_staged_one_by_one() {
     assert_eq!(same.len(), 2, "two changes with the same content");
     let (first, second) = (same[0], same[1]);
 
-    // 暂存第一处：只有它暂存；再点一次取消。
+    // 暂存第一处：只有它暂存，并从「更改」中消失；在「已暂存的更改」的差异里再点一次取消。
     app.press_diff(DiffTarget::Include(first));
-    let now = picks(&app);
-    assert_eq!((&now[first], &now[second]), (&Pick::Apply, &Pick::Skip));
-    app.press_diff(DiffTarget::Include(first));
-    assert!(picks(&app).iter().all(|p| *p == Pick::Skip));
+    let staged = staged_diff(&root);
+    assert_eq!(staged.matches("+let same = 1;").count(), 1, "{staged}");
+    assert!(staged.contains("let value_20 = 20;"), "{staged}");
+    app.preview_changes(&file, Compare::Staged);
+    paint(&mut app);
+    app.press_diff(DiffTarget::Include(0));
     assert_eq!(staged_diff(&root), "");
 
     // 暂存第二处后提交：提交里只有第二处加的那一行。
+    app.preview_changes(&file, app.commit_compare(None));
+    paint(&mut app);
     app.press_diff(DiffTarget::Include(second));
-    let now = picks(&app);
-    assert_eq!((&now[first], &now[second]), (&Pick::Skip, &Pick::Apply));
+    let staged = staged_diff(&root);
+    assert_eq!(staged.matches("+let same = 1;").count(), 1, "{staged}");
+    assert!(
+        staged.contains(
+            " let value_40 = 40;
++let same = 1;"
+        ),
+        "{staged}"
+    );
     app.git.commit.message.set_text("only the second");
     app.git_commit();
     let head = head_main(&root);
@@ -568,6 +591,9 @@ fn the_staging_area_setting_and_the_menu_item_are_one_switch() {
         return;
     };
     app.run_action(Action::ShowCommit);
+    // 默认显示暂存区；从关闭状态开始，验证两处开关是同一项（打开提交视图会重新读配置）。
+    app.config.git_staging_area = Some(false);
+    app.git.commit.set_staging(false);
     assert_eq!(Setting::GitStagingArea.page(), SettingsPage::Git);
     assert!(!app.switch_on(Setting::GitStagingArea));
     assert!(!app.git.commit.staging() && !app.menu_checked(CommitStagingArea));
@@ -588,5 +614,67 @@ fn the_staging_area_setting_and_the_menu_item_are_one_switch() {
     assert!(!app.git.commit.staging() && !app.menu_checked(CommitStagingArea));
     assert_eq!(app.config.git_staging_area, Some(false));
     assert_eq!(app.commit_scope(), Some(CommitScope::Staged(1)));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 同一文件同时有暂存和未暂存的改动时，两组比较的版本不同：「已暂存的更改」比较上次提交与暂存
+/// 区，右侧只读；「更改」比较暂存区与工作区。点哪一组的文件行，差异就用那一组的基准。
+#[test]
+fn the_two_groups_compare_against_the_index() {
+    let Some((mut app, root)) = git_app("git-staging-two-bases", false) else {
+        return;
+    };
+    let file = root.join("src/main.rs");
+    app.run_action(Action::ShowCommit);
+    app.git.commit.set_staging(true);
+
+    // 先暂存一处改动，再改另一处：文件同时出现在两组里。
+    let first = "fn main() {\n    a();\n}\n";
+    std::fs::write(&file, first).unwrap();
+    app.stage_paths(std::slice::from_ref(&file), true);
+    let second = "fn main() {\n    a();\n    b();\n}\n";
+    std::fs::write(&file, second).unwrap();
+    app.git_refresh();
+    paint(&mut app);
+
+    let status = app.git.status.clone().unwrap();
+    let index = (status.entries.iter())
+        .position(|e| e.path == file)
+        .unwrap();
+    // 每次按键前都从最新的命中中取目标：预览会改变 `generation`，旧命中会被拒绝。
+    let row = |app: &App, group: CommitGroup| -> CommitTarget {
+        (app.hits.commit.iter())
+            .map(|(_, t)| *t)
+            .find(|t| matches!(t, CommitTarget::FileIn(i, g) if *i == index && *g == group))
+            .expect("the file is listed in the group")
+    };
+    let head = head_main(&root);
+
+    // 「已暂存的更改」：上次提交 ↔ 暂存区，右侧是暂存区中的内容，只读。
+    let target = row(&app, CommitGroup::Staged);
+    app.press_commit(target);
+    paint(&mut app);
+    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
+    assert_eq!(view.old.text.to_string().trim_end(), head.trim_end());
+    assert_eq!(view.new.text.to_string(), first);
+    assert!(view.old.title.starts_with("HEAD"), "{}", view.old.title);
+    assert!(view.new.path.is_none(), "the staged side is read-only");
+    let tab = app.editor.active.unwrap();
+
+    // 「更改」：暂存区 ↔ 工作区，左侧是暂存区中的内容，右侧可以编辑。
+    let target = row(&app, CommitGroup::Changes);
+    app.on_mouse_move(5.0, 5.0);
+    app.press_commit(target);
+    paint(&mut app);
+    let view = app.editor.active().unwrap().diff.as_deref().unwrap();
+    assert_eq!(view.old.text.to_string(), first);
+    assert_eq!(view.new.text.to_string(), second);
+    assert!(view.new.path.is_some());
+    // 同一个文件只有一个预览标签。
+    assert_eq!(app.editor.active, Some(tab));
+    let previews = (app.editor.documents.iter())
+        .filter(|d| d.diff.is_some())
+        .count();
+    assert_eq!(previews, 1);
     let _ = std::fs::remove_dir_all(&root);
 }

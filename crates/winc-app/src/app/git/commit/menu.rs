@@ -335,7 +335,10 @@ impl App {
             return;
         }
         match command {
-            MenuCommand::GitShowDiff => self.select_commit_file(path),
+            MenuCommand::GitShowDiff => {
+                let compare = self.commit_compare_for(&path);
+                self.select_commit_file(path, compare);
+            }
             MenuCommand::GitOpenFile => {
                 if winc_backend::fs::is_file(&path) {
                     self.open_path(&path);

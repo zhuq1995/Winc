@@ -52,9 +52,7 @@ impl App {
         if touched.is_empty() {
             return;
         }
-        for path in &touched {
-            self.git.commit.index.remove(path);
-        }
+        self.git.changes.index_changed(touched.iter().cloned());
         let job = if on {
             StageJob::Add(touched)
         } else {
@@ -66,6 +64,8 @@ impl App {
     /// 暂存（`on` 为真）或取消暂存文件 `entry` 的一段改动 `hunk`，或者其中的一行 `line`。
     ///
     /// `texts` 是上次提交、暂存区、工作区三份文本，界面据此先行更新；后台按磁盘上的内容重新计算。
+    /// 与暂存区比较的差异把暂存区放在上次提交一侧（两份都是暂存区），与上次提交比较的差异把
+    /// 暂存区放在工作区一侧：只用到当前方向需要的两份。
     pub(in crate::app) fn stage_part(
         &mut self,
         entry: &Entry,
@@ -102,10 +102,8 @@ impl App {
             (true, false) => Some(Change::Modified),
             (false, false) => None,
         };
-        self.git
-            .commit
-            .set_index_text(entry.path.clone(), Some(next));
         let path = entry.path.clone();
+        self.git.changes.index_changed([path.clone()]);
         self.push_staging(StageJob::Part {
             path,
             hunk,
@@ -125,7 +123,6 @@ impl App {
     pub(in crate::app) fn apply_staging_view(&mut self) {
         let on = self.config.git_staging_area != Some(false);
         self.git.commit.set_staging(on);
-        self.sync_index_texts();
         // 没有选过「显示全部仓库」时它随样式开关：换到列出其他仓库的样式后读它们的状态。
         if self.commit_shows_others() {
             self.git_read_summaries();
@@ -241,7 +238,6 @@ impl App {
             // 界面已按成功的结果显示：放弃其余的操作，按仓库的实际状态重新显示。
             self.git.commit.staging_queue.clear();
             self.git.commit.commit_queued = false;
-            self.git.commit.index.clear();
             self.notify(t!("git-stage-failed", error = e));
         }
         if !self.git.commit.staging_queue.is_empty() {
@@ -251,58 +247,6 @@ impl App {
         self.git_refresh();
         if std::mem::take(&mut self.git.commit.commit_queued) {
             self.git_commit();
-        }
-    }
-
-    /// 读取打开着差异、且暂存区中有内容的文件在暂存区中的内容；其余文件的记录释放。
-    ///
-    /// 差异标签据此显示各段改动的暂存状态。暂存的操作尚未写完时不读取，写完后会再次调用。
-    pub(in crate::app) fn sync_index_texts(&mut self) {
-        if self.git.commit.staging_active() || !self.git.commit.staging() {
-            return;
-        }
-        let staged = |path: &Path| {
-            let mut entries = self.git.status.iter().flat_map(|s| &s.entries);
-            entries.any(|e| e.path == path && e.staged.is_some() && stages_by_hunk(e))
-        };
-        let wanted: Vec<PathBuf> = (self.editor.documents.iter())
-            .filter_map(|d| d.diff.as_deref()?.repo_path.clone())
-            .filter(|path| staged(path))
-            .collect();
-        self.git
-            .commit
-            .index
-            .retain(|path, _| wanted.contains(path));
-        if wanted.is_empty() {
-            return;
-        }
-        let version = self.git.commit.index_version;
-        let sender = self.git.commit.results.0.clone();
-        self.run_git_job(move |git, root| {
-            let Ok(git) = git else {
-                return;
-            };
-            for path in wanted {
-                let content = git.index_content(root, &path, &Cancel::default());
-                let text = (content.ok().flatten()).and_then(|bytes| String::from_utf8(bytes).ok());
-                let _ = sender.send(Outcome::IndexText(root.to_path_buf(), path, version, text));
-            }
-        });
-    }
-
-    /// 收下后台读到的暂存区内容；读取之后界面又改动过暂存区时不采用。
-    pub(super) fn index_text_arrived(
-        &mut self,
-        root: &Path,
-        path: PathBuf,
-        version: u64,
-        text: Option<String>,
-    ) {
-        let current = self.git.root.as_deref() == Some(root)
-            && version == self.git.commit.index_version
-            && !self.git.commit.staging_active();
-        if current {
-            self.git.commit.set_index_text(path, text);
         }
     }
 }
@@ -364,10 +308,12 @@ fn write_part(
         Some(bytes) => text(bytes)?,
         None => String::new(),
     };
+    // 暂存的差异是暂存区到工作区（上次提交一侧即暂存区），取消暂存的是上次提交到暂存区（工作区
+    // 一侧即暂存区）：两者都只需其中的两份文本。
     let next = if on {
-        stage(&head, &index, &disk, hunk, line)
+        stage(&index, &index, &disk, hunk, line)
     } else {
-        unstage(&head, &index, &disk, hunk, line)
+        unstage(&head, &index, &index, hunk, line)
     };
     if fresh && next.is_empty() {
         return git.unstage(root, &[path.to_path_buf()]);

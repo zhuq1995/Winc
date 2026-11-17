@@ -10,6 +10,7 @@ impl App {
             target,
             CommitTarget::Check(_)
                 | CommitTarget::File(_)
+                | CommitTarget::FileIn(..)
                 | CommitTarget::OpenFile(_)
                 | CommitTarget::RevertFile(_)
                 | CommitTarget::StageFile(..)
@@ -29,11 +30,11 @@ impl App {
         // 都会修改工作区，不处理。
         if self.git.commit.browse {
             match target {
-                CommitTarget::File(i) => self.browse_commit_file(i),
+                CommitTarget::File(i) | CommitTarget::FileIn(i, _) => self.browse_commit_file(i),
                 CommitTarget::Group(_) | CommitTarget::Dir(_) | CommitTarget::Sticky(..) => {}
                 _ => return,
             }
-            if matches!(target, CommitTarget::File(_)) {
+            if matches!(target, CommitTarget::File(_) | CommitTarget::FileIn(..)) {
                 return;
             }
         }
@@ -52,6 +53,7 @@ impl App {
             | CommitTarget::DirStage(..)
             | CommitTarget::Check(_)
             | CommitTarget::File(_)
+            | CommitTarget::FileIn(..)
             | CommitTarget::Sticky(..)
             | CommitTarget::OpenFile(_)
             | CommitTarget::RevertFile(_)
@@ -200,9 +202,13 @@ impl App {
                 self.set_commit_checked(&paths, on);
             }
             CommitTarget::Check(i) => self.toggle_commit_check(i),
-            CommitTarget::File(i) => {
+            CommitTarget::File(i) | CommitTarget::FileIn(i, _) => {
                 let Some(path) = self.commit_entry(i).map(|e| e.path.clone()) else {
                     return;
+                };
+                let compare = match target {
+                    CommitTarget::FileIn(_, group) => self.commit_compare(Some(group)),
+                    _ => self.commit_compare_entry(i),
                 };
                 self.focus = Focus::CommitList;
                 // ⌘ 单击加选或取消，⇧ 单击选到这一行：只改选区，不换预览。
@@ -222,7 +228,7 @@ impl App {
                     self.open_path(&path);
                     self.focus = Focus::Editor;
                 } else {
-                    self.select_commit_file(path);
+                    self.select_commit_file(path, compare);
                 }
             }
             CommitTarget::Sticky(row, level) => {

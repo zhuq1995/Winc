@@ -419,12 +419,15 @@ git-no-file-in-tab = The current tab has no file
 git-diff-title = { $name } · Diff
 git-diff-submodule = “{ $name }” is a submodule; no diff is shown
 git-diff-head-unreadable = Couldn’t read the last committed version of “{ $name }”: { $error }
+git-diff-index-unreadable = Couldn’t read the staged version of “{ $name }”: { $error }
 git-diff-too-large = “{ $name }” is too large; no diff is shown
 git-diff-binary = “{ $name }” is a binary file; no diff is shown
 git-diff-identical = “{ $name }” is the same as in the last commit; no changes
 git-diff-line-endings-only = “{ $name }” differs from the last commit only in line endings
 git-diff-side-worktree-deleted = Working Tree · Deleted
 git-diff-side-head-missing = HEAD · File Doesn’t Exist
+git-diff-side-index = Index
+git-diff-side-index-missing = Index · File Doesn’t Exist
 
 ## Trusting repository configuration
 
@@ -727,7 +730,8 @@ git-change-popup-modified = { $count ->
     [one] Modified { $count } line
    *[other] Modified { $count } lines
 }
-git-change-popup-not-in-head = New file, not in the last commit
+git-change-popup-base = Index
+git-change-popup-not-in-index = New file, not in the index
 git-change-popup-more-lines = { $count ->
     [one] { $count } more line not shown
    *[other] { $count } more lines not shown

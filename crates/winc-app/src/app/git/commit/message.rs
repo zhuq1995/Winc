@@ -35,7 +35,8 @@ impl App {
                 if self.git.commit.selected.is_none()
                     && let Some(first) = self.commit_files().into_iter().next()
                 {
-                    self.select_commit_file(first);
+                    let compare = self.commit_compare_for(&first);
+                    self.select_commit_file(first, compare);
                 }
             }
             Key::Named(NamedKey::Escape) => {

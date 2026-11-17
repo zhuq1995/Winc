@@ -228,7 +228,7 @@ impl App {
             return None;
         }
         let path = match hit(&self.hits.commit, x, y)? {
-            CommitTarget::File(i) | CommitTarget::Check(i) => {
+            CommitTarget::File(i) | CommitTarget::FileIn(i, _) | CommitTarget::Check(i) => {
                 self.git.status.as_ref()?.entries.get(i)?.path.clone()
             }
             // 目录：菜单作用于它下面的各个文件（都已在选区里时作用于整个选区）。

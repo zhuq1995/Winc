@@ -336,12 +336,15 @@ git-no-file-in-tab = 当前标签页未关联文件
 git-diff-title = { $name } · 差异
 git-diff-submodule = 「{ $name }」是子模块，不显示差异
 git-diff-head-unreadable = 无法读取「{ $name }」在上次提交中的版本：{ $error }
+git-diff-index-unreadable = 无法读取「{ $name }」在暂存区中的版本：{ $error }
 git-diff-too-large = 「{ $name }」过大，不显示差异
 git-diff-binary = 「{ $name }」是二进制文件，不显示差异
 git-diff-identical = 「{ $name }」与上次提交时相同
 git-diff-line-endings-only = 「{ $name }」与上次提交时只有换行符不同
 git-diff-side-worktree-deleted = 工作区 · 已删除
 git-diff-side-head-missing = HEAD · 文件不存在
+git-diff-side-index = 暂存区
+git-diff-side-index-missing = 暂存区 · 文件不存在
 
 ## 信任仓库的配置
 
@@ -572,7 +575,8 @@ git-diff-revert-failed = 无法回滚更改：{ $error }
 git-change-popup-added = 新增 { $count } 行
 git-change-popup-deleted = 删除 { $count } 行
 git-change-popup-modified = 修改 { $count } 行
-git-change-popup-not-in-head = 新文件，上次提交中不存在
+git-change-popup-base = 暂存区
+git-change-popup-not-in-index = 新文件，暂存区中不存在
 git-change-popup-more-lines = 另有 { $count } 行未显示
 
 ## 提交视图的文件列表

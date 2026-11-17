@@ -15,7 +15,7 @@ fn commit_only_the_checked_hunks() {
     }
     let root = app.git.root.clone().unwrap();
     let file = root.join("src/main.rs");
-    app.git_preview_changes(&file);
+    app.preview_changes(&file, app.commit_compare(None));
     paint(&mut app);
     // 两处改动各有一个勾选框；勾掉第二处（删掉 `value_50`），文件变成「部分」。
     assert!(
@@ -300,7 +300,7 @@ fn commit_only_the_checked_lines() {
     )
     .unwrap();
     app.git_refresh();
-    app.git_preview_changes(&file);
+    app.preview_changes(&file, app.commit_compare(None));
     paint(&mut app);
 
     // 找到 `added_b` 所在的行并把它勾掉，同时只提交第一处改动。
@@ -433,7 +433,7 @@ fn identical_changes_are_checked_one_by_one() {
         );
     std::fs::write(&file, &disk).unwrap();
     app.git_refresh();
-    app.git_preview_changes(&file);
+    app.preview_changes(&file, app.commit_compare(None));
     paint(&mut app);
     let picks = |app: &App| -> Vec<Pick> {
         let view = app.editor.active().unwrap().diff.as_deref().unwrap();

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::app::ScrollTarget;
+use crate::app::git::Compare;
 
 impl App {
     /// 提交视图列表现在的各行（见 [`CommitRows`]）。
@@ -43,10 +44,10 @@ impl App {
         }
     }
 
-    /// 只选中 `path`（清掉多选），在预览标签里打开它的差异；列表滚到让它露出来。
+    /// 只选中 `path`（清掉多选），按 `compare` 在预览标签里打开它的差异；列表滚到让它露出来。
     ///
     /// 浏览历史提交的文件时（`commit.browse`），在该提交的差异标签中打开这个文件。
-    pub(in crate::app::git) fn select_commit_file(&mut self, path: PathBuf) {
+    pub(in crate::app::git) fn select_commit_file(&mut self, path: PathBuf, compare: Compare) {
         self.git.commit.marked.clear();
         self.git.commit.anchor = Some(path.clone());
         self.git.commit.selected = Some(path.clone());
@@ -59,7 +60,7 @@ impl App {
             }
             return;
         }
-        self.git_preview_changes(&path);
+        self.preview_changes(&path, compare);
     }
 
     /// 浏览历史提交的文件时点击了第 `i` 个文件：选中它，并在差异标签中打开。
@@ -69,7 +70,8 @@ impl App {
         };
         self.focus = Focus::CommitList;
         self.diff.land = None;
-        self.select_commit_file(path);
+        let compare = self.commit_compare_for(&path);
+        self.select_commit_file(path, compare);
     }
 
     /// 列表里看得见的文件，按显示顺序。
@@ -465,7 +467,8 @@ impl App {
                 if shown {
                     self.focus = Focus::Editor;
                 } else {
-                    self.select_commit_file(current);
+                    let compare = self.commit_compare_for(&current);
+                    self.select_commit_file(current, compare);
                 }
             }
             Action::ChangesOpenSource => {
@@ -591,7 +594,9 @@ impl App {
                     if self.pointer.modifiers.shift_key() && !self.git.commit.browse {
                         self.select_commit_range(next);
                     } else {
-                        self.select_commit_file(next);
+                        let group = row.and_then(|row| self.commit_rows().group_of(row));
+                        let compare = self.commit_compare(group);
+                        self.select_commit_file(next, compare);
                     }
                 }
             }
@@ -637,7 +642,8 @@ impl App {
             }
             Key::Named(NamedKey::Escape) if self.commit_multi_selected() => {
                 if let Some(path) = self.git.commit.selected.clone() {
-                    self.select_commit_file(path);
+                    let compare = self.commit_compare_for(&path);
+                    self.select_commit_file(path, compare);
                 }
             }
             Key::Named(NamedKey::Escape) if self.editor.active.is_some() => {

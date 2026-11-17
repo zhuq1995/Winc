@@ -66,11 +66,11 @@ pub(in crate::view) fn draw_change_popup(app: &mut App, frame: &mut Frame<'_>) {
         (_, true) => t!("git-change-popup-deleted", count = lines),
         _ => t!("git-change-popup-modified", count = lines),
     };
-    // 说明下方内容所属的版本；新增的块没有原内容，说明该内容不在 `HEAD` 中。
-    let note = match (hunk.old.is_empty(), app.git.changes.short_head()) {
-        (true, _) => t!("git-change-popup-not-in-head").to_owned(),
-        (false, Some(oid)) => format!("HEAD · {oid}"),
-        (false, None) => "HEAD".to_owned(),
+    // 说明下方内容所属的版本；新增的块没有原内容，说明该文件不在暂存区中。
+    let note = if hunk.old.is_empty() {
+        t!("git-change-popup-not-in-index").to_owned()
+    } else {
+        t!("git-change-popup-base").to_owned()
     };
     let mut counter = String::new();
     let _ = write!(counter, "{} / {count}", popup.hunk + 1);

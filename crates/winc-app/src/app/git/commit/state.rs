@@ -4,6 +4,7 @@ use winc_core::diff::Pick;
 use winc_editor::diff_view::DiffView;
 
 use super::*;
+use crate::app::git::Compare;
 
 impl CommitState {
     /// 返回当前按下「提交」不会提交的原因；可以提交（或正在提交）时为 `None`。
@@ -102,11 +103,13 @@ impl CommitState {
         }
     }
 
-    /// 返回文件 `entry` 在差异 `view` 中各段改动的暂存状态，下标同 `view.hunks`。
+    /// 返回文件 `entry` 在差异 `view`（按 `compare` 比较）中各段改动的暂存状态，下标同
+    /// `view.hunks`。
     ///
-    /// [`Pick::Apply`] 为已暂存，[`Pick::Skip`] 为未暂存，[`Pick::Lines`] 列出未暂存的行。该文件
-    /// 只能按文件暂存（见 [`stages_by_hunk`]）、暂存区中的内容不是文本时为空。
-    pub fn hunk_inclusions(&self, entry: &Entry, view: &DiffView) -> Vec<Pick> {
+    /// [`Pick::Apply`] 为已暂存，[`Pick::Skip`] 为未暂存。勾选式下取自界面中的勾选；暂存区视图中
+    /// 与暂存区比较的差异都是未暂存的改动，与上次提交比较的差异都是已暂存的改动。该文件只能按
+    /// 文件暂存（见 [`stages_by_hunk`]）时为空。
+    pub fn hunk_inclusions(&self, entry: &Entry, view: &DiffView, compare: Compare) -> Vec<Pick> {
         if !self.staging {
             let all: HunkIds = (view.keys.iter().zip(&view.hunks))
                 .map(|(&key, hunk)| (key, hunk.old.clone()))
@@ -116,40 +119,12 @@ impl CommitState {
         if !stages_by_hunk(entry) {
             return Vec::new();
         }
-        let count = view.hunks.len();
-        if entry.staged.is_none() {
-            return vec![Pick::Skip; count];
-        }
-        let Some(index) = self.index.get(&entry.path) else {
-            // 暂存区中的内容尚未读到：全部暂存的文件各段都已暂存，其余先按未暂存显示。
-            let all = entry.unstaged.is_none();
-            return vec![if all { Pick::Apply } else { Pick::Skip }; count];
+        let pick = match compare {
+            Compare::Working => Pick::Skip,
+            Compare::Staged => Pick::Apply,
+            Compare::Head => return Vec::new(),
         };
-        let Some(text) = &index.text else {
-            return Vec::new();
-        };
-        let all: HunkIds = (view.keys.iter().zip(&view.hunks))
-            .map(|(&key, hunk)| (key, hunk.old.clone()))
-            .collect();
-        let mut cached = index.picks.borrow_mut();
-        if let Some((_, picks)) = cached.as_ref().filter(|(of, _)| *of == all) {
-            return picks.clone();
-        }
-        let (head, work) = (view.old.text.to_string(), view.new.text.to_string());
-        let picks = winc_core::diff::staged_picks(&head, text, &work, &view.hunks);
-        *cached = Some((all, picks.clone()));
-        picks
-    }
-
-    /// 返回文件 `path` 在暂存区中的内容；尚未读到、不是文本时为 `None`。
-    pub(in crate::app) fn index_text(&self, path: &Path) -> Option<&str> {
-        self.index.get(path)?.text.as_deref()
-    }
-
-    /// 记下文件 `path` 在暂存区中的内容 `text`（不是文本时为 `None`）。
-    pub(in crate::app) fn set_index_text(&mut self, path: PathBuf, text: Option<String>) {
-        let picks = RefCell::new(None);
-        self.index.insert(path, IndexText { text, picks });
+        vec![pick; view.hunks.len()]
     }
 
     /// 界面改动了暂存区：此前发出的读取结果不再采用，勾选框的缓存作废。
@@ -420,14 +395,6 @@ impl CommitState {
         self.sort_files(status, &mut files);
         out.push_files(&files, depth);
     }
-}
-
-/// 一个文件在暂存区中的内容，以及按它算出的各段改动的暂存状态。
-pub(in crate::app::git) struct IndexText {
-    /// 暂存区中的内容；不是 UTF-8 文本时为 `None`，该文件只能按文件暂存。
-    text: Option<String>,
-    /// 最近一次算出的暂存状态，以及当时的各段改动。
-    picks: RefCell<Option<(HunkIds, Vec<Pick>)>>,
 }
 
 /// 一份差异中各段改动的键和在上次提交中的行区间：两者都相同时差异没有变化。

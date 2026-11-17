@@ -31,7 +31,6 @@ mod state;
 
 use picks::Skip;
 use staging::StageJob;
-use state::*;
 pub(crate) use state::{CommitScope, stages_by_hunk};
 
 use std::cell::RefCell;
@@ -532,6 +531,11 @@ pub enum CommitTarget {
     Check(usize),
     /// 文件那一行：选中并预览差异；双击打开文件。
     File(usize),
+    /// 「已暂存的更改」组里的文件行：同 [`CommitTarget::File`]，差异按这一组比较。
+    ///
+    /// 同一个文件可能同时出现在「已暂存的更改」和「更改」两组，而预览标签只保留一个，因此差异
+    /// 和行内操作的方向由点的是哪一组的那一行决定。
+    FileIn(usize, CommitGroup),
     /// 悬停文件行时右端的「打开文件」按钮，参数同 [`CommitTarget::File`]。
     OpenFile(usize),
     /// 悬停文件行时右端的「回滚」按钮，参数同 [`CommitTarget::File`]。
@@ -663,9 +667,6 @@ enum Outcome {
     Reformatted(usize, PathBuf),
     /// 写入其他仓库暂存区的一步操作完成，或者失败的原因。
     OtherStaged(Result<(), String>),
-    /// 读到了文件在暂存区中的内容：仓库、文件、发出读取时暂存区的版本、内容（不是文本时为
-    /// `None`）。
-    IndexText(PathBuf, PathBuf, u64, Option<String>),
     /// 准备好了储藏里一个文件的差异（标签的标题），或者失败的原因。
     StashDiff(
         String,
@@ -791,10 +792,8 @@ pub(crate) struct CommitState {
     pub(crate) no_verify: bool,
     /// 正在读取的状态开始于最近一次暂存的操作之前：读到后不采用。
     status_outdated: bool,
-    /// 打开着差异的文件在暂存区中的内容。
-    index: HashMap<PathBuf, IndexText>,
-    /// 暂存区每被界面改动一次加 1：此前发出的读取结果不再采用。
-    index_version: u64,
+    /// 暂存区每被界面改动一次加 1：已打开的差异据此重新比较。
+    pub(crate) index_version: u64,
     /// 这次合并（拣选、还原）的提交信息草稿已经填进去过了：用户清空以后不再填。
     pub(super) prefilled: bool,
     /// 收起的组（下标是 `CommitGroup as usize`）。
@@ -905,7 +904,6 @@ impl CommitState {
             self.staging = on;
             self.reset_checks();
             self.skipped.clear();
-            self.index.clear();
             self.layout += 1;
         }
     }
@@ -974,7 +972,6 @@ impl Default for CommitState {
             commit_queued: false,
             no_verify: false,
             status_outdated: false,
-            index: HashMap::new(),
             index_version: 0,
             prefilled: false,
             collapsed: [false; CommitGroup::COUNT],

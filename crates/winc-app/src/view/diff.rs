@@ -25,6 +25,7 @@ use super::editor::{
 };
 use super::*;
 use crate::app::diff::{DIFF_HSCROLL, DiffHScroll, DiffPane};
+use crate::app::git::Compare;
 use crate::app::vim::CaretShape;
 use crate::app::{DIFF_TEXT_PAD, DiffParts, DiffTarget, Focus, HunkKind, diff_parts};
 use crate::icons::Direction;
@@ -206,7 +207,10 @@ pub(super) fn draw_diff(app: &mut App, frame: &mut Frame<'_>, index: usize) {
         });
     let scroll = (scroll, shift.as_ref());
 
-    draw_body(app, frame, &mut view, &parts, scroll, pos, &edit, &mut hits);
+    let compare = app.diff_compare(index);
+    draw_body(
+        app, frame, &mut view, &parts, scroll, pos, &edit, compare, &mut hits,
+    );
     let (scroll, _) = scroll;
     sticky::draw(app, frame, &mut view, &parts, scroll, pos, &mut hits);
     draw_header(app, frame, &view, &parts, pos, &mut hits);
@@ -607,6 +611,7 @@ fn draw_body(
     (scroll, shift): (Scroll, Option<&FoldShift>),
     pos: f64,
     edit: &EditState,
+    compare: Option<Compare>,
     hits: &mut Vec<(Rect, DiffTarget)>,
 ) {
     let p = app.palette;
@@ -637,9 +642,10 @@ fn draw_body(
         |view: &DiffView, h: usize| unified.then(|| body.y + (view.hunk_pos(h) - pos) as f32 * lh);
     let drawn = drawn_rows(view, body, (scroll, shift), pos, lh);
     // 各段改动的暂存状态；文件不在提交视图里、只能按文件暂存时为空，不绘制任何勾选框。
-    let inclusions: Vec<Pick> = (app.diff_entry(view)).map_or_else(Vec::new, |entry| {
-        app.git.commit.hunk_inclusions(entry, view)
-    });
+    let inclusions: Vec<Pick> = match (app.diff_entry(view), compare) {
+        (Some(entry), Some(compare)) => app.git.commit.hunk_inclusions(entry, view, compare),
+        _ => Vec::new(),
+    };
     let mut chars: Vec<char> = Vec::with_capacity(256);
     let mut tokens = Vec::with_capacity(32);
     let mut number = String::new();

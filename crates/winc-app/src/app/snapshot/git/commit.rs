@@ -766,7 +766,7 @@ fn snapshot_partial_lines() {
     )
     .unwrap();
     app.git_refresh();
-    app.git_preview_changes(&file);
+    app.preview_changes(&file, app.commit_compare(None));
     paint(&mut app);
     let text = std::fs::read_to_string(&file).unwrap();
     let line = text.lines().position(|l| l == "let added_b = 2;").unwrap();

@@ -399,13 +399,22 @@ fn draw_file_row(
         app.pointer.hover,
         Hover::Commit(
             CommitTarget::File(i)
+                | CommitTarget::FileIn(i, _)
                 | CommitTarget::Check(i)
                 | CommitTarget::OpenFile(i)
                 | CommitTarget::RevertFile(i)
                 | CommitTarget::StageFile(i, _)
         ) if i == index
     );
-    let targets = file_action_targets(app, r.cx.rows.group_of(i), index);
+    let group = r.cx.rows.group_of(i);
+    let targets = file_action_targets(app, group, index);
+    // 显示暂存区时同一文件可能同时出现在「已暂存的更改」和「更改」两组，各组的基准不同（见
+    // `Compare`）：命中带上组信息，按下时据此决定比较哪两份内容。勾选式里各组都按 `HEAD`
+    // 比较，不必区分。
+    let row = match group {
+        Some(group) if app.git.commit.staging() => CommitTarget::FileIn(index, group),
+        _ => CommitTarget::File(index),
+    };
     // 悬停时右端的状态字母替换为「打开文件」「回滚」两个按钮；文件名放不下而显示全名时，
     // 按钮跟在全名之后（见 `commit_overflow`）。
     let actions = match full {
@@ -526,10 +535,10 @@ fn draw_file_row(
         // 显示全名的这一行覆盖列表右边的滚动条（见 `draw_commit_overflow`）：行底色右边到
         // 侧栏边缘的区域同样属于这一行，鼠标移入时全名保持显示。
         let edge = Rect::new(band.right(), y, list.right() - band.right(), COMMIT_ROW);
-        hits.push((edge, CommitTarget::File(index)));
-        hits.push((spill, CommitTarget::File(index)));
+        hits.push((edge, row));
+        hits.push((spill, row));
     }
     let check = Rect::new(file_check - 8.0, y + 4.0, 16.0, 16.0);
     r.check_hit(hits, check, CommitTarget::Check(index));
-    hits.push((band.intersect(list), CommitTarget::File(index)));
+    hits.push((band.intersect(list), row));
 }

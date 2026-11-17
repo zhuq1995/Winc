@@ -1,8 +1,8 @@
-//! 编辑区行号栏中的 Git 改动标记：与 `HEAD` 中的版本逐行比较，新增、修改的行在行号右侧显示
+//! 编辑区行号栏中的 Git 改动标记：与暂存区中的版本逐行比较，新增、修改的行在行号右侧显示
 //! 细色条，删除处显示小三角；点击标记弹出卡片，提供原内容、回滚和显示差异。
 //!
-//! 各文件在 `HEAD` 中的内容（基准）在首次使用时于后台读取，按文档编码解码，`HEAD` 变化时全部
-//! 作废并重新读取。改动按文档版本号缓存，文本变化时在后台重新计算，完成前继续绘制上一次的结果；
+//! 各文件在暂存区中的内容（基准）在首次使用时于后台读取，按文档编码解码，`HEAD` 或暂存区变化
+//! 时作废并重新读取。改动按文档版本号缓存，文本变化时在后台重新计算，完成前继续绘制上一次的结果；
 //! 回滚、跳转和打开卡片需要准确的行号，标记不是最新时当场计算。绘制由 `view/git/changes.rs` 完成。
 
 use crate::app::scroll::set_scroll_line;
@@ -19,6 +19,7 @@ use winc_core::{Change, EditKind, Lines, Transaction};
 use winc_editor::diff_view::inline_marks;
 use winc_editor::encoding::decode_known;
 use winc_editor::format::Cancel;
+use winc_editor::git::{Change as GitChange, Status};
 use winc_editor::{DocumentId, LARGE_FILE, looks_binary};
 use winc_i18n::t;
 use winc_render::Rect;
@@ -133,18 +134,20 @@ struct Fetched {
     path: PathBuf,
     /// 读取时的基准编号（[`LineChanges::epoch`]）；与当前编号不一致时丢弃。
     epoch: u64,
-    /// 文件在 `HEAD` 中的内容；不在 `HEAD` 中、为二进制、过大或读取失败时为 `None`，不显示标记。
+    /// 文件在暂存区中的内容；不在暂存区中、为二进制、过大或读取失败时为 `None`，不显示标记。
     text: Option<Arc<str>>,
 }
 
 /// 行号栏改动标记的状态。
 pub(crate) struct LineChanges {
-    /// 各文件的基准；`None` 表示该文件不显示标记（不在 `HEAD` 中、二进制、过大）。
+    /// 各文件的基准；`None` 表示该文件不显示标记（不在暂存区中、二进制、过大）。
     bases: HashMap<PathBuf, Option<Arc<str>>>,
     /// 正在后台读取基准的文件。
     pending: HashSet<PathBuf>,
     /// 基准对应的 `HEAD` 提交号；变化时基准作废。
     oid: Option<String>,
+    /// 基准对应的暂存区状态（见 [`staged_fingerprint`]）；变化时基准作废。
+    staged: u64,
     /// 基准编号，每作废一次加 1；作废前发出的请求送达时据此丢弃。
     epoch: u64,
     marks: HashMap<DocumentId, Marks>,
@@ -158,12 +161,29 @@ pub(crate) struct LineChanges {
     results: (Sender<Fetched>, Receiver<Fetched>),
 }
 
+/// 暂存区的指纹：各文件在暂存区中与工作区中的状态。
+///
+/// 暂存区被改动后状态通常在文件层面区分不出（原来就是 `Modified`），界面改动暂存区时另行作废
+/// （见 [`LineChanges::index_changed`]）；这里覆盖在其他程序中执行 `git add` 等情况。
+pub(in crate::app) fn staged_fingerprint(status: &Status) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    status.entries.len().hash(&mut hasher);
+    for entry in &status.entries {
+        entry.path.hash(&mut hasher);
+        let code = |change: Option<GitChange>| change.map_or(' ', GitChange::letter);
+        (code(entry.staged), code(entry.unstaged)).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 impl Default for LineChanges {
     fn default() -> Self {
         LineChanges {
             bases: HashMap::new(),
             pending: HashSet::new(),
             oid: None,
+            staged: 0,
             epoch: 0,
             marks: HashMap::new(),
             computing: HashMap::new(),
@@ -176,10 +196,26 @@ impl Default for LineChanges {
 }
 
 impl LineChanges {
-    /// 作废所有基准和改动（`HEAD` 变化、仓库更换或模块关闭时）。
+    /// 作废所有基准和改动（`HEAD` 或暂存区变化、仓库更换或模块关闭时）。
     pub(super) fn forget(&mut self) {
         self.bases.clear();
         self.pending.clear();
+        self.marks.clear();
+        self.computing.clear();
+        self.popup = None;
+        self.preview = None;
+        self.epoch += 1;
+    }
+
+    /// 暂存区中的内容被改动：作废 `paths` 的基准，并让已算出的改动全部失效。
+    ///
+    /// 基准编号加 1：作废前发出的请求送达时据此丢弃；下次绘制时重新读取这些文件的基准，其余
+    /// 文件的基准保持不变。
+    pub(in crate::app) fn index_changed(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        for path in paths {
+            self.bases.remove(&path);
+            self.pending.remove(&path);
+        }
         self.marks.clear();
         self.computing.clear();
         self.popup = None;
@@ -207,20 +243,18 @@ impl LineChanges {
         self.pending.remove(path);
     }
 
-    /// 记录 `HEAD` 当前指向 `oid`；与基准所取自的提交不同时作废基准。
-    pub(super) fn head_is(&mut self, oid: Option<&str>) {
-        if self.oid.as_deref() != oid {
+    /// 记录当前的 `HEAD` 与暂存区；与基准所取自的版本不同时作废基准。
+    pub(super) fn status_is(&mut self, status: &Status) {
+        let oid = status.oid.as_deref();
+        let staged = staged_fingerprint(status);
+        if self.oid.as_deref() != oid || self.staged != staged {
             self.oid = oid.map(str::to_owned);
+            self.staged = staged;
             self.forget();
         }
     }
 
-    /// 返回基准对应的 `HEAD` 提交号的前 7 位；不在仓库中或尚无提交时返回 `None`。
-    pub(crate) fn short_head(&self) -> Option<&str> {
-        self.oid.as_deref().map(|oid| &oid[..oid.len().min(7)])
-    }
-
-    /// 返回文件 `path` 的基准（在 `HEAD` 中的内容）；尚未读取或不显示标记时返回 `None`。
+    /// 返回文件 `path` 的基准（在暂存区中的内容）；尚未读取或不显示标记时返回 `None`。
     pub(crate) fn base(&self, path: &std::path::Path) -> Option<&str> {
         self.bases.get(path)?.as_deref()
     }
@@ -401,10 +435,16 @@ impl App {
         let sender = self.git.changes.results.0.clone();
         let epoch = self.git.changes.epoch;
         self.spawn_git(UserEvent::GitBase, move |tool| {
-            let text = tool
-                .ok()
-                .and_then(|git| git.head_content(&root, &path, &Cancel::default()).ok())
-                .flatten()
+            // 暂存区里没有这个文件（还没暂存的新文件、冲突中的文件）时与 `HEAD` 比较：冲突中
+            // 的文件没有单一的暂存区版本，`HEAD` 中的内容正是合并开始的地方。
+            let bytes = tool.ok().and_then(|git| {
+                let cancel = Cancel::default();
+                git.index_content(&root, &path, &cancel)
+                    .ok()
+                    .flatten()
+                    .or_else(|| git.head_content(&root, &path, &cancel).ok().flatten())
+            });
+            let text = bytes
                 .filter(|bytes| bytes.len() as u64 <= LARGE_FILE && !looks_binary(bytes))
                 .map(|bytes| Arc::from(decode_known(&bytes, encoding)));
             let _ = sender.send(Fetched { path, epoch, text });

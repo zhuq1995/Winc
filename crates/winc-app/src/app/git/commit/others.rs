@@ -8,6 +8,7 @@
 use std::sync::PoisonError;
 
 use super::*;
+use crate::app::git::Compare;
 
 /// 多仓库时其他仓库一节里的一组。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -350,11 +351,10 @@ impl App {
 
     /// 点了其他仓库的标题行或文件：切换到该仓库，点的是文件时选中它并预览差异。
     pub(super) fn press_other(&mut self, target: CommitTarget) {
-        let (repo, entry) = match target {
-            CommitTarget::OtherRepository(repo) => (repo, None),
-            CommitTarget::OtherFile(repo, entry) | CommitTarget::OtherStagedFile(repo, entry) => {
-                (repo, Some(entry))
-            }
+        let (repo, entry, staged) = match target {
+            CommitTarget::OtherRepository(repo) => (repo, None, false),
+            CommitTarget::OtherFile(repo, entry) => (repo, Some(entry), false),
+            CommitTarget::OtherStagedFile(repo, entry) => (repo, Some(entry), true),
             _ => return,
         };
         let path = entry.and_then(|entry| {
@@ -364,7 +364,12 @@ impl App {
         self.git_switch_repository(repo);
         self.focus = Focus::CommitList;
         if let Some(path) = path {
-            self.select_commit_file(path);
+            let compare = if staged {
+                Compare::Staged
+            } else {
+                self.commit_compare(None)
+            };
+            self.select_commit_file(path, compare);
         }
         self.request_redraw();
     }

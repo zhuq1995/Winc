@@ -774,9 +774,6 @@ impl App {
                 Outcome::OtherStaged(result) => self.other_staging_finished(result),
                 Outcome::TodoChecked(count, root) => self.todo_checked(count, &root),
                 Outcome::Reformatted(count, root) => self.reformatted(count, &root),
-                Outcome::IndexText(root, path, version, text) => {
-                    self.index_text_arrived(&root, path, version, text);
-                }
                 Outcome::Last(last, root) => {
                     let oid = self.git.status.as_ref().and_then(|s| s.oid.as_ref());
                     if self.git.root.as_deref() == Some(root.as_path())

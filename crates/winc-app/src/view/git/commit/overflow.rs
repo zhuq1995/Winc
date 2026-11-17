@@ -25,6 +25,7 @@ pub(in crate::view) fn commit_overflow(app: &App, frame: &mut Frame<'_>) -> Opti
         // 鼠标移到跟在全名后面的按钮上时，仍保持全名显示。
         Hover::Commit(
             CommitTarget::File(f)
+            | CommitTarget::FileIn(f, _)
             | CommitTarget::Check(f)
             | CommitTarget::OpenFile(f)
             | CommitTarget::RevertFile(f)

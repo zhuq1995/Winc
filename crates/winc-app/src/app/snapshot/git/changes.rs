@@ -289,3 +289,28 @@ fn shoot_overview_ruler() {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+#[test]
+fn gutter_marks_compare_against_the_index() {
+    let Some((mut app, root)) = git_app("git-gutter-index", true) else {
+        return;
+    };
+    // `long_repo`：第 6 行改了（`value_5 = 500`），第 51 行删了；暂存区与上次提交相同。
+    let file = root.join("src/main.rs");
+    app.open_path(&file);
+    paint(&mut app);
+    let id = app.editor.active().unwrap().id;
+    assert_eq!(app.git.changes.hunks(id).len(), 2);
+    let path = app.editor.active().unwrap().path.clone().unwrap();
+    let work = std::fs::read_to_string(&file).unwrap();
+    // 基准是 `HEAD` 中的内容：与工作区不同。
+    assert_ne!(app.git.changes.base(&path).unwrap(), work);
+
+    // 暂存整个文件：暂存区与工作区相同，改动标记消失，基准换成暂存区中的内容。
+    app.stage_paths(std::slice::from_ref(&file), true);
+    paint(&mut app);
+    paint(&mut app);
+    assert!(app.git.changes.hunks(id).is_empty());
+    assert_eq!(app.git.changes.base(&path).unwrap(), work);
+    let _ = std::fs::remove_dir_all(&root);
+}
