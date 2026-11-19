@@ -370,6 +370,103 @@ fn switching_folders_keeps_each_folders_tabs() {
     let _ = std::fs::remove_dir_all(&b);
 }
 
+#[test]
+fn close_project_entries_work_with_one_project() {
+    use crate::app::input::context_menu::MenuEntry;
+    use crate::keymap::Action;
+
+    let dir = sample_folder("close-project-entries");
+    let mut winc = crate::winc::Winc::new(
+        None,
+        Some(crate::winc::Template {
+            config_path: None,
+            state_path: None,
+            backup_root: None,
+        }),
+    );
+    let key = winc.add_detached(app_with(&dir.join("a.txt"), false));
+    let app = winc.app(key);
+    app.run(Command::Insert("修改".into()));
+    paint(app);
+    assert_eq!(app.projects_width(), 0.0);
+
+    app.open_project_menu();
+    let menu = app.overlays.context_menu.as_ref().unwrap();
+    for command in [MenuCommand::CloseFolder, MenuCommand::CloseProject] {
+        assert!(menu.entries.contains(&MenuEntry::Item(command, true)));
+    }
+    app.run_menu_command(MenuCommand::CloseProject);
+    assert_eq!(
+        app.closing.prompt.as_ref().unwrap().request,
+        CloseRequest::CloseProject
+    );
+    app.answer_save_prompt(SaveChoice::Cancel);
+    assert!(app.editor.active().unwrap().is_dirty());
+
+    app.open_palette();
+    app.overlays.picker.input.set_text(">close project");
+    app.picker_refresh();
+    assert_eq!(palette()[app.overlays.picker.hits[0]], Action::CloseProject);
+    app.picker_accept();
+    assert_eq!(
+        app.closing.prompt.as_ref().unwrap().request,
+        CloseRequest::CloseProject
+    );
+    app.answer_save_prompt(SaveChoice::Discard);
+    assert!(!winc.settle_for_test().1);
+    assert_eq!(winc.keys(), [key]);
+    let app = winc.app(key);
+    assert!(app.editor.root().is_none() && app.editor.documents.is_empty());
+    assert!(!app.action_available(Action::CloseProject));
+    paint(app);
+    assert!(!app.hits.start.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn standalone_folder_does_not_offer_close_project() {
+    use crate::app::input::context_menu::MenuEntry;
+    use crate::keymap::Action;
+
+    let dir = sample_folder("standalone-close-project");
+    let mut winc = crate::winc::Winc::new(None, None);
+    let mut app = blank_app(false);
+    app.open_path(&dir.join("a.txt"));
+    app.start_one_off(&crate::cli::Args {
+        wait: true,
+        ..Default::default()
+    });
+    let key = winc.add_detached(app);
+    let app = winc.app(key);
+    app.open_path(&dir);
+    paint(app);
+    app.open_project_menu();
+    let menu = app.overlays.context_menu.as_ref().unwrap();
+    assert!(
+        menu.entries
+            .contains(&MenuEntry::Item(MenuCommand::CloseFolder, true))
+    );
+    assert!(
+        !menu
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, MenuEntry::Item(MenuCommand::CloseProject, _)))
+    );
+    app.run_menu_command(MenuCommand::CloseProject);
+    app.open_palette();
+    assert!(
+        app.overlays
+            .picker
+            .hits
+            .iter()
+            .all(|&index| palette()[index] != Action::CloseProject)
+    );
+    assert!(app.editor.root().is_some());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 返回存放备份的临时目录路径（名称含 `name` 和进程号），并清除已有的同名目录。
 pub(in crate::app::snapshot) fn backup_root(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("winc-backups-{name}-{}", std::process::id()));

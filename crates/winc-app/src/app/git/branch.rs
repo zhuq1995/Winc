@@ -298,8 +298,8 @@ pub(crate) fn stash_menu(stashes: &[Stash], busy: bool) -> Vec<MenuEntry> {
 
 /// 分支选择器里第 `index` 个分支的操作菜单：按 `BranchOp::GROUPS` 分组，组之间有分隔线。
 ///
-/// `branches` 是本地分支在前、远程分支在后的列表，当前分支只能重命名：从当前分支新建分支、工作树
-/// 在分支选择器的底部；`held` 是被别的工作树
+/// `branches` 是本地分支在前、远程分支在后的列表。当前分支可以重命名和复制分支名。
+/// 从当前分支新建分支、工作树在分支选择器的底部。`held` 是被别的工作树
 /// 签出的本地分支，它们的「签出」是切到那个工作树，不能删除；`stale` 是被目录已经不在的工作树
 /// 占着的分支，git 仍然不允许签出、删除，要先清理。
 pub(crate) fn branch_ops(
@@ -337,6 +337,7 @@ pub(crate) fn branch_ops(
                 let elsewhere = held.contains(&local_name(branch));
                 let gone = stale.contains(&local_name(branch));
                 let enabled = match op {
+                    BranchOp::CopyName => true,
                     BranchOp::Delete => !busy && !elsewhere && !gone,
                     BranchOp::Checkout if elsewhere => true,
                     BranchOp::Checkout if gone => false,

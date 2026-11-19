@@ -716,25 +716,56 @@ impl App {
             CommitTarget::OtherGroupStage(repo, on) => (repo, None, on),
             _ => return,
         };
+        if self.git.commit.busy || self.git.branch.running.is_some() {
+            return;
+        }
         let Some(root) = self.git.repositories.get(repo).cloned() else {
             return;
         };
-        let mut touched = Vec::new();
-        {
-            let mut summaries = (self.git.summaries.lock()).unwrap_or_else(PoisonError::into_inner);
-            let Some(status) = summaries.get_mut(&root) else {
+        let entries: Vec<(usize, Entry)> = {
+            let summaries = self
+                .git
+                .summaries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let Some(status) = summaries.get(&root) else {
                 return;
             };
-            let entries = status.entries.iter_mut().enumerate();
-            let wanted = entries.filter(|(i, e)| entry.is_none_or(|n| n == *i) && !e.conflicted());
-            for (_, e) in wanted {
-                staging::flip_staged(e, on, &mut touched);
+            status
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(i, e)| entry.is_none_or(|n| n == *i) && !e.conflicted())
+                .map(|(i, e)| (i, e.clone()))
+                .collect()
+        };
+        let mut touched = Vec::new();
+        let updates: Vec<_> = entries
+            .into_iter()
+            .filter_map(|(i, mut entry)| {
+                let before = touched.len();
+                staging::flip_staged(&mut entry, on, &mut touched);
+                (touched.len() != before).then_some((i, entry))
+            })
+            .collect();
+        if touched.is_empty() || on && !self.save_dirty_documents(&touched) {
+            return;
+        }
+        {
+            let mut summaries = self
+                .git
+                .summaries
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(status) = summaries.get_mut(&root) {
+                for (i, next) in updates {
+                    if let Some(entry) = status.entries.get_mut(i).filter(|e| e.path == next.path) {
+                        *entry = next;
+                    }
+                }
             }
         }
         self.git.summaries_changed();
-        if touched.is_empty() {
-            return;
-        }
         (self.git.commit.other_stage_queue).push_back((root, on, touched));
         self.pump_other_staging();
         self.request_redraw();
@@ -766,7 +797,7 @@ impl App {
         if let Err(e) = result {
             // 界面已按成功的结果显示：放弃其余的操作，按各仓库的实际状态重新显示。
             self.git.commit.other_stage_queue.clear();
-            self.git.commit.commit_queued = false;
+            self.git.commit.commit_queued = None;
             self.notify(t!("git-stage-failed", error = e));
         }
         if !self.git.commit.other_stage_queue.is_empty() {
@@ -776,8 +807,8 @@ impl App {
         // 这期间可能已经换到了其中一个仓库：当前仓库的状态和其他仓库的一起重读。
         self.git_read_summaries();
         self.git_refresh();
-        if std::mem::take(&mut self.git.commit.commit_queued) {
-            self.git_commit();
+        if let Some(request) = self.git.commit.commit_queued.take() {
+            self.git_commit_request(request);
         }
     }
 }

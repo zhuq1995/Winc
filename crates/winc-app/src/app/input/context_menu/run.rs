@@ -30,6 +30,16 @@ impl App {
             MenuTarget::Tree(path) => self.run_tree_command(command, path),
             MenuTarget::Tab(id) => self.run_tab_command(command, id),
             MenuTarget::CommitFile(path) => self.run_commit_file_command(command, path),
+            MenuTarget::CommitFiles {
+                root,
+                group,
+                paths,
+                batch,
+            } => {
+                if self.git.root.as_ref() == Some(&root) && self.git.commit.staging() {
+                    self.run_commit_group_file_command(command, group, paths, batch);
+                }
+            }
             MenuTarget::LogCommit(oid) => self.run_log_commit_command(command, &oid),
             MenuTarget::LogFile(i, path) => self.run_log_file_command(command, i, path),
             MenuTarget::SearchResult(path, m) => self.run_search_result_command(command, path, m),
@@ -152,6 +162,9 @@ impl App {
                     }
                 }
                 MenuCommand::CloseFolder => self.close_folder(),
+                MenuCommand::CloseProject => {
+                    self.run_action(Action::CloseProject);
+                }
                 _ => {}
             },
             MenuTarget::AddLanguage(task) => {

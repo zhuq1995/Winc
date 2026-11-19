@@ -52,6 +52,7 @@ fn repository(name: &str, names: &[&str]) -> Option<(Git, PathBuf)> {
     let dir = crate::test_util::scratch(name);
     let root = winc_config::files::canonicalize(&dir).unwrap();
     run(&root, &["init", "-q", "-b", "main"]);
+    run(&root, &["config", "--local", "core.autocrlf", "false"]);
     run(&root, &["config", "user.name", "t"]);
     run(&root, &["config", "user.email", "t@t"]);
     run(&root, &["config", "commit.gpgsign", "false"]);

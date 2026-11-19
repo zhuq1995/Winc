@@ -57,3 +57,35 @@ fn the_current_worktree_main_and_held_branches() {
 fn a_worktree_is_named_after_its_folder() {
     assert_eq!(worktree_name(&worktree("/r/winc.git", None)), "winc");
 }
+
+#[test]
+fn removing_a_worktree_from_a_project_without_a_window_still_requires_confirmation() {
+    use winit::keyboard::{Key, NamedKey};
+
+    let mut app = App::new(
+        winc_editor::Editor::default(),
+        None,
+        crate::bench::Bench::off(),
+        winc_config::Config::default(),
+    );
+    let linked = worktree("/r/winc.worktrees/feature", branch("feature"));
+    app.git.root = Some(PathBuf::from("/r/winc"));
+    app.git.worktrees = vec![worktree("/r/winc", branch("main")), linked.clone()];
+    app.trash = |_| panic!("worktree removal requires confirmation");
+
+    assert!(app.window.handle.is_none());
+    app.confirm_remove_worktree(RemoveCheck {
+        path: linked.path,
+        branch: Some("feature".into()),
+        check: WorktreeCheck {
+            untracked: 1,
+            merged: true,
+            ..WorktreeCheck::default()
+        },
+    });
+    assert!(app.overlays.alert.is_some());
+    assert!(app.alert_key(&Key::Named(NamedKey::Enter), false));
+    assert!(app.overlays.alert.is_some());
+    assert!(app.alert_key(&Key::Named(NamedKey::Escape), false));
+    assert!(app.overlays.alert.is_none());
+}

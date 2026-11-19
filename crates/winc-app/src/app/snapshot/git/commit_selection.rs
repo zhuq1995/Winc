@@ -181,7 +181,7 @@ fn command_click_on_a_folder_row_selects_every_change_under_it() {
 
     // ⌘ 单击目录：该目录下的文件都加入选区（`Cargo.toml` 是原来选中的），目录不收起。
     let cargo = root.join("Cargo.toml");
-    app.select_commit_files(vec![cargo.clone()]);
+    app.select_commit_files(vec![cargo.clone()], None);
     app.pointer.modifiers = command_modifiers();
     app.press_commit(CommitTarget::Dir(src_row(&app)));
     app.pointer.modifiers = ModifiersState::empty();

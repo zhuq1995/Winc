@@ -32,6 +32,10 @@ impl Winc {
             .collect()
     }
 
+    pub(crate) fn active_for_test(&self) -> Option<WindowKey> {
+        self.active_key()
+    }
+
     /// 测试用：把当前窗口设为 `key`。
     pub(crate) fn set_active(&mut self, key: WindowKey) {
         self.active = Some(key);
@@ -40,6 +44,22 @@ impl Winc {
     /// 测试用：跑一遍处理完事件后的那一步，返回窗口的请求和是否该结束事件循环。
     pub(crate) fn settle_for_test(&mut self) -> (Vec<Request>, bool) {
         self.settle()
+    }
+
+    pub(crate) fn apply_request_for_test(&mut self, request: Request) {
+        self.apply_request(request);
+    }
+
+    pub(crate) fn launched_for_test(&mut self, targets: Vec<Target>) -> bool {
+        let (send, receive) = std::sync::mpsc::channel();
+        self.launched(
+            crate::instance::Launch {
+                targets,
+                token: None,
+            },
+            send,
+        );
+        receive.try_recv().unwrap()
     }
 
     /// 测试用：返回打开 `targets` 的窗口，语义见 `window_for`。

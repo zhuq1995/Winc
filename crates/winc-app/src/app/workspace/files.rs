@@ -19,6 +19,8 @@ pub enum Pick {
     WslFolder(#[cfg_attr(not(windows), allow(dead_code))] String),
     /// 把文档另存为，参数为要保存的文档。
     SaveAs(DocumentId),
+    /// 为关闭流程另存为，仅此面板的结果可以继续关闭。
+    SaveAsClosing(DocumentId),
     /// 新建工作树对话框「位置」右端的目录按钮：选工作树放在哪个目录下面。
     WorktreeFolder,
     /// 设置中选择窗口的背景图片。
@@ -749,7 +751,7 @@ impl App {
         };
         // 另存为：默认使用原来的名字，从原来所在的目录开始；新文件从已打开的目录开始。
         let (name, dir) = match &kind {
-            Pick::SaveAs(id) => {
+            Pick::SaveAs(id) | Pick::SaveAsClosing(id) => {
                 let doc = self.editor.document(*id);
                 let name = doc.map_or_else(|| "untitled.txt".to_owned(), |d| d.name().into_owned());
                 let dir = doc
@@ -781,7 +783,7 @@ impl App {
                     files: false,
                     dir: None,
                 },
-                Pick::SaveAs(_) => Panel::Save {
+                Pick::SaveAs(_) | Pick::SaveAsClosing(_) => Panel::Save {
                     name: &name,
                     dir: dir.as_deref(),
                 },
@@ -823,7 +825,7 @@ impl App {
                     };
                     (choose, t!("cmd-open-folder"))
                 }
-                Pick::SaveAs(_) => (
+                Pick::SaveAs(_) | Pick::SaveAsClosing(_) => (
                     Choose::Save {
                         name: &name,
                         dir: dir.as_deref(),
@@ -850,7 +852,7 @@ impl App {
                 Pick::KeyFile => t!("workspace-remote-dialog-key-choose"),
                 Pick::OpenFolder | Pick::WorktreeFolder => t!("cmd-open-folder"),
                 Pick::WslFolder(_) => t!("cmd-open-wsl-folder"),
-                Pick::SaveAs(_) => t!("cmd-save-as"),
+                Pick::SaveAs(_) | Pick::SaveAsClosing(_) => t!("cmd-save-as"),
             };
             // 对话框的标题不带省略号；挂在窗口上，打开期间窗口不响应。
             let mut dialog = rfd::FileDialog::new().set_title(title.trim_end_matches('…'));
@@ -871,7 +873,9 @@ impl App {
                     Pick::OpenFolder | Pick::WslFolder(_) | Pick::WorktreeFolder => {
                         dialog.pick_folder()
                     }
-                    Pick::SaveAs(_) => dialog.set_file_name(&name).save_file(),
+                    Pick::SaveAs(_) | Pick::SaveAsClosing(_) => {
+                        dialog.set_file_name(&name).save_file()
+                    }
                 };
                 let _ = proxy.send_event(UserEvent::Picked(kind, path));
             });
@@ -896,30 +900,40 @@ impl App {
 
     /// 处理系统面板的选择结果：`path` 为选中的路径，用户取消时为 `None`。
     pub(in crate::app) fn on_picked(&mut self, kind: Pick, path: Option<PathBuf>) {
-        // 关闭流程中的「保存」在等待这次另存为：保存成功后继续处理剩下的文档；
-        // 取消或保存失败时放弃整个关闭。
-        let continuation = match kind {
-            Pick::SaveAs(_) => self.closing.continuation.take(),
-            Pick::Open
-            | Pick::OpenFolder
-            | Pick::WslFolder(_)
-            | Pick::WorktreeFolder
-            | Pick::BackgroundImage
-            | Pick::KeyFile => None,
+        let continuation = if let Pick::SaveAsClosing(id) = kind {
+            if self
+                .closing
+                .continuation
+                .as_ref()
+                .and_then(|prompt| prompt.dirty.first())
+                != Some(&id)
+            {
+                return;
+            }
+            self.closing.continuation.take()
+        } else {
+            None
         };
-
-        let Some(path) = path else { return };
+        let Some(path) = path else {
+            if continuation.is_some() {
+                self.deferred_close = None;
+            }
+            return;
+        };
 
         match kind {
             Pick::Open | Pick::OpenFolder | Pick::WslFolder(_) => self.open_path(&path),
             Pick::WorktreeFolder => self.worktree_folder_picked(path),
             Pick::BackgroundImage => self.set_background_image(Some(path)),
             Pick::KeyFile => self.key_file_picked(&path),
-            Pick::SaveAs(id) => {
-                if self.save_document(id, Some(path))
-                    && let Some(prompt) = continuation
-                {
-                    self.save_then_close(prompt);
+            Pick::SaveAs(id) | Pick::SaveAsClosing(id) => {
+                let saved = self.save_document(id, Some(path));
+                if let Some(prompt) = continuation {
+                    if saved {
+                        self.save_then_close(prompt);
+                    } else {
+                        self.deferred_close = None;
+                    }
                 }
             }
         }

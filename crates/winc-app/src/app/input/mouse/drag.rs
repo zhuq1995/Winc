@@ -10,6 +10,59 @@ use crate::layout::{PROJECT_GAP, PROJECT_PAD, PROJECT_ROW};
 const PROJECT_DRAG_THRESHOLD: f32 = 4.0;
 
 impl App {
+    /// 返回当前指针下的间隙；原位或未超过阈值时取按下条目之前的间隙。
+    pub(super) fn project_drag_gap(
+        &self,
+        key: crate::winc::WindowKey,
+        from: usize,
+        start_y: f32,
+        dragging: bool,
+    ) -> Option<usize> {
+        let (x, y) = self.pointer.mouse;
+        if !self.project_list_at(x, y)
+            || self.overlays.picker.open
+            || self.overlays.alert.is_some()
+            || self.popup().is_some()
+            || !self.project_rows_current()
+            || self.projects_keys.get(from) != Some(&key)
+        {
+            return None;
+        }
+        if !dragging && (y - start_y).abs() < PROJECT_DRAG_THRESHOLD {
+            return Some(from);
+        }
+        let top = self.layout.projects.y + PROJECT_PAD - self.projects_scroll;
+        let gap = ((y - top) / (PROJECT_ROW + PROJECT_GAP)).round();
+        Some(gap.clamp(0.0, self.projects_keys.len() as f32) as usize)
+    }
+
+    /// 移动鼠标或滚动列表后更新插入线；项目按住期间无需重新判断悬停。
+    pub(super) fn update_project_drag(&mut self) -> bool {
+        let Drag::Project {
+            key,
+            start_y,
+            from,
+            drop,
+        } = self.pointer.drag
+        else {
+            return false;
+        };
+        let target = self
+            .project_drag_gap(key, from, start_y, drop.is_some())
+            .filter(|&gap| gap != from && gap != from + 1);
+        if target != drop {
+            self.pointer.drag = Drag::Project {
+                key,
+                start_y,
+                from,
+                drop: target,
+            };
+            self.request_redraw();
+        }
+        self.update_cursor_icon();
+        true
+    }
+
     /// 处理鼠标移动到窗口坐标 (`x`, `y`)（逻辑像素）：更新悬停、指针样式和进行中的拖动。
     pub(in crate::app) fn on_mouse_move(&mut self, x: f32, y: f32) {
         self.pointer.mouse = (x, y);
@@ -79,32 +132,7 @@ impl App {
         }
         self.drag_terminal_tab(x);
 
-        // 拖动项目条目：超过阈值后才算拖动，落点按列表的滚动位置换算；拖动期间不更新悬停。
-        if let Drag::Project {
-            key,
-            start_y,
-            from,
-            drop,
-        } = self.pointer.drag
-        {
-            if drop.is_none() && (y - start_y).abs() < PROJECT_DRAG_THRESHOLD {
-                return;
-            }
-            let count = self.link.shared.projects().len();
-            let top = self.layout.projects.y + PROJECT_PAD - self.projects_scroll;
-            let gap = ((y - top) / (PROJECT_ROW + PROJECT_GAP)).round();
-            let gap = gap.clamp(0.0, count as f32) as usize;
-            let target = (gap != from && gap != from + 1).then_some(gap);
-            if target != drop {
-                self.pointer.drag = Drag::Project {
-                    key,
-                    start_y,
-                    from,
-                    drop: target,
-                };
-                self.request_redraw();
-            }
-            self.update_cursor_icon();
+        if self.update_project_drag() {
             return;
         }
 
@@ -125,7 +153,7 @@ impl App {
 
         match self.pointer.drag {
             Drag::Picture { at } => self.drag_picture(x, y, at),
-            // 项目条目的拖动已在上面处理，落点不取决于鼠标位置以外的状态。
+            // 项目条目的插入线已在上面更新。
             Drag::Project { .. } => {}
             Drag::TerminalSelect | Drag::TerminalMouse(_) => self.terminal_mouse_drag(x, y),
             Drag::None if self.layout.terminal.contains(x, y) => self.terminal_mouse_hover(x, y),

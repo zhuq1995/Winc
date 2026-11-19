@@ -110,6 +110,9 @@ impl CommitState {
     /// 与暂存区比较的差异都是未暂存的改动，与上次提交比较的差异都是已暂存的改动。该文件只能按
     /// 文件暂存（见 [`stages_by_hunk`]）时为空。
     pub fn hunk_inclusions(&self, entry: &Entry, view: &DiffView, compare: Compare) -> Vec<Pick> {
+        if entry.is_symlink {
+            return Vec::new();
+        }
         if !self.staging {
             let all: HunkIds = (view.keys.iter().zip(&view.hunks))
                 .map(|(&key, hunk)| (key, hunk.old.clone()))
@@ -326,6 +329,7 @@ impl CommitState {
             if files.is_empty() {
                 continue;
             }
+            out.group_rows.push((out.rows.len(), group));
             out.rows.push(CommitRow::Group(group));
             let start = out.members.len();
             if self.collapsed[group.index()] {
@@ -382,7 +386,7 @@ impl CommitState {
             out.rows.push(CommitRow::Dir {
                 group,
                 dir: full.clone(),
-                label: label.to_string_lossy().into_owned(),
+                label: CommitRow::path_label(&label).into_owned(),
                 depth,
             });
             if self.dir_collapsed(group, &full) {
@@ -405,7 +409,7 @@ type HunkIds = Vec<(u64, Range<usize>)>;
 pub(crate) enum CommitScope {
     /// 暂存区中这么多个文件的内容。
     Staged(usize),
-    /// 没有暂存任何内容：全部已跟踪文件的改动，共这么多个文件。
+    /// 未暂存任何改动时，确认暂存全部非忽略更改。
     All(usize),
     /// 没有可以提交的内容。
     Nothing,
@@ -416,20 +420,21 @@ impl CommitScope {
     pub(crate) fn of(status: &Status) -> CommitScope {
         let plain = || status.entries.iter().filter(|e| !e.conflicted());
         let staged = plain().filter(|e| e.staged.is_some()).count();
-        let tracked = plain().filter(|e| !e.untracked()).count();
-        match (staged, tracked) {
+        let changed = plain().filter(|e| e.unstaged.is_some()).count();
+        match (staged, changed) {
             (0, 0) => CommitScope::Nothing,
-            (0, tracked) => CommitScope::All(tracked),
+            (0, changed) => CommitScope::All(changed),
             (staged, _) => CommitScope::Staged(staged),
         }
     }
 }
 
-/// 文件 `entry` 是否可以按段、按行暂存：冲突中的文件、被删除的文件和目录只能整个暂存。
+/// 文件 `entry` 是否可以按段、按行暂存：冲突中的文件、被删除的文件、目录和符号链接只能整个暂存。
 pub(crate) fn stages_by_hunk(entry: &Entry) -> bool {
     use winc_editor::git::Change::Deleted;
     !entry.conflicted()
         && !entry.is_dir
+        && !entry.is_symlink
         && entry.staged != Some(Deleted)
         && entry.unstaged != Some(Deleted)
 }

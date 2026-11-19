@@ -570,6 +570,7 @@ impl App {
     /// 本进程不再记着这些备份，之后关闭标签时不会删除，以后打开该目录时由 `restore_tabs` 读回；
     /// 锁放开以后，在本进程中重新打开该目录时也能再取到锁。在已记下现场、准备关闭所有标签时
     /// 调用（macOS 上关闭窗口）。
+    #[cfg(target_os = "macos")]
     pub(super) fn leave_backups_on_disk(&mut self) {
         self.collect_backups(true);
         self.backup.written.clear();

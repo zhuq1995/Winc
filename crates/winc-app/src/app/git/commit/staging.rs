@@ -13,6 +13,8 @@ use crate::app::input::context_menu::MenuEntry;
 pub(super) enum StageJob {
     /// 把这些文件的当前状态加入暂存区。
     Add(Vec<PathBuf>),
+    /// 确认空索引提交后暂存整个仓库。
+    AddAll,
     /// 把这些文件移出暂存区。
     Remove(Vec<PathBuf>),
     /// 暂存（`on` 为真）或取消暂存文件 `path` 的一段改动 `hunk`，或者其中的一行 `line`。
@@ -33,24 +35,59 @@ impl App {
     ///
     /// 已经处于该状态的文件跳过；仍有冲突标记的文件不暂存，否则 `git` 将其视为已解决。
     pub(in crate::app) fn stage_paths(&mut self, paths: &[PathBuf], on: bool) {
-        let Some(status) = self.git.status.as_mut() else {
+        if self.git.commit.busy || self.git.branch.running.is_some() {
+            return;
+        }
+        let Some(status) = self.git.status.as_ref() else {
             return;
         };
         let mut touched = Vec::new();
+        let mut updates = Vec::new();
         let mut unresolved = 0;
-        for entry in (status.entries.iter_mut()).filter(|e| paths.contains(&e.path)) {
-            let pending = on && entry.unstaged.is_some();
-            if pending && entry.conflicted() && status.unresolved.contains(&entry.path) {
+        for (i, entry) in status
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| paths.contains(&e.path))
+        {
+            let dirty = on && self.stage_buffer(&entry.path);
+            let mut next = entry.clone();
+            if dirty && !entry.conflicted() {
+                next.unstaged.get_or_insert(Change::Modified);
+            }
+            if on
+                && next.unstaged.is_some()
+                && entry.conflicted()
+                && status.unresolved.contains(&entry.path)
+            {
                 unresolved += 1;
                 continue;
             }
-            flip_staged(entry, on, &mut touched);
+            let before = touched.len();
+            flip_staged(&mut next, on, &mut touched);
+            if touched.len() != before {
+                updates.push((i, next));
+            }
+        }
+        if on {
+            for path in paths {
+                if !status.entries.iter().any(|e| e.path == *path) && self.stage_buffer(path) {
+                    touched.push(path.clone());
+                }
+            }
         }
         if unresolved > 0 {
             self.flash(t!("git-commit-unresolved-conflicts", count = unresolved));
         }
-        if touched.is_empty() {
+        if touched.is_empty() || on && !self.save_dirty_documents(&touched) {
             return;
+        }
+        if let Some(status) = self.git.status.as_mut() {
+            for (i, next) in updates {
+                if let Some(entry) = status.entries.get_mut(i).filter(|e| e.path == next.path) {
+                    *entry = next;
+                }
+            }
         }
         self.git.changes.index_changed(touched.iter().cloned());
         let job = if on {
@@ -73,6 +110,9 @@ impl App {
         (hunk, line): (LineHunk, Option<StageLine>),
         on: bool,
     ) {
+        if self.git.commit.busy || self.git.branch.running.is_some() {
+            return;
+        }
         let [head, index, work] = texts;
         let next = if on {
             stage(head, index, work, &hunk, line)
@@ -139,7 +179,7 @@ impl App {
         let paths: Vec<PathBuf> = entries
             .filter(|e| {
                 if on {
-                    !e.untracked()
+                    !e.untracked() && e.staged != Some(Change::Deleted)
                 } else {
                     e.staged.is_some()
                 }
@@ -157,7 +197,7 @@ impl App {
         });
         let changed = |path: &PathBuf| {
             let mut entries = self.git.status.iter().flat_map(|s| &s.entries);
-            entries.any(|e| e.path == *path && e.unstaged.is_some())
+            entries.any(|e| e.path == *path && e.unstaged.is_some()) || self.stage_buffer(path)
         };
         match path.filter(changed) {
             Some(path) => self.stage_paths(&[path], true),
@@ -165,26 +205,68 @@ impl App {
         }
     }
 
+    fn stage_buffer(&self, path: &Path) -> bool {
+        self.git
+            .root
+            .as_ref()
+            .is_some_and(|root| path.starts_with(root))
+            && !self.git.is_ignored(path)
+            && self
+                .git_document(path)
+                .is_some_and(|doc| self.pending_git_save(doc))
+            && path.parent().is_some_and(|parent| {
+                winc_editor::git::find_root(parent).as_ref() == self.git.root.as_ref()
+            })
+    }
+
+    pub(super) fn pending_git_save(&self, doc: &winc_editor::Document) -> bool {
+        doc.is_dirty() || self.saving(doc.id) || self.format.saving_document(doc.id)
+    }
+
     /// 返回文件树、标签的右键菜单中针对文件 `path` 的更改的几项：回滚，暂存区视图中另有暂存、
     /// 取消暂存。
     ///
     /// 该文件没有更改时为空；已全部暂存的文件没有「暂存」，没有暂存内容的文件没有「取消暂存」。
     pub(in crate::app) fn git_change_items(&self, path: &Path) -> Vec<MenuEntry> {
-        let mut entries = self.git.status.iter().flat_map(|s| &s.entries);
-        let Some(entry) = entries.find(|e| e.path == path) else {
-            return Vec::new();
-        };
+        let mut entries = self
+            .git
+            .status
+            .iter()
+            .flat_map(|s| &s.entries)
+            .filter(|e| e.path == path)
+            .peekable();
+        if !self.git.commit.staging() {
+            return if entries.peek().is_some() {
+                vec![MenuEntry::Item(MenuCommand::GitRollbackFile, true)]
+            } else {
+                Vec::new()
+            };
+        }
+        let (mut stage, mut unstage, mut rollback) = (self.stage_buffer(path), false, false);
+        for e in entries {
+            stage |= e.unstaged.is_some();
+            unstage |= CommitGroup::Staged.holds(e, true);
+            rollback |= e.unstaged.is_some() && !e.conflicted();
+        }
         let mut items = Vec::new();
-        // 暂存与取消暂存只在暂存区视图中提供：勾选式下界面上没有暂存区。
-        let staging = self.git.commit.staging();
-        if staging && entry.unstaged.is_some() {
+        if stage {
             items.push(MenuEntry::Item(MenuCommand::CommitCheck(true), true));
         }
-        if staging && self.git.commit.checked(entry) {
+        if unstage {
             items.push(MenuEntry::Item(MenuCommand::CommitCheck(false), true));
         }
-        items.push(MenuEntry::Item(MenuCommand::GitRollbackFile, true));
+        if rollback {
+            items.push(MenuEntry::Item(
+                MenuCommand::GitRollbackFile,
+                !self.rollback_busy(),
+            ));
+        }
         items
+    }
+
+    pub(super) fn stage_for_commit(&mut self, request: CommitRequest) {
+        self.git.commit.commit_queued = Some(request);
+        self.push_staging(StageJob::AddAll);
     }
 
     /// 把 `job` 排到写入暂存区的队列末尾并开始执行；相邻的同类文件操作合并为一步。
@@ -216,6 +298,7 @@ impl App {
         self.run_git_job(move |git, root| {
             let result = git.and_then(|git| match job {
                 StageJob::Add(paths) => git.stage(root, &paths).map(drop),
+                StageJob::AddAll => git.stage_all_if_empty(root),
                 StageJob::Remove(paths) => git.unstage(root, &paths),
                 StageJob::Part {
                     path,
@@ -237,7 +320,7 @@ impl App {
         if let Err(e) = result {
             // 界面已按成功的结果显示：放弃其余的操作，按仓库的实际状态重新显示。
             self.git.commit.staging_queue.clear();
-            self.git.commit.commit_queued = false;
+            self.git.commit.commit_queued = None;
             self.notify(t!("git-stage-failed", error = e));
         }
         if !self.git.commit.staging_queue.is_empty() {
@@ -245,8 +328,8 @@ impl App {
             return;
         }
         self.git_refresh();
-        if std::mem::take(&mut self.git.commit.commit_queued) {
-            self.git_commit();
+        if let Some(request) = self.git.commit.commit_queued.take() {
+            self.git_commit_request(request);
         }
     }
 }
@@ -256,17 +339,21 @@ impl App {
 /// 已经处于该状态的文件不动；冲突中的文件不能取消暂存。
 pub(super) fn flip_staged(entry: &mut Entry, on: bool, touched: &mut Vec<PathBuf>) {
     if on {
-        if entry.unstaged.is_none() {
+        let Some(unstaged) = entry.unstaged else {
             return;
-        }
-        entry.staged = Some(match (entry.staged, entry.unstaged) {
-            (Some(Change::Added), _) | (_, Some(Change::Untracked)) => Change::Added,
-            (_, Some(Change::Deleted)) => Change::Deleted,
+        };
+        entry.staged = Some(match (entry.staged, unstaged) {
+            (_, Change::Deleted) => Change::Deleted,
+            (_, Change::Renamed) => Change::Renamed,
+            (Some(Change::Added), _) | (_, Change::Untracked | Change::Added) => Change::Added,
             (Some(Change::Renamed), _) => Change::Renamed,
             _ => Change::Modified,
         });
         entry.unstaged = None;
         touched.push(entry.path.clone());
+        if unstaged == Change::Renamed {
+            touched.extend(entry.from.clone());
+        }
     } else {
         let Some(staged) = entry.staged.filter(|_| !entry.conflicted()) else {
             return;
@@ -278,8 +365,10 @@ pub(super) fn flip_staged(entry: &mut Entry, on: bool, touched: &mut Vec<PathBuf
         });
         entry.staged = None;
         touched.push(entry.path.clone());
-        // 改名的文件，原来的路径一并移出暂存区。
-        touched.extend(entry.from.clone());
+        // 仅暂存侧改名时一并取消原路径的暂存；工作区侧改名保留在磁盘上。
+        if staged == Change::Renamed {
+            touched.extend(entry.from.clone());
+        }
     }
 }
 
@@ -297,6 +386,7 @@ fn write_part(
     let name = winc_editor::display_name(path).into_owned();
     let head = git.head_content(root, path, &cancel)?;
     let index = git.index_content(root, path, &cancel)?;
+    git.check_partial_path(root, path)?;
     let disk = winc_backend::fs::read(path)
         .map_err(|e| t!("git-read-file-failed", name = &name, error = e.to_string()))?;
     let fresh = head.is_none();
@@ -316,6 +406,7 @@ fn write_part(
         unstage(&head, &index, &index, hunk, line)
     };
     if fresh && next.is_empty() {
+        git.check_partial_path(root, path)?;
         return git.unstage(root, &[path.to_path_buf()]);
     }
     if next == index {

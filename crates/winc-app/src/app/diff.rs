@@ -532,6 +532,12 @@ impl App {
         if !stages_by_hunk(&entry) {
             return;
         }
+        // 状态刷新前路径可能已换成链接，保存时会按规范化路径查找打开的文档。
+        if winc_backend::fs::is_symlink(&entry.path) {
+            let name = winc_editor::display_name(&entry.path).into_owned();
+            self.flash(t!("git-stage-partial-symlink", name = name));
+            return;
+        }
         if !self.save_dirty_documents(std::slice::from_ref(&entry.path)) {
             return;
         }

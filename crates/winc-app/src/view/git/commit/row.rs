@@ -280,7 +280,7 @@ fn draw_dir_row(
         && app.commit_marked_count() >= members.len()
         && members
             .iter()
-            .all(|&m| app.commit_is_selected(&status.entries[m].path));
+            .all(|&m| app.commit_row_selected(&status.entries[m].path, Some(group)));
     let icon_x = r.check_x(app, level) + ICON;
     let text_x = icon_x + icons::FOLDER_WIDTH + LABEL_GAP;
     let room = (!wanted).then(|| (text_clip.right() - text_x).max(0.0));
@@ -394,7 +394,8 @@ fn draw_file_row(
     } = *r;
     let cy = y + COMMIT_ROW / 2.0;
     let entry = &status.entries[index];
-    let is_selected = app.commit_is_selected(&entry.path);
+    let group = r.cx.rows.group_of(i);
+    let is_selected = app.commit_row_selected(&entry.path, group);
     let hovered = matches!(
         app.pointer.hover,
         Hover::Commit(
@@ -406,7 +407,6 @@ fn draw_file_row(
                 | CommitTarget::StageFile(i, _)
         ) if i == index
     );
-    let group = r.cx.rows.group_of(i);
     let targets = file_action_targets(app, group, index);
     // 显示暂存区时同一文件可能同时出现在「已暂存的更改」和「更改」两组，各组的基准不同（见
     // `Compare`）：命中带上组信息，按下时据此决定比较哪两份内容。勾选式里各组都按 `HEAD`
@@ -435,7 +435,7 @@ fn draw_file_row(
         .then(|| entry.path.parent().and_then(|p| p.strip_prefix(root).ok()))
         .flatten()
         .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_string_lossy());
+        .map(CommitRow::path_label);
     // 名字用正文色（删除的文件用次要色），状态是右端一个上色的字母（M、U、D 等）；
     // 整行名字上色后颜色过多，不易分辨。
     let change = entry.shown();

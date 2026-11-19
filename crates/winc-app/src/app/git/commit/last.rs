@@ -84,6 +84,10 @@ impl App {
 
     /// 用提示框询问，确认后撤销上一次提交。更改还在，确认按钮不标记为危险操作。
     pub(super) fn confirm_undo_commit(&mut self, last: &LastCommit) {
+        let Some(root) = self.git.root.clone() else {
+            return;
+        };
+        let oid = last.oid.clone();
         let message = t!("git-undo-commit-confirm");
         let detail = t!(
             "git-undo-commit-confirm-detail",
@@ -93,20 +97,32 @@ impl App {
             AlertButton::new(t!("git-undo-commit-confirm-button")),
             AlertButton::cancel(t!("common-cancel")),
         ];
-        self.show_alert(message, &detail, buttons, None, |choice, _| {
-            (choice == 0).then_some(UserEvent::GitUndoCommit)
+        self.show_alert(message, &detail, buttons, None, move |choice, _| {
+            (choice == 0).then(|| UserEvent::GitUndoCommit(root.clone(), oid.clone()))
         });
     }
 
     /// 撤销上一次提交：分支退回上一个提交，改动留在暂存区并保持勾选，提交信息填回输入框（输入框里
     /// 已经写了别的时不覆盖）。
-    pub(in crate::app) fn undo_last_commit(&mut self) {
-        let Some(last) = self.commit_undoable().cloned() else {
+    pub(in crate::app) fn undo_last_commit(&mut self, root: &Path, oid: &str) {
+        if self.git.root.as_deref() != Some(root) {
+            return;
+        }
+        if self.rollback_busy() {
+            self.flash(t!("git-op-busy"));
+            return;
+        }
+        let Some(last) = self
+            .commit_undoable()
+            .filter(|last| last.oid == oid)
+            .cloned()
+        else {
             return;
         };
         // 那一行先收起，不会再按一次；失败时重新取。
         self.git.commit.last = None;
         self.git.commit.committed = None;
+        self.git.commit.busy = true;
         let sender = self.git.commit.results.0.clone();
         self.run_git_job(move |git, root| {
             let result = git.and_then(|git| git.undo_commit(root, &last.oid));

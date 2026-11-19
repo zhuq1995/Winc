@@ -124,3 +124,32 @@ fn branch_ops_are_grouped_with_separators() {
     assert!(!remote.contains(&item(Delete, 2)));
     assert!(remote.contains(&item(CopyName, 2)));
 }
+
+#[test]
+fn copy_branch_name_stays_enabled_while_busy() {
+    use crate::app::input::context_menu::MenuTarget;
+
+    let mut app = App::new(
+        winc_editor::Editor::default(),
+        None,
+        crate::bench::Bench::off(),
+        winc_config::Config::default(),
+    );
+    app.git.branches = vec![
+        branch("main", false, true, None),
+        branch("feat/topic", false, false, None),
+        branch("origin/feat/topic", true, false, None),
+    ];
+    app.git.branch.running = Some("fetch".into());
+
+    for (i, name) in ["main", "feat/topic", "origin/feat/topic"]
+        .into_iter()
+        .enumerate()
+    {
+        let command = MenuCommand::GitBranch(BranchOp::CopyName, i);
+        app.open_context_menu(MenuTarget::BranchOps(i), (0.0, 0.0));
+        app.run_menu_command(command);
+        assert_eq!(app.clipboard_text().as_deref(), Some(name));
+        assert_eq!(app.git.branch.running.as_deref(), Some("fetch"));
+    }
+}

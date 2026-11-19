@@ -13,7 +13,8 @@ pub enum CloseRequest {
     Tabs(Vec<DocumentId>),
     /// 退出：关闭所有标签。
     Quit,
-    /// 关闭窗口而不退出应用（macOS）：关闭所有标签和目录，隐藏窗口。
+    /// 关闭 macOS 的临时窗口：关闭标签并隐藏窗口。
+    #[cfg(target_os = "macos")]
     CloseWindow,
     /// 切换到另一个目录：关闭所有标签，再打开该目录。
     Switch(PathBuf),
@@ -76,27 +77,35 @@ impl App {
     ///
     /// 下次启动时打开当前目录（设置中关掉了「启动时打开上次的目录」时除外）。
     pub(crate) fn request_quit(&mut self) {
+        if self.closing.quit_requested || self.quit_pending() {
+            return;
+        }
+        if self.closing_pending() || self.format.save_pending() {
+            self.defer_close(CloseRequest::Quit);
+            return;
+        }
         if !self.confirm_terminal_quit(CloseRequest::Quit) {
             self.request_close(CloseRequest::Quit);
         }
     }
 
-    /// 处理关闭窗口：标题栏左侧的关闭按钮、`⇧⌘W`，以及没有标签时的 `⌘W`。
-    ///
-    /// macOS 上关闭窗口不退出应用：关闭目录和所有标签，隐藏窗口，应用留在程序坞中，点击
-    /// 图标时窗口带着开始页回来，退出用 ⌘Q；其他平台上关闭窗口就是退出，还有别的窗口时只关闭
-    /// 当前窗口。开着目录的窗口与退出一样不逐个询问，未保存的内容写入备份；没开目录的窗口逐个
-    /// 询问。窗口关闭后其中的终端随之结束，有程序在运行时先确认；macOS 上终端继续运行，不确认。
+    /// 关闭共用的系统窗口。普通 macOS 会话隐藏窗口，所有项目继续运行；Windows/Linux 退出全部项目。
     pub(in crate::app) fn request_close_window(&mut self) {
-        if self.link.shared.others() {
-            if !self.confirm_terminal_quit(CloseRequest::CloseWindow) {
+        #[cfg(target_os = "macos")]
+        {
+            if self.closing_pending() || self.closing.quit_requested {
+                return;
+            }
+            if self.link.shared.keep_projects_on_close {
+                self.remember_window();
+                self.hide_window();
+            } else {
+                // 临时窗口关闭标签；`--wait` 在等候的标签都关闭后退出。
                 self.request_close(CloseRequest::CloseWindow);
             }
-        } else if cfg!(target_os = "macos") {
-            self.request_close(CloseRequest::CloseWindow);
-        } else {
-            self.request_quit();
         }
+        #[cfg(not(target_os = "macos"))]
+        self.request_quit();
     }
 
     /// 退出还没有结果：正在问要不要保存、在等另存为面板、在为关闭而格式化，或者在问要不要
@@ -108,6 +117,7 @@ impl App {
             || self.closing.continuation.is_some()
             || self.format.then_close.is_some()
             || self.closing.confirming.is_some()
+            || self.deferred_close == Some(CloseRequest::Quit)
     }
 
     /// 是否正在为退出询问（要不要保存、要不要结束终端里的程序），而不是为别的关闭。
@@ -118,6 +128,7 @@ impl App {
             || quits(&self.closing.continuation)
             || quits(&self.format.then_close)
             || self.closing.confirming == Some(CloseRequest::Quit)
+            || self.deferred_close == Some(CloseRequest::Quit)
     }
 
     /// 关闭项目（侧栏项目条目右端的 ✕）：关闭标签、目录和终端，窗口交给相邻的项目。
@@ -155,6 +166,7 @@ impl App {
             CloseRequest::Tabs(ids) => self.request_close(CloseRequest::Tabs(ids)),
             CloseRequest::CloseFolder => self.close_folder(),
             CloseRequest::Switch(folder) => self.switch_folder(&folder),
+            #[cfg(target_os = "macos")]
             CloseRequest::CloseWindow => self.request_close_window(),
         }
     }
@@ -174,7 +186,7 @@ impl App {
     /// 退出时先备份未保存的内容（热退出），已备份的文档不再询问。
     pub(in crate::app) fn request_close(&mut self, request: CloseRequest) {
         // 正在为关闭而保存或格式化时，等待其完成，不重复处理。
-        if self.format.then_close.is_some() {
+        if self.format.then_close.is_some() || self.closing.continuation.is_some() {
             return;
         }
         // 后台在存的大文件先存完：要不要问、备份哪些，都按存完以后的样子算。
@@ -188,6 +200,7 @@ impl App {
         // 打开该目录时恢复。没开目录的窗口关闭后，这些备份没有恢复的时机，因此逐个询问。
         let backed_up = match request {
             CloseRequest::Quit => self.back_up_for_quit(),
+            #[cfg(target_os = "macos")]
             CloseRequest::CloseWindow if self.editor.workspace.is_some() => self.back_up_for_quit(),
             _ => Default::default(),
         };
@@ -198,11 +211,7 @@ impl App {
             .filter(|d| d.is_dirty() && !backed_up.contains(&d.id))
             .filter(|d| match &request {
                 CloseRequest::Tabs(ids) => ids.contains(&d.id),
-                CloseRequest::Quit
-                | CloseRequest::CloseWindow
-                | CloseRequest::Switch(_)
-                | CloseRequest::CloseFolder
-                | CloseRequest::CloseProject => true,
+                _ => true,
             })
             .map(|d| d.id)
             .collect();
@@ -275,6 +284,7 @@ impl App {
         if self.window.handle.is_none() {
             return;
         }
+        self.show_window();
         let buttons = vec![
             AlertButton::new(save),
             AlertButton::cancel(t!("common-cancel")),
@@ -289,6 +299,7 @@ impl App {
         // 窗口上已有其他面板，提示框没有弹出：放弃这次询问，不关闭任何内容。
         if !shown {
             self.closing.prompt = None;
+            self.deferred_close = None;
         }
     }
 
@@ -322,7 +333,7 @@ impl App {
 
             if doc.path.is_none() {
                 self.closing.continuation = Some(prompt);
-                self.pick(Pick::SaveAs(id));
+                self.pick(Pick::SaveAsClosing(id));
                 return;
             }
             if self.prepares_on_save(id) {
@@ -331,6 +342,7 @@ impl App {
                 return;
             }
             if !self.save_document(id, None) {
+                self.deferred_close = None;
                 return;
             }
             prompt.dirty.remove(0);
@@ -348,6 +360,7 @@ impl App {
                 self.quit_backups();
                 self.closing.quit_requested = true;
             }
+            #[cfg(target_os = "macos")]
             CloseRequest::CloseWindow => self.close_window_now(),
             CloseRequest::Switch(folder) => {
                 self.remove_all_tabs();
@@ -380,6 +393,7 @@ impl App {
     /// 与退出时一样留下已备份的内容，并记下目录的现场；再把这些备份交给磁盘保管（不随标签
     /// 关闭而删除），关闭所有标签和目录，隐藏窗口。以后从最近列表打开该目录时，标签和未保存的
     /// 内容都恢复。
+    #[cfg(target_os = "macos")]
     fn close_window_now(&mut self) {
         self.vim_persist();
         self.remember_window();

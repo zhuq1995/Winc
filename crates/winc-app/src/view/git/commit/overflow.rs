@@ -46,7 +46,7 @@ pub(in crate::view) fn commit_overflow(app: &App, frame: &mut Frame<'_>) -> Opti
     }
     let list = app.commit_parts().list;
     let y = row_top(app, &rows, row, list);
-    let text = row_text(app, status, root, rows.get(row)?)?;
+    let text = row_text(app, status, root, &rows, row)?;
     let band = Rect::new(list.x + 8.0, y, list.w - 16.0, COMMIT_ROW);
     let end = name_end(app, frame, &text, band);
     let window = app.layout.window.right() - 8.0;
@@ -177,7 +177,7 @@ pub(in crate::view) fn draw_commit_overflow(app: &App, frame: &mut Frame<'_>) {
         return;
     };
     let rows = app.commit_rows();
-    let Some(text) = rows.get(row).and_then(|r| row_text(app, status, root, r)) else {
+    let Some(text) = row_text(app, status, root, &rows, row) else {
         return;
     };
     let Some(view) = app.git.commit.names.peek(&name_key(status, &rows[row])) else {
@@ -268,7 +268,7 @@ pub(in crate::view) fn draw_commit_overflow_closing(app: &App, frame: &mut Frame
         {
             continue;
         }
-        let Some(text) = row_text(app, status, root, &rows[row]) else {
+        let Some(text) = row_text(app, status, root, &rows, row) else {
             continue;
         };
         let y = row_top(app, &rows, row, list);
@@ -283,7 +283,9 @@ pub(in crate::view) fn draw_commit_overflow_closing(app: &App, frame: &mut Frame
         let radii = [0.0, RADIUS_ROW, RADIUS_ROW, 0.0];
         frame.rect_corners(rect, p.sidebar_bg, radii, rect);
         let selected = match &rows[row] {
-            CommitRow::File { index, .. } => app.commit_is_selected(&status.entries[*index].path),
+            CommitRow::File { index, .. } => {
+                app.commit_row_selected(&status.entries[*index].path, rows.group_of(row))
+            }
             _ => false,
         };
         if let Some(color) = retracting_color(p, selected, focused, view.progress) {

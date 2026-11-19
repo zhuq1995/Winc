@@ -50,24 +50,28 @@ impl App {
             self.release_tab();
         }
 
-        // 项目条目：松开时按落点重排；没有拖动（或在原位松开）时照旧切换过去。
+        // 项目条目用松开时的列表、视口和滚动位置计算落点。
         if button == MouseButton::Left
             && let Drag::Project {
-                key, from, drop, ..
+                key,
+                start_y,
+                from,
+                drop,
             } = self.pointer.drag
         {
-            match drop {
-                Some(gap) => {
-                    let len = self.link.shared.projects().len();
-                    let index = if gap > from { gap - 1 } else { gap };
-                    let index = index.min(len.saturating_sub(1));
-                    self.link
-                        .shared
-                        .request(crate::winc::Request::MoveProject(key, index));
-                }
-                None => self.link.shared.request(crate::winc::Request::Focus(key)),
+            if self.pointer.cursor_inside
+                && let Some(gap) = self.project_drag_gap(key, from, start_y, drop.is_some())
+            {
+                let index = if gap > from { gap - 1 } else { gap };
+                let request = if index == from {
+                    crate::winc::Request::Focus(key)
+                } else {
+                    crate::winc::Request::MoveProject(key, index)
+                };
+                self.link.shared.request(request);
             }
             self.pointer.drag = Drag::None;
+            self.refresh_hover();
             self.request_redraw();
         }
 
@@ -120,7 +124,11 @@ impl App {
     pub(in crate::app) fn on_wheel_event(&mut self, delta: MouseScrollDelta, phase: TouchPhase) {
         let fresh = self.note_wheel_gesture(delta, phase);
         if !self.wheel_zoom(delta, fresh) {
+            let scroll = self.projects_scroll;
             self.scroll_by_wheel(delta, true);
+            if self.projects_scroll != scroll {
+                self.update_project_drag();
+            }
         }
     }
 

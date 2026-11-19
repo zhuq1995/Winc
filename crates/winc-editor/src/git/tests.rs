@@ -48,9 +48,9 @@ fn parses_branch_and_every_kind_of_entry() {
         "# branch.ab +2 -1",
         "1 .M N... 100644 100644 100644 aaa bbb src/main.rs",
         "1 A. N... 000000 100644 100644 000 bbb new file.rs",
-        "2 R. N... 100644 100644 100644 aaa aaa R100 src/new.rs",
+        "2 R. N... 120000 120000 120000 aaa aaa R100 src/new.rs",
         "src/old.rs",
-        "u UU N... 100644 100644 100644 100644 a b c conflict.rs",
+        "u UU N... 100644 120000 100644 100644 a b c conflict.rs",
         "? notes/",
         "? todo.txt",
         "! target/",
@@ -81,6 +81,8 @@ fn parses_branch_and_every_kind_of_entry() {
     // 只有未跟踪的整个目录（以 `/` 结尾的那一项）记成目录。
     let dirs: Vec<bool> = status.entries.iter().map(|e| e.is_dir).collect();
     assert_eq!(dirs, [false, false, false, false, true, false]);
+    let links: Vec<bool> = status.entries.iter().map(|e| e.is_symlink).collect();
+    assert_eq!(links, [false, false, true, true, false, false]);
     // 被忽略的项不计为改动，单独列在 `ignored` 里；目录的路径不含末尾的 `/`。
     assert_eq!(
         status.ignored,
@@ -122,6 +124,7 @@ fn directories_take_the_most_visible_state_but_not_deletions() {
         staged,
         unstaged,
         is_dir: false,
+        is_symlink: false,
     };
     let status = Status {
         entries: vec![
@@ -300,6 +303,235 @@ pub(super) fn real_git() -> Option<Git> {
         vars.push((k.into(), v.into()));
     }
     Git::find(&Shell::with_vars(vars)).ok()
+}
+
+#[test]
+fn restoring_the_worktree_uses_only_the_index_even_before_the_first_commit() {
+    let Some(git) = real_git() else {
+        return;
+    };
+    let root = crate::test_util::scratch("rollback-worktree");
+    std::fs::create_dir_all(&root).unwrap();
+    let sh = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    };
+    sh(&["init", "-q"]);
+    sh(&["config", "core.autocrlf", "false"]);
+    let literal = root.join("[a].txt");
+    let other = root.join("a.txt");
+    std::fs::write(&literal, b"staged\n").unwrap();
+    std::fs::write(&other, b"other staged\n").unwrap();
+    git.stage(&root, &[literal.clone(), other.clone()]).unwrap();
+    std::fs::write(&literal, b"working\n").unwrap();
+    std::fs::write(&other, b"other working\n").unwrap();
+    let index = sh(&["ls-files", "--stage"]);
+    git.restore_worktree(&root, std::slice::from_ref(&literal))
+        .unwrap();
+    assert_eq!(std::fs::read(&literal).unwrap(), b"staged\n");
+    assert_eq!(std::fs::read(&other).unwrap(), b"other working\n");
+    assert_eq!(sh(&["ls-files", "--stage"]), index);
+    git.commit(&root, "first", false, false).unwrap();
+    assert_eq!(sh(&["show", "HEAD:[a].txt"]), b"staged\n");
+}
+
+#[test]
+fn a_removed_worktree_does_not_redirect_commits_to_the_parent_repository() {
+    let Some(git) = real_git() else {
+        return;
+    };
+    let root = crate::test_util::scratch("commit-missing-worktree");
+    let nested = root.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    git.operate(&root, &["init", "-q"]).unwrap();
+    git.operate(&root, &["config", "core.autocrlf", "false"])
+        .unwrap();
+    git.operate(&nested, &["init", "-q"]).unwrap();
+    git.commit_status(&nested, &Cancel::default()).unwrap();
+    std::fs::rename(nested.join(".git"), root.join("removed.git")).unwrap();
+
+    let file = root.join("file.txt");
+    std::fs::write(&file, b"base\n").unwrap();
+    git.stage(&root, std::slice::from_ref(&file)).unwrap();
+    git.commit(&root, "parent", false, false).unwrap();
+    let cancel = Cancel::default();
+    let head = git.status(&root, &cancel).unwrap().oid.unwrap();
+    std::fs::write(&file, b"work\n").unwrap();
+    assert!(git.commit_status(&nested, &cancel).is_err());
+    assert!(git.stage_all_if_empty(&nested).is_err());
+    let nested_file = nested.join("local.txt");
+    let paths = std::slice::from_ref(&nested_file);
+    std::fs::write(&nested_file, b"nested\n").unwrap();
+    assert!(git.stage(&nested, paths).is_err());
+    assert!(git.unstage(&nested, paths).is_err());
+    assert!(git.rollback_status(&nested, paths).is_err());
+    assert!(git.restore_worktree(&nested, paths).is_err());
+    assert!(
+        git.index_content(&root, &nested_file, &cancel)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        git.index_content(&root, &file, &cancel).unwrap().unwrap(),
+        b"base\n"
+    );
+
+    git.stage(&root, std::slice::from_ref(&file)).unwrap();
+    assert!(
+        git.commit(&nested, "wrong repository", false, false)
+            .is_err()
+    );
+    assert!(git.undo_commit(&nested, &head).is_err());
+    assert_eq!(
+        git.status(&root, &cancel).unwrap().oid.as_ref(),
+        Some(&head)
+    );
+    assert_eq!(
+        git.index_content(&root, &file, &cancel).unwrap().unwrap(),
+        b"work\n"
+    );
+}
+
+#[test]
+fn staging_a_file_replaced_by_a_directory_does_not_stage_its_children() {
+    let Some(git) = real_git() else {
+        return;
+    };
+    let root = crate::test_util::scratch("git-stage-directory-replacement");
+    git.operate(&root, &["init", "-q"]).unwrap();
+    git.operate(&root, &["config", "core.autocrlf", "false"])
+        .unwrap();
+    let file = root.join("entry");
+    let paths = std::slice::from_ref(&file);
+    std::fs::write(&file, b"base\n").unwrap();
+    git.stage(&root, paths).unwrap();
+    git.commit(&root, "base", false, false).unwrap();
+    std::fs::write(&file, b"staged\n").unwrap();
+    git.stage(&root, paths).unwrap();
+
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let child = file.join("new.txt");
+    std::fs::write(&child, b"untracked\n").unwrap();
+    assert!(git.stage(&root, paths).is_err());
+    assert!(git.unstage(&root, paths).is_err());
+    git.stage(&root, &[]).unwrap();
+    git.unstage(&root, &[]).unwrap();
+    let cancel = Cancel::default();
+    assert_eq!(
+        git.index_content(&root, &file, &cancel).unwrap().as_deref(),
+        Some(b"staged\n".as_slice())
+    );
+    assert!(git.index_content(&root, &child, &cancel).unwrap().is_none());
+}
+
+#[test]
+fn partial_staging_refuses_a_link_checked_out_as_a_regular_file() {
+    let Some(git) = real_git() else {
+        return;
+    };
+    let root = crate::test_util::scratch("partial-checkout-link");
+    let sh = |args: &[&str]| git.operate(&root, args).unwrap();
+    sh(&["init", "-q"]);
+    sh(&["config", "core.symlinks", "false"]);
+    sh(&["config", "core.autocrlf", "false"]);
+    let file = root.join("[link].txt");
+    let spec = ":(literal)[link].txt";
+    std::fs::write(&file, b"target.txt").unwrap();
+    let oid = sh(&["hash-object", "-w", "--", "[link].txt"]);
+    let link = format!("120000,{},[link].txt", oid.trim());
+    sh(&["update-index", "--add", "--cacheinfo", &link]);
+    git.commit(&root, "link", false, false).unwrap();
+    let cancel = Cancel::default();
+    assert!(!winc_backend::fs::is_symlink(&file));
+    assert!(git.status(&root, &cancel).unwrap().entries.is_empty());
+
+    let index = || sh(&["ls-files", "--stage", "--", spec]);
+    let before = index();
+    assert!(before.starts_with("120000 "), "{before}");
+    let refused = winc_i18n::t!("git-stage-partial-symlink", name = "[link].txt");
+    let try_partial = || git.stage_content(&root, &file, b"partial\n".to_vec());
+    assert_eq!(try_partial(), Err(refused.clone()));
+    assert_eq!(index(), before);
+
+    std::fs::write(&file, b"another-target.txt").unwrap();
+    let status = git.status(&root, &cancel).unwrap();
+    assert!(
+        status
+            .entries
+            .iter()
+            .any(|e| e.path == file && e.is_symlink)
+    );
+    assert_eq!(try_partial(), Err(refused));
+    assert_eq!(index(), before);
+    assert_eq!(
+        git.index_content(&root, &file, &cancel).unwrap().unwrap(),
+        b"target.txt"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn whole_staging_and_unstaging_preserve_the_link_mode_and_target() {
+    let Some(git) = real_git() else {
+        return;
+    };
+    let root = crate::test_util::scratch("partial-unix-link");
+    let sh = |args: &[&str]| git.operate(&root, args).unwrap();
+    sh(&["init", "-q"]);
+    sh(&["config", "core.symlinks", "true"]);
+    let file = root.join("link.txt");
+    let paths = std::slice::from_ref(&file);
+    let cancel = Cancel::default();
+    let refused = winc_i18n::t!("git-stage-partial-symlink", name = "link.txt");
+    let try_partial = || git.stage_content(&root, &file, b"partial\n".to_vec());
+    let check_index = |target: &[u8]| {
+        let mode = sh(&["ls-files", "--stage", "--", "link.txt"]);
+        assert!(mode.starts_with("120000 "), "{mode}");
+        assert_eq!(
+            git.index_content(&root, &file, &cancel).unwrap().unwrap(),
+            target
+        );
+    };
+
+    std::os::unix::fs::symlink("first-target", &file).unwrap();
+    let status = git.status(&root, &cancel).unwrap();
+    assert!(
+        status
+            .entries
+            .iter()
+            .any(|e| e.path == file && e.untracked() && e.is_symlink)
+    );
+    assert_eq!(try_partial(), Err(refused.clone()));
+    assert!(git.index_content(&root, &file, &cancel).unwrap().is_none());
+    git.stage(&root, paths).unwrap();
+    check_index(b"first-target");
+    git.commit(&root, "link", false, false).unwrap();
+
+    std::fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink("second-target", &file).unwrap();
+    assert_eq!(try_partial(), Err(refused));
+    check_index(b"first-target");
+    git.stage(&root, paths).unwrap();
+    check_index(b"second-target");
+    git.unstage(&root, paths).unwrap();
+    check_index(b"first-target");
+    assert_eq!(
+        std::fs::read_link(&file).unwrap(),
+        Path::new("second-target")
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// 在临时目录里建立一个真实的仓库并运行 `git`。

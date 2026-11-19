@@ -66,13 +66,18 @@ impl App {
     }
 
     /// 等文档 `id` 在后台的那次保存完成（没有正在保存时立即返回）；等待期间完成的其他文档一并收取。
-    pub(in crate::app) fn wait_for_save(&mut self, id: DocumentId) {
+    pub(in crate::app) fn wait_for_save(&mut self, id: DocumentId) -> bool {
+        let mut saved = true;
         while self.saving(id) {
             let Ok(done) = self.disk.saves.results.1.recv() else {
-                return;
+                return false;
             };
-            self.saved_in_background(done);
+            let target = done.0 == id;
+            if !self.saved_in_background(done) && target {
+                saved = false;
+            }
         }
+        saved
     }
 
     /// 等待所有后台保存完成：关闭、退出之前未保存的状态必须准确。
@@ -85,14 +90,16 @@ impl App {
         }
     }
 
-    fn saved_in_background(&mut self, (id, quiet, saved): Done) {
+    fn saved_in_background(&mut self, (id, quiet, saved): Done) -> bool {
         self.disk.saves.running.remove(&id);
         let Some(doc) = self.editor.document_mut(id) else {
-            return;
+            return false;
         };
         let name = doc.name().into_owned();
         let path = doc.path.clone();
-        match doc.finish_save(saved) {
+        let result = doc.finish_save(saved);
+        let success = result.is_ok();
+        match result {
             Ok(()) => {
                 if !quiet {
                     self.flash(winc_i18n::t!("workspace-saved", name = name));
@@ -116,5 +123,6 @@ impl App {
         {
             self.write_document_with(id, None, quiet, true);
         }
+        success
     }
 }

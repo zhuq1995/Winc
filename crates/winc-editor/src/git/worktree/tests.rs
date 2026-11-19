@@ -256,6 +256,7 @@ fn copies_ignored_files_and_checks_before_removing() {
         assert!(ok, "git {args:?}");
     };
     sh(&["init", "-q", "-b", "main"]);
+    sh(&["config", "--local", "core.autocrlf", "false"]);
     std::fs::write(main.join(".gitignore"), ".env*\ntarget/\nconfig/\n").unwrap();
     std::fs::write(main.join("README"), "hi").unwrap();
     sh(&["add", "."]);

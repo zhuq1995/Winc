@@ -11,6 +11,7 @@ mod compose;
 mod ignore;
 mod reformat;
 pub(in crate::app) use actions::COMMITTED_SHOWN;
+pub use actions::Rollback;
 pub(crate) use actions::{PUSH_PREVIEW, PushIntent, SyncState};
 pub(crate) use compose::{AUTHOR_COMMITS, OWN_MESSAGES};
 pub use ignore::IgnoreKind;
@@ -33,6 +34,7 @@ use picks::Skip;
 use staging::StageJob;
 pub(crate) use state::{CommitScope, stages_by_hunk};
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
@@ -52,7 +54,7 @@ use winit::keyboard::{Key, NamedKey};
 use super::branch::branch_menu;
 use super::unusable;
 use crate::app::input::context_menu::{MenuButton, MenuCommand, MenuTarget, menu_below};
-use crate::app::{AlertButton, App, Focus, GitAnchor, UserEvent};
+use crate::app::{AlertButton, App, Clock, Focus, GitAnchor, UserEvent};
 use crate::field::TextField;
 use crate::theme::{BUTTON_GAP, SIDEBAR_GAP, SIDEBAR_HEADER, SIDEBAR_LIST_GAP, TOP_BAR_END};
 
@@ -244,6 +246,16 @@ pub enum CommitRow {
 }
 
 impl CommitRow {
+    /// 提交列表中相对路径各级用 / 分隔，保留文件名中的字符。
+    pub(crate) fn path_label(path: &Path) -> Cow<'_, str> {
+        let label = path.to_string_lossy();
+        if cfg!(windows) && label.contains('\\') {
+            label.replace('\\', "/").into()
+        } else {
+            label
+        }
+    }
+
     /// 这一行在树里的层级：组是 0，组下面第一层（目录、文件）是 1，依此类推。
     ///
     /// 固定在列表顶部的行按它排：第 n 层固定在顶部往下第 n 行。
@@ -260,6 +272,17 @@ impl CommitRow {
     }
 }
 
+#[test]
+fn commit_row_labels_use_forward_slashes() {
+    let dir = Path::new("pkg").join("model");
+    assert_eq!(CommitRow::path_label(&dir), "pkg/model");
+    #[cfg(unix)]
+    assert_eq!(
+        CommitRow::path_label(Path::new(r"pkg\literal/model")),
+        r"pkg\literal/model"
+    );
+}
+
 /// 排好的改动列表：各行，和每组、每个目录下面有哪些文件（画勾选框、点勾选框时用，不必每行
 /// 把所有改动翻一遍）。
 ///
@@ -268,6 +291,7 @@ impl CommitRow {
 #[derive(Debug, Default)]
 pub(crate) struct CommitRows {
     rows: Vec<CommitRow>,
+    group_rows: Vec<(usize, CommitGroup)>,
     /// 各组、各目录下面的文件（`Status::entries` 的下标）：一组、一个目录（收起的也算）下面的
     /// 文件在这里连成一段，它里面的目录是其中的一小段。
     members: Vec<usize>,
@@ -287,10 +311,11 @@ type MemberStates = (u64, HashMap<(usize, usize), Option<bool>>);
 impl CommitRows {
     /// 返回第 `row` 行所在的组：该行或它之前最近的组标题行；没有这一行时为 `None`。
     pub fn group_of(&self, row: usize) -> Option<CommitGroup> {
-        self.rows.get(..=row)?.iter().rev().find_map(|r| match r {
-            CommitRow::Group(group) => Some(*group),
-            _ => None,
-        })
+        self.rows.get(row)?;
+        self.group_rows
+            .iter()
+            .rev()
+            .find_map(|&(start, group)| (start <= row).then_some(group))
     }
 
     /// 组 `group` 里的文件（`Status::entries` 的下标）。
@@ -643,8 +668,18 @@ pub(crate) struct CommitParts {
     pub list: Rect,
 }
 
+/// 要在提交成功后执行的动作，以及用户在确认框中同意的范围。
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CommitRequest {
+    sync: Option<bool>,
+    confirmed: bool,
+    stage_all: bool,
+}
+
 /// 后台交回来的结果。
 enum Outcome {
+    /// 提交前读取到的完整仓库状态。
+    CommitStatus(Result<Box<Status>, String>, PathBuf, CommitRequest),
     /// 提交完成：新提交的提交号，或者失败的原因。
     ///
     /// 第二项是提交的信息，第三项是在哪个仓库里提交的。
@@ -655,8 +690,8 @@ enum Outcome {
     Last(Option<LastCommit>, PathBuf),
     /// 撤销上一次提交完成：成功或失败的原因、撤销的提交、在哪个仓库里撤销的。
     Undone(Result<(), String>, LastCommit, PathBuf),
-    /// 回滚完成：回滚的文件数，或者失败的原因；在哪个仓库里回滚的。
-    RolledBack(Result<usize, String>, PathBuf),
+    /// 回滚完成：文件数或错误、仓库、需要在界面线程移到废纸篓的文件及暂存版本。
+    RolledBack(Result<usize, String>, PathBuf, Option<(Vec<PathBuf>, u64)>),
     /// 取回了一条储藏（提交号、名字）改动的文件。
     StashFiles(String, String, stash::StashFiles),
     /// 写入暂存区的一步操作完成，或者失败的原因；在哪个仓库里进行的。
@@ -787,7 +822,7 @@ pub(crate) struct CommitState {
     /// 是否有写入其他仓库暂存区的操作正在后台执行。
     other_stage_running: bool,
     /// 暂存区写完之后接着提交：按下提交时暂存的操作尚未完成。
-    commit_queued: bool,
+    commit_queued: Option<CommitRequest>,
     /// 下一次提交不运行钩子；提交成功后关闭。
     pub(crate) no_verify: bool,
     /// 正在读取的状态开始于最近一次暂存的操作之前：读到后不采用。
@@ -833,12 +868,11 @@ pub(crate) struct CommitState {
     pub(crate) names: crate::app::TreeLabels<CommitName>,
     /// 选中的文件；多选时是当前行（键盘从这里移动，预览的是它）。
     pub selected: Option<PathBuf>,
-    /// 多选时选中的各个文件；为空时只有 `selected` 算选中。
-    marked: HashSet<PathBuf>,
+    selected_group: Option<CommitGroup>,
+    /// 多选中的行。勾选式只用路径，暂存区视图还区分组。
+    marked: HashMap<Option<CommitGroup>, HashSet<PathBuf>>,
     /// 按 ⇧ 扩展选区的起点。
-    anchor: Option<PathBuf>,
-    /// 上次用键盘选中的行（各行的下标）：同一个文件有两行时据此确定当前在哪一行。
-    cursor: Option<usize>,
+    anchor: Option<(Option<CommitGroup>, PathBuf)>,
     /// 预览差异的标签；选中别的文件时在该标签里换内容。
     pub(super) preview: Option<DocumentId>,
     /// 是否正在提交或回滚。
@@ -847,9 +881,8 @@ pub(crate) struct CommitState {
     ///
     /// 截止前按钮显示「✓ 已提交 abc1234」。
     pub committed: Option<(String, Instant)>,
-    /// 最近一次点标题行「刷新」的时刻：读取结束、图标至少转满一圈之前图标一直转（见
-    /// [`App::commit_refreshing`]）。
-    pub(crate) refreshed: Option<Instant>,
+    /// 点标题行「刷新」时开始计时：读取结束且图标转满一圈后停止旋转。
+    pub(crate) refreshed: Option<Clock>,
     /// 绘制时量好的文字宽度，见 [`CommitLabels`]。
     pub(crate) labels: CommitLabels,
     /// 储藏一组是否展开（默认收起：储藏是暂时放到一边的东西，平时不必占地方）。
@@ -904,6 +937,7 @@ impl CommitState {
             self.staging = on;
             self.reset_checks();
             self.skipped.clear();
+            self.clear_selection();
             self.layout += 1;
         }
     }
@@ -923,13 +957,15 @@ impl CommitState {
     /// 只选中 `path`，清掉多选。
     pub(crate) fn select_only(&mut self, path: PathBuf) {
         self.marked.clear();
-        self.anchor = Some(path.clone());
+        self.anchor = Some((None, path.clone()));
         self.selected = Some(path);
+        self.selected_group = None;
     }
 
     /// 清掉选中的文件和多选（换目录时）。
     pub(crate) fn clear_selection(&mut self) {
         self.selected = None;
+        self.selected_group = None;
         self.marked.clear();
         self.anchor = None;
     }
@@ -969,7 +1005,7 @@ impl Default for CommitState {
             reformat_passed: false,
             other_stage_queue: VecDeque::new(),
             other_stage_running: false,
-            commit_queued: false,
+            commit_queued: None,
             no_verify: false,
             status_outdated: false,
             index_version: 0,
@@ -990,9 +1026,9 @@ impl Default for CommitState {
             names: Default::default(),
             shift: None,
             selected: None,
-            marked: HashSet::new(),
+            marked: HashMap::new(),
             anchor: None,
-            cursor: None,
+            selected_group: None,
             preview: None,
             busy: false,
             committed: None,
@@ -1188,10 +1224,10 @@ impl App {
     ///
     /// 读取通常几十毫秒就结束，只按读取的时长转，图标还没动就停了，看不出点过。
     pub(crate) fn commit_refreshing(&self) -> bool {
-        self.git.commit.refreshed.is_some_and(|at| {
-            self.git.running.is_some()
-                || at.elapsed().as_secs_f32() < 1.0 / crate::theme::SPIN_SPEED
-        })
+        self.git
+            .commit
+            .refreshed
+            .is_some_and(|clock| self.git.running.is_some() || !clock.done())
     }
 
     /// 提交按钮要写明的范围；分支就写在上方的分支行里。

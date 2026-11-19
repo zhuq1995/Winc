@@ -240,6 +240,7 @@ fn partial_content(
     use winc_core::diff::{hunk_key, line_hunks, lines, pick_changes};
     let name = winc_editor::display_name(path).into_owned();
     let head = git.head_content(root, path, &Cancel::default())?;
+    git.check_partial_path(root, path)?;
     let disk = winc_backend::fs::read(path)
         .map_err(|e| t!("git-read-file-failed", name = &name, error = e.to_string()))?;
     let texts = (
@@ -317,7 +318,7 @@ impl CommitState {
         hunk: usize,
         all: &[(u64, Range<usize>)],
     ) {
-        if hunk >= all.len() {
+        if entry.is_symlink || hunk >= all.len() {
             return;
         }
         if !self.picked(entry) {
@@ -348,6 +349,9 @@ impl CommitState {
         (side, line): (usize, usize),
         all: &[(u64, Range<usize>)],
     ) {
+        if entry.is_symlink {
+            return;
+        }
         let Some((key, old)) = all.get(hunk).cloned() else {
             return;
         };

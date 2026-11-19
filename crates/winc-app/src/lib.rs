@@ -273,6 +273,9 @@ pub fn run() {
     }
 
     winc.add(key, app);
+    if args.targets.is_empty() && !args.one_off() {
+        winc.restore_folderless_project();
+    }
     winc.open_projects(projects);
     winc.restore_windows(&others);
     // 指定了 `--new-instance` 的进程不接收之后启动的 winc 交来的目录和文件，这些仍交给原来

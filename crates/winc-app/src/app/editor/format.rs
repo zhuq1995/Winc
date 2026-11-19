@@ -130,6 +130,11 @@ impl FormatState {
         self.next_id
     }
 
+    /// 判断此文档是否在等待保存前格式化。
+    pub(in crate::app) fn saving_document(&self, id: DocumentId) -> bool {
+        self.saving.contains_key(&id)
+    }
+
     /// 是否有文档正在格式化后再保存（保存、关闭请求要等它结束）。
     pub(in crate::app) fn save_pending(&self) -> bool {
         !self.saving.is_empty()
@@ -665,21 +670,45 @@ impl App {
     /// 接收后台线程送回的格式化结果。
     pub(in crate::app) fn poll_formatting(&mut self) {
         // 后台选好了工具：接着询问、运行；期间又要求保存的一并保存。
-        while let Ok((mut launch, plan)) = self.format.planned.1.try_recv() {
-            let (task, id) = (launch.task, launch.id);
-            let waiting = self.format.planning.iter().position(|p| p.0 == id);
-            launch.save |= waiting.is_some_and(|at| self.format.planning.swap_remove(at).1);
-            let save = launch.save;
-            if let Err(e) = plan.and_then(|plan| self.launch(launch, plan)) {
-                if save {
-                    self.save_step_done(task, id, note_for(task, e));
-                } else {
-                    self.task_failed(task, id, &e);
-                }
-            }
+        while let Ok(planned) = self.format.planned.1.try_recv() {
+            self.format_planned(planned);
         }
         while let Ok((id, job, result)) = self.format.receiver.try_recv() {
             self.formatting_done(id, job, result);
+        }
+    }
+
+    /// 等待指定文档的保存前格式化。工具授权仍由界面处理。
+    pub(in crate::app) fn wait_for_save_format(&mut self, id: DocumentId) -> bool {
+        while self.format.saving_document(id) {
+            if self.format.planning.iter().any(|p| p.0 == id) {
+                let Ok(planned) = self.format.planned.1.recv() else {
+                    return false;
+                };
+                self.format_planned(planned);
+            } else if self.format.running.iter().any(|r| r.id == id && r.save) {
+                let Ok((id, job, result)) = self.format.receiver.recv() else {
+                    return false;
+                };
+                self.formatting_done(id, job, result);
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn format_planned(&mut self, (mut launch, plan): Planned) {
+        let (task, id) = (launch.task, launch.id);
+        let waiting = self.format.planning.iter().position(|p| p.0 == id);
+        launch.save |= waiting.is_some_and(|at| self.format.planning.swap_remove(at).1);
+        let save = launch.save;
+        if let Err(e) = plan.and_then(|plan| self.launch(launch, plan)) {
+            if save {
+                self.save_step_done(task, id, note_for(task, e));
+            } else {
+                self.task_failed(task, id, &e);
+            }
         }
     }
 

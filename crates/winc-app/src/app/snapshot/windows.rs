@@ -7,6 +7,28 @@
 use super::*;
 use crate::winc::{Request, Winc};
 
+#[cfg(windows)]
+mod native_input;
+
+fn normal_winc() -> Winc {
+    Winc::new(
+        None,
+        Some(crate::winc::Template {
+            config_path: None,
+            state_path: None,
+            backup_root: None,
+        }),
+    )
+}
+
+fn target(path: &Path) -> crate::cli::Target {
+    crate::cli::Target {
+        path: path.to_path_buf(),
+        line: None,
+        col: None,
+    }
+}
+
 /// 两个窗口：第一个开着 `name` 目录里的 `src/main.rs`，第二个在开始页。
 fn two_windows(
     name: &str,
@@ -23,25 +45,51 @@ fn two_windows(
     (winc, a, b, dir)
 }
 
+#[cfg(target_os = "macos")]
 #[test]
-fn closing_one_of_two_windows_drops_it_and_the_last_one_stays_hidden() {
-    let (mut winc, a, b, dir) = two_windows("windows-close");
-    winc.app(b).request_close_window();
-    assert!(winc.app(b).window.hidden);
-    winc.settle_for_test();
-    assert_eq!(winc.keys(), [a], "还有别的窗口时关掉的窗口去掉");
+fn closing_and_reopening_the_macos_window_keeps_projects_and_tabs() {
+    let dir = search_folder("macos-window-hide");
+    let mut winc = normal_winc();
+    let a = winc.add_detached(app_with(&dir.join("src/main.rs"), false));
+    let b = winc.add_detached(blank_app(false));
+    let app = winc.app(a);
+    let root = app.editor.root().unwrap().to_path_buf();
+    let id = app.editor.active().unwrap().id;
+    app.config.hot_exit = Some(false);
+    app.run(Command::Insert("// 未保存\n".into()));
+    app.terminal.open = true;
 
-    // 最后一个窗口：macOS 上关闭时保留（点击程序坞图标会带着开始页回来），不退出；其他系统上
-    // 关闭最后一个窗口就是退出。
-    winc.app(a).request_close_window();
-    let (_, exit) = winc.settle_for_test();
-    assert_eq!(winc.keys(), [a]);
-    if cfg!(target_os = "macos") {
-        assert!(winc.app(a).window.hidden && !exit);
-    } else {
-        assert!(winc.app(a).closing.quit_requested);
-    }
+    app.request_close_window();
+    assert!(app.window.hidden && app.closing.prompt.is_none());
+    assert!(!winc.settle_for_test().1);
+    assert_eq!(winc.keys(), [a, b]);
+    assert_eq!(winc.active_for_test(), Some(a));
+
+    let app = winc.app(a);
+    app.handle_event(UserEvent::Reopen);
+    assert!(!app.window.hidden);
+    assert_eq!(app.editor.root(), Some(root.as_path()));
+    assert_eq!(app.editor.active().unwrap().id, id);
+    assert!(app.editor.active().unwrap().is_dirty());
+    assert!(app.terminal.open);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn closing_a_wait_window_closes_its_tabs_and_exits() {
+    let mut winc = Winc::new(None, None);
+    let mut app = blank_app(false);
+    app.new_file();
+    app.start_one_off(&crate::cli::Args {
+        wait: true,
+        ..Default::default()
+    });
+    let key = winc.add_detached(app);
+
+    winc.app(key).request_close_window();
+    assert!(winc.app(key).editor.documents.is_empty());
+    assert!(winc.settle_for_test().1);
 }
 
 #[test]
@@ -54,6 +102,7 @@ fn closing_a_window_without_a_folder_asks_about_unsaved_files() {
     // 没开目录的窗口中有未保存的笔记：备份没有之后恢复的时机，关闭前必须询问。
     winc.app(b).new_file();
     winc.app(b).run(Command::Insert("笔记".into()));
+    winc.app(b).config.hot_exit = Some(false);
     winc.app(b).request_close_window();
     assert!(winc.app(b).closing.prompt.is_some() && !winc.app(b).window.hidden);
     winc.app(b).answer_save_prompt(SaveChoice::Cancel);
@@ -63,9 +112,123 @@ fn closing_a_window_without_a_folder_asks_about_unsaved_files() {
     // 开着目录的窗口仍然不询问：内容写入备份，以后打开该目录时恢复。
     winc.app(a).run(Command::Insert("// 还没存\n".into()));
     winc.app(a).request_close_window();
-    assert!(winc.app(a).closing.prompt.is_none() && winc.app(a).window.hidden);
+    assert!(winc.app(a).closing.prompt.is_none());
+    if cfg!(target_os = "macos") {
+        assert!(winc.app(a).window.hidden);
+    } else {
+        assert!(winc.app(a).closing.quit_requested && !winc.app(a).window.hidden);
+    }
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn closing_the_shared_window_preserves_projects_and_tabs_for_restart() {
+    let first = search_folder("shared-window-restore-a");
+    let second = search_folder("shared-window-restore-b");
+    let state_path = first.join("state.json");
+    let template = crate::winc::Template {
+        config_path: None,
+        state_path: Some(state_path.clone()),
+        backup_root: None,
+    };
+    let mut winc = Winc::new(None, Some(template));
+    let mut keys = Vec::new();
+    for folder in [&first, &second] {
+        let mut app = app_with(folder, false);
+        app.store.state_path = Some(state_path.clone());
+        app.open_path(&folder.join("src/main.rs"));
+        app.open_path(&folder.join("Cargo.toml"));
+        app.activate_tab(0);
+        keys.push(winc.add_detached(app));
+    }
+    let [a, b] = keys[..] else { unreachable!() };
+    winc.set_active(b);
+    let roots: Vec<PathBuf> = keys
+        .iter()
+        .map(|&key| winc.app(key).editor.root().unwrap().to_path_buf())
+        .collect();
+
+    winc.app(b).request_close_window();
+    let (_, exit) = winc.settle_for_test();
+    assert!(exit, "关闭唯一的系统窗口结束事件循环");
+    assert_eq!(winc.keys(), [a, b]);
+    for key in [a, b] {
+        assert!(winc.app(key).closing.quit_requested);
+        assert!(!winc.app(key).window.hidden);
+        assert_eq!(winc.app(key).editor.documents.len(), 2);
+        // Winc::exiting 按后台项目、当前项目的顺序记录现场。
+        winc.app(key).prepare_exit();
+    }
+    winc.remember_windows_for_test();
+    let state = State::load_from(&state_path);
+    assert_eq!(state.last.as_ref(), Some(&roots[1]));
+    assert_eq!(state.others, [roots[0].clone()]);
+    for root in &roots {
+        let session = state.session_for(root).unwrap();
+        let mut editor = Editor::default();
+        assert!(crate::open_session_folder(&mut editor, session));
+        crate::app::restore_at_launch(&mut editor, Some(session), None);
+        assert_eq!(editor.root(), Some(root.as_path()));
+        let names: Vec<_> = editor.documents.iter().map(|doc| doc.name()).collect();
+        assert_eq!(names, ["main.rs", "Cargo.toml"]);
+        assert_eq!(editor.active, Some(0));
+    }
+    let _ = std::fs::remove_dir_all(&first);
+    let _ = std::fs::remove_dir_all(&second);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn closing_the_shared_window_waits_for_background_project_confirmation() {
+    let (mut winc, a, b, dir) = two_windows("shared-window-close-cancel");
+    winc.set_active(a);
+    winc.app(b).config.hot_exit = Some(false);
+    winc.app(b).new_file();
+    winc.app(b).run(Command::Insert("未保存的笔记".into()));
+    winc.app(a).request_close_window();
+    let (_, exit) = winc.settle_for_test();
+    assert!(!exit && winc.app(b).closing.prompt.is_some());
+    assert_eq!(winc.active_for_test(), Some(b), "保存提示交给所属项目");
+    winc.app(b).answer_save_prompt(SaveChoice::Cancel);
+    assert!(!winc.settle_for_test().1);
+    for key in [a, b] {
+        assert!(!winc.app(key).window.hidden);
+        assert!(!winc.app(key).closing.quit_requested);
+    }
+    winc.app(a).request_close_window();
+    winc.settle_for_test();
+    winc.app(b).answer_save_prompt(SaveChoice::Discard);
+    assert!(winc.settle_for_test().1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn first_quit_prompt_blocks_project_changes_until_cancelled() {
+    let mut winc = normal_winc();
+    let a = winc.add_detached(blank_app(false));
+    let b = winc.add_detached(blank_app(false));
+    let app = winc.app(a);
+    app.config.hot_exit = Some(false);
+    app.new_file();
+    app.run(Command::Insert("unsaved note".into()));
+    app.handle_event(UserEvent::QuitRequested);
+    assert!(app.closing.prompt.is_some());
+    assert!(!winc.settle_for_test().1);
+
+    winc.apply_request_for_test(Request::Focus(b));
+    winc.apply_request_for_test(Request::NewWindow(None));
+    winc.apply_request_for_test(Request::CloseProject(b));
+    assert!(!winc.launched_for_test(Vec::new()));
+    assert!(!winc.settle_for_test().1);
+    assert_eq!(winc.active_for_test(), Some(a));
+    assert_eq!(winc.keys(), [a, b]);
+
+    winc.app(a)
+        .handle_event(UserEvent::SaveChoice(SaveChoice::Cancel));
+    winc.apply_request_for_test(Request::Focus(b));
+    assert_eq!(winc.active_for_test(), Some(b));
 }
 
 #[test]
@@ -76,6 +239,11 @@ fn quitting_one_window_quits_all_of_them() {
     let (_, exit) = winc.settle_for_test();
     assert!(winc.app(b).closing.quit_requested, "其他窗口也请它退出");
     assert!(exit, "都退了才结束事件循环");
+    assert_eq!(
+        winc.active_for_test(),
+        Some(a),
+        "退出后恢复发起项目作为启动记录"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -169,15 +337,64 @@ fn opening_another_folder_follows_the_new_window_setting() {
 }
 
 #[test]
+fn launch_opens_each_directory_and_preserves_projects_that_are_not_blank() {
+    let dir = search_folder("launch-directories");
+    let root = winc_config::files::canonicalize(&dir).unwrap();
+    let nested = root.join("src");
+    let mut winc = normal_winc();
+    let with_terminal = winc.add_detached(blank_app(false));
+    winc.app(with_terminal).terminal.open = true;
+    let pending_close = winc.add_detached(blank_app(false));
+    winc.app(pending_close).deferred_close = Some(CloseRequest::CloseProject);
+    let empty = winc.add_detached(blank_app(false));
+
+    assert!(winc.launched_for_test(vec![
+        target(&root),
+        target(&nested),
+        target(&root),
+        target(&root.join("Cargo.toml")),
+    ]));
+    let keys = winc.keys();
+    assert_eq!(&keys[..3], [with_terminal, pending_close, empty]);
+    assert_eq!(keys.len(), 4);
+    assert_eq!(winc.active_for_test(), Some(empty));
+    assert_eq!(winc.app(empty).editor.root(), Some(root.as_path()));
+    assert_eq!(
+        winc.app(empty).editor.active().unwrap().name(),
+        "Cargo.toml"
+    );
+    assert_eq!(winc.app(keys[3]).editor.root(), Some(nested.as_path()));
+    assert!(winc.app(with_terminal).terminal.open);
+    assert!(winc.app(with_terminal).editor.root().is_none());
+    assert!(winc.app(pending_close).editor.root().is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn closing_a_project_selects_and_reveals_its_neighbor() {
+    let mut winc = normal_winc();
+    let [a, b, c, d] = std::array::from_fn(|_| winc.add_detached(blank_app(false)));
+    winc.apply_request_for_test(Request::Focus(b));
+    assert!(winc.app(b).projects_reveal);
+    winc.apply_request_for_test(Request::CloseProject(b));
+    winc.settle_for_test();
+    assert_eq!(winc.keys(), [a, c, d]);
+    assert_eq!(winc.active_for_test(), Some(c));
+    assert!(winc.app(c).projects_reveal);
+
+    winc.app(c).projects_reveal = false;
+    winc.apply_request_for_test(Request::CloseProject(d));
+    winc.settle_for_test();
+    assert_eq!(winc.keys(), [a, c]);
+    assert_eq!(winc.active_for_test(), Some(c));
+    assert!(winc.app(c).projects_reveal);
+}
+
+#[test]
 fn dropped_on_the_dock_icon_open_in_the_window_that_has_them_or_the_current_one() {
     let (mut winc, a, b, dir) = two_windows("windows-dock");
     winc.settle_for_test();
     let src = winc_config::files::canonicalize(dir.join("src")).unwrap();
-    let target = |path: &Path| crate::cli::Target {
-        path: path.to_path_buf(),
-        line: None,
-        col: None,
-    };
 
     // 开着它所在目录的窗口收下。
     assert_eq!(winc.window_for_test(&[target(&src.join("main.rs"))]), Ok(a));
@@ -320,6 +537,50 @@ fn other_windows_are_remembered_at_quit_and_reopened_at_launch() {
     let _ = std::fs::remove_dir_all(&first);
     let _ = std::fs::remove_dir_all(&second);
     let _ = std::fs::remove_file(&state_path);
+}
+#[test]
+fn folderless_backups_restore_beside_the_last_folder() {
+    let folder = search_folder("restore-folderless-beside-folder");
+    let root = folder.join("backups");
+    let template = crate::winc::Template {
+        config_path: None,
+        state_path: None,
+        backup_root: Some(root.clone()),
+    };
+    let mut winc = Winc::new(None, Some(template.clone()));
+    let a = winc.add_detached(app_with(&folder, false));
+    let mut app = blank_app(false);
+    app.backup.root = Some(root);
+    let b = winc.add_detached(app);
+    winc.app(b).new_file();
+    winc.app(b)
+        .run(Command::Insert("未保存的开始页内容".into()));
+    winc.app(a).request_quit();
+    assert!(winc.settle_for_test().1);
+    assert_eq!(winc.active_for_test(), Some(a));
+    drop(winc);
+
+    let mut winc = Winc::new(None, Some(template));
+    let a = winc.add_detached(app_with(&folder, false));
+    winc.restore_folderless_project();
+    let [_, b] = winc.keys()[..] else {
+        panic!("缺少恢复的开始页")
+    };
+    assert_eq!(winc.active_for_test(), Some(a));
+    assert!(winc.app(b).editor.root().is_none());
+    assert_eq!(
+        winc.app(b)
+            .editor
+            .active()
+            .unwrap()
+            .text()
+            .rope()
+            .unwrap()
+            .to_string(),
+        "未保存的开始页内容"
+    );
+    drop(winc);
+    let _ = std::fs::remove_dir_all(&folder);
 }
 
 /// 在一个窗口剪切、到另一个窗口的目录里粘贴。
@@ -466,10 +727,18 @@ fn a_drawn_title_bar_has_window_buttons_and_resize_edges() {
     app.on_mouse_up(MouseButton::Left);
     assert!(!app.window.hidden, "移开后松开不关闭窗口");
 
-    // 关闭按钮：和系统标题栏上的一样关掉该窗口。
     click(app, center);
-    winc.settle_for_test();
-    assert_eq!(winc.keys(), [b]);
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert!(winc.settle_for_test().1);
+        assert_eq!(winc.keys(), [a, b]);
+        assert!(winc.app(a).closing.quit_requested && winc.app(b).closing.quit_requested);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        assert!(!winc.settle_for_test().1);
+        assert_eq!(winc.keys(), [b]);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

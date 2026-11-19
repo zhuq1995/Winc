@@ -141,21 +141,21 @@ impl App {
 
     /// 收到提交前检查的结果：没有新增的 TODO 时接着提交；有时先确认。
     pub(super) fn todo_checked(&mut self, count: usize, root: &Path) {
-        self.git.commit.busy = false;
         if self.git.root.as_deref() != Some(root) {
-            self.git.commit.push_after = false;
             return;
         }
+        self.git.commit.busy = false;
         if count == 0 {
             self.git.commit.todo_passed = true;
-            self.git_commit();
+            self.git_commit_resume();
             return;
         }
         let message = t!("git-commit-todo-confirm", count = count);
         let detail = t!("git-commit-todo-confirm-detail");
         let button = t!("git-commit-todo-confirm-button");
-        let shown = self.show_confirm(&message, detail, button, |ok| {
-            Some(UserEvent::GitCommitTodo(ok))
+        let root = root.to_path_buf();
+        let shown = self.show_confirm(&message, detail, button, move |ok| {
+            Some(UserEvent::GitCommitTodo(root.clone(), ok))
         });
         if !shown {
             self.git.commit.push_after = false;
@@ -163,10 +163,13 @@ impl App {
     }
 
     /// 新增 TODO 的确认框选了 `ok`（仍然提交）或取消。
-    pub(in crate::app) fn todo_confirmed(&mut self, ok: bool) {
+    pub(in crate::app) fn todo_confirmed(&mut self, root: &Path, ok: bool) {
+        if self.git.root.as_deref() != Some(root) {
+            return;
+        }
         if ok {
             self.git.commit.todo_passed = true;
-            self.git_commit();
+            self.git_commit_resume();
         } else {
             self.git.commit.push_after = false;
         }

@@ -397,6 +397,12 @@ pub(super) fn parse_diff_tree(output: &[u8], root: &Path) -> Vec<CommitFile> {
 ///
 /// 路径相对于 `root`，返回的是绝对路径。
 pub(super) fn parse_status(output: &[u8], root: &Path) -> Option<Status> {
+    parse_status_with_limit(output, root, STATUS_LIMIT)
+}
+
+pub(super) const SYMLINK_MODE: &[u8] = b"120000";
+
+pub(super) fn parse_status_with_limit(output: &[u8], root: &Path, limit: usize) -> Option<Status> {
     let mut status = Status::default();
     let mut fields = output.split(|b| *b == 0).filter(|f| !f.is_empty());
     let path = |bytes: &[u8]| root.join(bytes_to_path(bytes));
@@ -405,33 +411,36 @@ pub(super) fn parse_status(output: &[u8], root: &Path) -> Option<Status> {
         let text = field;
         match text.first()? {
             b'#' => parse_header(text, &mut status),
-            b'1' => {
+            kind @ (b'1' | b'2') => {
                 // 1 XY sub mH mI mW hH hI path
-                let mut parts = text.splitn(9, |b| *b == b' ');
+                // 2 XY sub mH mI mW hH hI Xscore path，接着是原来的路径。
+                let renamed = *kind == b'2';
+                let mut parts = text.splitn(if renamed { 10 } else { 9 }, |b| *b == b' ');
                 let xy = parts.nth(1)?;
-                let rest = parts.nth(6)?;
-                push_entry(&mut status, entry(path(rest), None, xy)?);
-            }
-            b'2' => {
-                // 2 XY sub mH mI mW hH hI Xscore path，后面的一个字段是原来的路径。
-                let mut parts = text.splitn(10, |b| *b == b' ');
-                let xy = parts.nth(1)?;
-                let rest = parts.nth(7)?;
-                let from = fields.next()?;
-                push_entry(&mut status, entry(path(rest), Some(path(from)), xy)?);
+                let modes = [parts.nth(1)?, parts.next()?, parts.next()?];
+                let rest = parts.nth(if renamed { 3 } else { 2 })?;
+                let from = if renamed {
+                    Some(path(fields.next()?))
+                } else {
+                    None
+                };
+                let entry = entry(path(rest), from, xy, modes.contains(&SYMLINK_MODE))?;
+                push_entry(&mut status, entry, limit);
             }
             b'u' => {
                 // u XY sub m1 m2 m3 mW h1 h2 h3 path
                 let mut parts = text.splitn(11, |b| *b == b' ');
-                let rest = parts.nth(10)?;
+                let modes = [parts.nth(3)?, parts.next()?, parts.next()?, parts.next()?];
+                let rest = parts.nth(3)?;
                 let conflict = Entry {
                     path: path(rest),
                     from: None,
                     staged: None,
                     unstaged: Some(Change::Conflicted),
                     is_dir: false,
+                    is_symlink: modes.contains(&SYMLINK_MODE),
                 };
-                push_entry(&mut status, conflict);
+                push_entry(&mut status, conflict, limit);
             }
             b'?' => {
                 let rest = text.get(2..)?;
@@ -443,8 +452,9 @@ pub(super) fn parse_status(output: &[u8], root: &Path) -> Option<Status> {
                     staged: None,
                     unstaged: Some(Change::Untracked),
                     is_dir: dir.is_some(),
+                    is_symlink: false,
                 };
-                push_entry(&mut status, untracked);
+                push_entry(&mut status, untracked, limit);
             }
             // 忽略的文件和目录（目录以 `/` 结尾）。
             b'!' => {
@@ -460,9 +470,9 @@ pub(super) fn parse_status(output: &[u8], root: &Path) -> Option<Status> {
     Some(status)
 }
 
-/// 把一条变化记进 `status`；已有 [`STATUS_LIMIT`] 条时不再记，并标记为截断。
-fn push_entry(status: &mut Status, entry: Entry) {
-    if status.entries.len() < STATUS_LIMIT {
+/// 把一条变化记进 `status`；达到 `limit` 时标记为截断。
+fn push_entry(status: &mut Status, entry: Entry, limit: usize) {
+    if status.entries.len() < limit {
         status.entries.push(entry);
     } else {
         status.truncated = true;
@@ -498,7 +508,7 @@ fn parse_header(line: &[u8], status: &mut Status) {
     }
 }
 
-fn entry(path: PathBuf, from: Option<PathBuf>, xy: &[u8]) -> Option<Entry> {
+fn entry(path: PathBuf, from: Option<PathBuf>, xy: &[u8], is_symlink: bool) -> Option<Entry> {
     let [x, y] = xy else { return None };
     Some(Entry {
         path,
@@ -506,6 +516,7 @@ fn entry(path: PathBuf, from: Option<PathBuf>, xy: &[u8]) -> Option<Entry> {
         staged: Change::from_code(*x),
         unstaged: Change::from_code(*y),
         is_dir: false,
+        is_symlink,
     })
 }
 

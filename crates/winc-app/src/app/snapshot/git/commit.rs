@@ -1,7 +1,7 @@
 //! 提交视图的测试：改动列表、勾选、提交、菜单、提交信息、滚动与固定行、折叠、长文件名。
 
 use super::*;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::app::SyncState;
 use crate::app::animation::{Clock, TREE_ANIMATION};
@@ -1014,11 +1014,13 @@ fn the_refresh_button_spins_for_at_least_one_turn() {
     paint(&mut app);
     assert!(!app.commit_refreshing());
     app.press_commit(CommitTarget::Refresh);
-    // 测试里读取就地完成，这时转的只是至少一圈的时长。
+    // 离屏测试中读取就地完成；固定动画时钟，不用读取耗时判断是否转满一圈。
+    let turn = Duration::from_secs_f32(1.0 / crate::theme::SPIN_SPEED);
+    assert_eq!(app.git.commit.refreshed.unwrap().duration(), turn);
+    app.git.commit.refreshed = Some(Clock::stopped(turn, turn / 2));
     assert!(app.commit_refreshing());
     assert!(app.animating());
-    let turn = Duration::from_secs_f32(1.0 / crate::theme::SPIN_SPEED);
-    app.git.commit.refreshed = Instant::now().checked_sub(turn);
+    app.git.commit.refreshed = Some(Clock::stopped(turn, turn));
     assert!(!app.commit_refreshing());
     let _ = std::fs::remove_dir_all(&root);
 }

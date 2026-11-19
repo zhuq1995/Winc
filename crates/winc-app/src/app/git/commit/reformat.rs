@@ -14,11 +14,11 @@ use super::*;
 impl App {
     /// 提交前格式化：开着、这次还没整理过时在后台整理要提交的文件，返回 `true`，提交等整理完
     /// 再继续（[`App::reformatted`]）。整理过一次后放行这一次提交。
-    pub(super) fn reformat_first(&mut self) -> bool {
+    pub(super) fn reformat_first(&mut self, status: Option<&Status>) -> bool {
         if std::mem::take(&mut self.git.commit.reformat_passed) || !self.state.commit_reformat {
             return false;
         }
-        let Some(status) = self.git.status.as_ref() else {
+        let Some(status) = status.or(self.git.status.as_ref()) else {
             return false;
         };
         let staging = self.git.commit.staging();
@@ -45,6 +45,13 @@ impl App {
         let mut targets: Vec<(PathBuf, PathBuf)> =
             paths.into_iter().map(|p| (p, root.clone())).collect();
         targets.extend(self.other_reformat_paths());
+        if staging {
+            targets.retain(|(path, _)| {
+                !self
+                    .git_document(path)
+                    .is_some_and(|doc| self.pending_git_save(doc))
+            });
+        }
         let paths: Vec<PathBuf> = targets.iter().map(|(p, _)| p.clone()).collect();
         if !self.save_dirty_documents(&paths) {
             return false;
@@ -111,16 +118,15 @@ impl App {
 
     /// 提交前的整理做完了：说明整理了几个文件，接着提交。
     pub(super) fn reformatted(&mut self, count: usize, root: &Path) {
-        self.git.commit.busy = false;
         if self.git.root.as_deref() != Some(root) {
-            self.git.commit.push_after = false;
             return;
         }
+        self.git.commit.busy = false;
         if count > 0 {
             self.flash(t!("git-commit-reformatted", count = count));
         }
         self.git.commit.reformat_passed = true;
-        self.git_commit();
+        self.git_commit_resume();
     }
 
     /// 打开或关闭提交前格式化（提交按钮的菜单）。

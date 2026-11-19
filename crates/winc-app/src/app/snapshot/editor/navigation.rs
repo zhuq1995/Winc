@@ -244,16 +244,16 @@ fn command_palette_runs_commands_and_remembers_them() {
     assert_eq!(palette()[app.overlays.picker.hits[0]].title(), "撤销");
     app.overlays.picker.input.set_text(">");
     app.picker_refresh();
-    // 模块关闭时（Git）其命令不列出；开发构建没有要安装的 `winc` 命令，同样不列出；Markdown 的
-    // 行内格式只在可编辑的 Markdown 预览中列出。
-    let installable = |a: &&crate::keymap::Action| {
+    // 关闭的模块没有命令；行内格式、关闭项目和安装命令还各有额外条件。
+    let available = |a: &&crate::keymap::Action| {
         use crate::keymap::Action::{
-            InstallShellCommand, MarkdownBold, MarkdownCode, MarkdownItalic, MarkdownStrikethrough,
-            UninstallShellCommand,
+            CloseProject, InstallShellCommand, MarkdownBold, MarkdownCode, MarkdownItalic,
+            MarkdownStrikethrough, UninstallShellCommand,
         };
         !matches!(
             a,
-            InstallShellCommand
+            CloseProject
+                | InstallShellCommand
                 | UninstallShellCommand
                 | MarkdownBold
                 | MarkdownItalic
@@ -263,7 +263,7 @@ fn command_palette_runs_commands_and_remembers_them() {
     };
     let always = (palette().iter())
         .filter(|a| a.module().is_none())
-        .filter(installable)
+        .filter(available)
         .count();
     assert_eq!(app.overlays.picker.hits.len(), always);
 

@@ -3,16 +3,26 @@
 use super::*;
 
 impl App {
-    /// 返回项目列表中的悬停目标：条目本身，或鼠标停在条目上时右端的关闭按钮。
-    pub(super) fn project_at(&self, x: f32, y: f32) -> Option<Hover> {
+    /// 模态浮层打开时，项目列表不接收点击和悬停。
+    pub(super) fn project_list_at(&self, x: f32, y: f32) -> bool {
+        !self.settings.open
+            && self.overlays.form_dialog.is_none()
+            && self.layout.projects.contains(x, y)
+    }
+
+    /// 上一帧记录的项目顺序仍与共享列表一致。
+    pub(super) fn project_rows_current(&self) -> bool {
         let projects = self.link.shared.projects();
-        if projects.len() < 2
-            || !self.layout.projects.contains(x, y)
-            || !projects
+        projects.len() > 1
+            && projects
                 .iter()
                 .map(|project| project.key)
                 .eq(self.projects_keys.iter().copied())
-        {
+    }
+
+    /// 返回项目列表中的悬停目标：条目本身，或鼠标停在条目上时右端的关闭按钮。
+    pub(super) fn project_at(&self, x: f32, y: f32) -> Option<Hover> {
+        if !self.project_list_at(x, y) || !self.project_rows_current() {
             return None;
         }
         if let Some(&(_, key)) = self

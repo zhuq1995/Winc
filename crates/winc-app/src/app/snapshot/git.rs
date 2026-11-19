@@ -51,6 +51,17 @@ fn git_unusable(app: &App) -> bool {
     }
 }
 
+fn git_command(dir: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(dir);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}
+
 /// 在 `dir` 中创建只有一次提交的仓库，再修改 `src/main.rs` 并新增 `src/new.rs`。
 ///
 /// 机器上没有可用的 git 时返回 `false`。
@@ -64,16 +75,17 @@ fn make_repo(dir: &Path) -> bool {
 
 fn make_repo_inner(dir: &Path) -> bool {
     let git = |args: &[&str]| {
-        Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        git_command(dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
             .args(["-c", "commit.gpgsign=false"])
             .args(args)
             .output()
             .is_ok_and(|o| o.status.success())
     };
-    if !git(&["init", "-q", "-b", "main"]) || !git(&["add", "."]) {
+    if !git(&["init", "-q", "-b", "main"])
+        || !git(&["config", "--local", "core.autocrlf", "false"])
+        || !git(&["add", "."])
+    {
         return false;
     }
     // 仓库自己的配置：winc 提交时不依赖本机的全局身份和签名设置。
@@ -146,9 +158,7 @@ fn press_alert(app: &mut App, button: usize) {
 
 /// 在测试仓库 `dir` 中运行 `git` 命令，失败时 panic。
 fn git_in(dir: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let ok = git_command(dir)
         .args(args)
         .output()
         .is_ok_and(|o| o.status.success());
@@ -210,15 +220,11 @@ fn history_repo(root: &Path, days: i64) {
         step += 1;
         at += 86_400;
         let date = format!("{at} +0800");
-        let ok = Command::new("git")
-            .arg("-C")
-            .arg(root)
+        let ok = git_command(root)
             .args(["add", "."])
             .output()
             .is_ok_and(|o| o.status.success())
-            && Command::new("git")
-                .arg("-C")
-                .arg(root)
+            && git_command(root)
                 .args(["-c", &format!("user.name={name}"), "-c"])
                 .arg(format!("user.email={email}"))
                 .args(["commit", "-q", "-m", message])
@@ -245,9 +251,7 @@ fn history_repo(root: &Path, days: i64) {
     commit("README.md", "# demo\n\n使用说明\n", "补充使用说明");
     // 合并在第五次提交的那天下午。
     let date = format!("{} +0800", base + 5 * 86_400 + 43_200);
-    let merged = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let merged = git_command(root)
         .args(["-c", "user.name=张伟", "-c", "user.email=zhang@example.com"])
         .args([
             "merge",

@@ -395,7 +395,7 @@ struct ListContext<'a> {
     rows: &'a CommitRows,
     /// 是否有多个文件被选中：目录行下面的文件全部选中时，目录行才画成选中状态。
     ///
-    /// 每行是否选中按 `App::commit_is_selected` 查集合：几千个改动、多选时，逐项线性查找
+    /// 每行是否选中按 `App::commit_row_selected` 查集合：几千个改动、多选时，逐项线性查找
     /// 会在一帧里做上千万次比较。
     multi: bool,
 }
@@ -1117,7 +1117,13 @@ fn file_column(app: &App, depth: usize) -> usize {
 }
 
 /// 返回第 `row` 行名字的排法（组标题行返回 `None`）；列位置与 [`draw_row`] 使用同一组常量。
-fn row_text(app: &App, status: &Status, root: &Path, row: &CommitRow) -> Option<RowText> {
+fn row_text(
+    app: &App,
+    status: &Status,
+    root: &Path,
+    rows: &CommitRows,
+    row: usize,
+) -> Option<RowText> {
     let p = app.palette;
     // 箭头、勾选框、图标、图标那一列宽、间隔（见 `draw_row` 和 `ARROW` 那一组常量）。
     let base = app.commit_base_level();
@@ -1125,7 +1131,7 @@ fn row_text(app: &App, status: &Status, root: &Path, row: &CommitRow) -> Option<
         let indent = (level + base) as f32 * INDENT;
         ARROW + indent + check_gap(app) + ICON + icons::FOLDER_WIDTH + LABEL_GAP
     };
-    match row {
+    match rows.get(row)? {
         CommitRow::Group(_) => None,
         CommitRow::Dir { label, depth, .. } => Some(RowText {
             offset: offset(depth + 1),
@@ -1147,9 +1153,9 @@ fn row_text(app: &App, status: &Status, root: &Path, row: &CommitRow) -> Option<
                 .parent()
                 .and_then(|p| p.strip_prefix(root).ok())
                 .filter(|p| app.git.commit.flat() && !p.as_os_str().is_empty())
-                .map(|p| p.to_string_lossy().into_owned());
+                .map(|p| CommitRow::path_label(p).into_owned());
             let change = entry.shown();
-            let selected = app.commit_is_selected(&entry.path);
+            let selected = app.commit_row_selected(&entry.path, rows.group_of(row));
             Some(RowText {
                 offset: offset(file_column(app, *depth)),
                 name,

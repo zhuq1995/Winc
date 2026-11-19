@@ -179,7 +179,7 @@ fn the_staging_view_groups_staged_changes_and_has_plus_and_minus() {
             .iter()
             .any(|e| e.path == new && e.untracked())
     );
-    assert_eq!(app.commit_scope(), Some(CommitScope::All(1)));
+    assert_eq!(app.commit_scope(), Some(CommitScope::All(2)));
 
     // 键盘：选中文件后按空格暂存。只提交暂存区里的内容，未跟踪的文件仍未跟踪。
     paint(&mut app);
@@ -196,7 +196,7 @@ fn the_staging_view_groups_staged_changes_and_has_plus_and_minus() {
 }
 
 #[test]
-fn untracked_files_stay_out_of_the_commit_until_staged() {
+fn untracked_files_are_included_when_empty_index_commit_is_confirmed() {
     let Some((mut app, root)) = git_app("git-commit-untracked-staging", false) else {
         return;
     };
@@ -206,7 +206,7 @@ fn untracked_files_stay_out_of_the_commit_until_staged() {
     let (main, new) = (root.join("src/main.rs"), root.join("src/new.rs"));
     let status = app.git.status.clone().unwrap();
 
-    // 未跟踪的文件单独成组，默认显示但不勾；没有暂存任何内容时「提交全部」不含未跟踪的文件。
+    // 未跟踪的文件单独成组。空索引提交的确认范围包含它们。
     assert!(!app.git.commit.group_collapsed(CommitGroup::Untracked));
     assert_eq!(file_state(&app, &new), None);
     assert_eq!(
@@ -214,7 +214,7 @@ fn untracked_files_stay_out_of_the_commit_until_staged() {
         None
     );
     assert_eq!(app.commit_files(), [main.clone(), new.clone()]);
-    assert_eq!(app.commit_scope(), Some(CommitScope::All(1)));
+    assert_eq!(app.commit_scope(), Some(CommitScope::All(2)));
 
     // 收起和展开不改变勾选；收起时切换文件跳过这一组。
     app.press_commit(CommitTarget::Group(CommitGroup::Untracked));
@@ -232,21 +232,12 @@ fn untracked_files_stay_out_of_the_commit_until_staged() {
     app.stage_paths(std::slice::from_ref(&new), false);
     assert_eq!(file_state(&app, &new), None);
 
-    // 没有暂存时提交只包含已跟踪的改动，未跟踪的文件仍未跟踪。
-    app.git.commit.message.set_text("只提交改动");
+    app.git.commit.message.set_text("暂存并提交全部更改");
     app.git_commit();
-    let status = app.git.status.clone().unwrap();
-    assert_eq!(status.entries.len(), 1);
-    assert_eq!(status.entries[0].path, new);
-    assert!(status.entries[0].untracked());
-
-    // 只剩未跟踪的文件时没有可以提交的内容；暂存以后随提交加入仓库。
-    assert_eq!(app.commit_scope(), None);
-    app.git.commit.message.set_text("加入新文件");
-    assert!(app.commit_blocker(&status).is_some());
-    app.press_commit(CommitTarget::GroupCheck(CommitGroup::Untracked));
-    app.git_commit();
+    assert!(app.overlays.alert.is_some());
+    press_alert(&mut app, 0);
     assert!(app.git.status.as_ref().unwrap().entries.is_empty());
+    assert!(root.join("src/new.rs").exists());
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -465,7 +456,7 @@ fn the_tree_and_tab_menus_stage_and_roll_back_a_changed_file() {
     let id = app.editor.active().unwrap().id;
     let listed = commands(&mut app, MenuTarget::Tab(id));
     assert!(
-        listed.ends_with(&[FileHistory, CommitCheck(false), GitRollbackFile]),
+        listed.ends_with(&[FileHistory, CommitCheck(false)]),
         "{listed:?}"
     );
     app.run_menu_command(CommitCheck(false));
@@ -523,8 +514,8 @@ fn the_commit_button_says_commit_all_until_something_is_staged() {
     app.git.commit.set_staging(true);
     app.run_action(Action::ShowCommit);
     paint(&mut app);
-    // 没有暂存任何内容时提交全部已跟踪文件的改动；暂存以后只提交暂存区里的文件。
-    assert_eq!(app.commit_scope(), Some(CommitScope::All(1)));
+    // 空索引时确认全部更改，暂存以后只提交暂存区里的文件。
+    assert_eq!(app.commit_scope(), Some(CommitScope::All(2)));
     app.press_commit(CommitTarget::GroupCheck(CommitGroup::Changes));
     assert_eq!(app.commit_scope(), Some(CommitScope::Staged(1)));
 
@@ -607,7 +598,7 @@ fn the_staging_area_setting_and_the_menu_item_are_one_switch() {
         titles.cloned().collect()
     };
     // 暂存区中没有内容：只有「更改」和「未跟踪的文件」，按钮是「提交全部」。
-    assert_eq!(app.commit_scope(), Some(CommitScope::All(1)));
+    assert_eq!(app.commit_scope(), Some(CommitScope::All(2)));
     assert!(!groups(&app).contains(&CommitRow::Group(CommitGroup::Staged)));
 
     app.settings_toggle(Setting::GitStagingArea);
@@ -676,5 +667,40 @@ fn the_two_groups_compare_against_the_index() {
         .filter(|d| d.diff.is_some())
         .count();
     assert_eq!(previews, 1);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn symbolic_links_have_no_partial_staging_controls() {
+    let Some((mut app, root)) = git_app("git-stage-link", false) else {
+        return;
+    };
+    let file = root.join("src/link.txt");
+    std::fs::write(&file, "old-target").unwrap();
+    git_in(&root, &["config", "core.symlinks", "false"]);
+    let output = git_command(&root)
+        .args(["hash-object", "-w", "--", "src/link.txt"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let oid = String::from_utf8(output.stdout).unwrap();
+    let entry = format!("120000,{},src/link.txt", oid.trim());
+    git_in(&root, &["update-index", "--add", "--cacheinfo", &entry]);
+    git_in(&root, &["commit", "-qm", "link"]);
+    std::fs::write(&file, "new-target").unwrap();
+    app.git_refresh();
+
+    for staging in [true, false] {
+        app.git.commit.set_staging(staging);
+        app.preview_changes(&file, app.commit_compare(None));
+        paint(&mut app);
+        let view = app.editor.active().unwrap().diff.as_deref().unwrap();
+        assert!(!view.hunks.is_empty());
+        assert!(picks(&app).is_empty());
+        assert!(!app.hits.diff.iter().any(|(_, target)| matches!(
+            target,
+            DiffTarget::Include(_) | DiffTarget::IncludeLine(_, _)
+        )));
+    }
     let _ = std::fs::remove_dir_all(&root);
 }

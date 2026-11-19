@@ -73,6 +73,12 @@ terminal-close-folder-confirm-many = { $count ->
        *[other] Close the folder and end { $count } running programs?
     }
 terminal-close-folder-confirm-detail = Programs are still running in the terminal. Closing the folder will end them.
+terminal-close-project-confirm-one = Close the project and end “{ $name }”?
+terminal-close-project-confirm-many = { $count ->
+        [one] Close the project and end { $count } running program?
+       *[other] Close the project and end { $count } running programs?
+    }
+terminal-close-project-confirm-detail = Programs are still running in this project’s terminals. Closing the project will end them.
 terminal-close-confirm = End “{ $name }”?
 terminal-close-confirm-detail = Closing this terminal tab will end the program running in it.
 terminal-paste-confirm = { $count ->

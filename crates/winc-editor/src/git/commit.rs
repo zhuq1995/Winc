@@ -19,6 +19,7 @@ impl Git {
         paths: &[PathBuf],
         added: &[PathBuf],
     ) -> Result<(), String> {
+        require_worktree_root(root)?;
         self.require_trust(root)?;
         let cancel = Cancel::default();
         if !added.is_empty() {
@@ -34,6 +35,129 @@ impl Git {
                 .args(["restore", "--source=HEAD", "--staged", "--worktree", "--"])
                 .args(relative_all(root, paths));
             self.run(&mut command, STATUS_TIMEOUT, &cancel)?;
+        }
+        Ok(())
+    }
+
+    /// 恢复指定文件的工作区内容，来源为暂存区（没有首个提交时也可用）。
+    ///
+    /// # Errors
+    ///
+    /// 仓库不受信任或 Git 报错时返回原因。
+    pub fn restore_worktree(&self, root: &Path, paths: &[PathBuf]) -> Result<(), String> {
+        require_worktree_root(root)?;
+        self.require_trust(root)?;
+        if !paths.is_empty() {
+            let mut command = self.command(root);
+            command
+                .args(["restore", "--worktree", "--"])
+                .args(relative_all(root, paths));
+            self.run(&mut command, STATUS_TIMEOUT, &Cancel::default())?;
+        }
+        Ok(())
+    }
+
+    /// 读取回滚目标的当前状态，包含同路径的暂存删除和未跟踪记录。
+    ///
+    /// # Errors
+    ///
+    /// 仓库不受信任、Git 报错或状态无法完整读取时返回原因。
+    pub fn rollback_status(&self, root: &Path, paths: &[PathBuf]) -> Result<Vec<Entry>, String> {
+        require_worktree_root(root)?;
+        self.require_trust(root)?;
+        let mut command = self.command(root);
+        command
+            .args([
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=dirty",
+                "--",
+            ])
+            .args(relative_all(root, paths));
+        let output = self.run(&mut command, STATUS_TIMEOUT, &Cancel::default())?;
+        parse_status(&output, root)
+            .filter(|status| !status.truncated)
+            .map(|status| status.entries)
+            .ok_or_else(|| winc_i18n::t!("git-status-unreadable").to_owned())
+    }
+
+    /// 确认该路径可以按段读写。状态中的 Git 模式也涵盖以普通文件检出的符号链接。
+    ///
+    /// # Errors
+    ///
+    /// 路径涉及符号链接，或无法确认当前的 Git 模式与文件类型时返回原因。
+    pub fn check_partial_path(&self, root: &Path, path: &Path) -> Result<(), String> {
+        require_worktree_root(root)?;
+        self.require_trust(root)?;
+        let relative = slash_path(root, path)?;
+        let pathspec = joined_arg(&[OsStr::new(":(literal)"), &relative]);
+        let cancel = Cancel::default();
+        let mut command = self.command(root);
+        command
+            .args([
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--no-renames",
+                "--untracked-files=no",
+                "--",
+            ])
+            .arg(&pathspec);
+        let output = self.run(&mut command, STATUS_TIMEOUT, &cancel)?;
+        let status = parse_status(&output, root)
+            .ok_or_else(|| winc_i18n::t!("git-status-unreadable").to_owned())?;
+        let tracked_link = if status.entries.is_empty() {
+            // 干净的路径没有状态记录，从暂存区取模式。
+            let mut command = self.command(root);
+            command
+                .args(["ls-files", "--stage", "-z", "--"])
+                .arg(&pathspec);
+            let output = self.run(&mut command, STATUS_TIMEOUT, &cancel)?;
+            output
+                .split(|b| *b == 0)
+                .any(|row| row.split(|b| *b == b' ').next() == Some(parse::SYMLINK_MODE))
+        } else {
+            status.entries.iter().any(|entry| entry.is_symlink)
+        };
+        let name = crate::display_name(path).into_owned();
+        if !tracked_link {
+            let metadata = winc_backend::fs::symlink_metadata(path).map_err(|e| {
+                winc_i18n::t!("git-read-file-failed", name = &name, error = e.to_string())
+            })?;
+            if !metadata.is_symlink() {
+                return Ok(());
+            }
+        }
+        Err(winc_i18n::t!("git-stage-partial-symlink", name = name))
+    }
+
+    /// 仅当仍然没有暂存改动时暂存整个工作区。
+    ///
+    /// # Errors
+    /// 同 [`Git::stage`]，也返回检查索引时的错误。
+    pub fn stage_all_if_empty(&self, root: &Path) -> Result<(), String> {
+        require_worktree_root(root)?;
+        self.require_trust(root)?;
+        let mut command = self.command(root);
+        command.args([
+            "diff",
+            "--cached",
+            "--name-only",
+            "--no-ext-diff",
+            "--ignore-submodules=none",
+            "-z",
+        ]);
+        if self
+            .run(&mut command, STATUS_TIMEOUT, &Cancel::default())?
+            .is_empty()
+            && git_dir(root)
+                .as_deref()
+                .and_then(Operation::detect)
+                .is_none()
+        {
+            self.operate(root, &["add", "--all"])?;
         }
         Ok(())
     }
@@ -75,6 +199,7 @@ impl Git {
             sign_off,
             no_verify,
         } = options;
+        require_worktree_root(root)?;
         self.require_trust(root)?;
         let mut command = self.command(root);
         // `whitespace` 只去掉首尾空行和行尾空白；`strip` 还会删掉 `#` 开头的行，
@@ -104,6 +229,10 @@ impl Git {
     ///
     /// 仓库不受信任、`git` 报错时返回说明。
     pub fn unstage(&self, root: &Path, paths: &[PathBuf]) -> Result<(), String> {
+        check_index_paths(root, paths)?;
+        if paths.is_empty() {
+            return Ok(());
+        }
         self.require_trust(root)?;
         let cancel = Cancel::default();
         let mut command = self.command(root);
@@ -201,9 +330,9 @@ impl Git {
     ///
     /// # Errors
     ///
-    /// 仓库不受信任、`git` 报错时返回说明。
+    /// 路径涉及符号链接、仓库不受信任或 Git 报错时返回说明。
     pub fn stage_content(&self, root: &Path, path: &Path, content: Vec<u8>) -> Result<(), String> {
-        self.require_trust(root)?;
+        self.check_partial_path(root, path)?;
         let cancel = Cancel::default();
         let relative = slash_path(root, path)?;
         let mut command = self.command(root);
@@ -305,6 +434,7 @@ impl Git {
     ///
     /// 仓库不受信任、`HEAD` 已经不是 `oid`、`git` 报错时返回说明。
     pub fn undo_commit(&self, root: &Path, oid: &str) -> Result<(), String> {
+        require_worktree_root(root)?;
         self.require_trust(root)?;
         let cancel = Cancel::default();
         let mut command = self.command(root);

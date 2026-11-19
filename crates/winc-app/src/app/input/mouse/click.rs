@@ -29,7 +29,7 @@ impl App {
 
         // 项目列表：按住条目开始拖动，松开时按是否移动决定切换还是重排；点右端的 ✕ 关掉那个项目
         // （先切过去，让它的确认显示在窗口里）。列表之外的区域不受影响。
-        if l.projects.contains(x, y) {
+        if self.project_list_at(x, y) {
             if matches!(button, MouseButton::Middle | MouseButton::Right) {
                 return;
             }

@@ -29,6 +29,7 @@ cmd-reopen-closed = Reopen Closed Tab
 cmd-next-tab = Next Tab
 cmd-previous-tab = Previous Tab
 cmd-close-folder = Close Folder
+cmd-close-project = Close Project
 cmd-close-window = Close Window
 cmd-copy-path = Copy Path
 cmd-copy-relative-path = Copy Relative Path

@@ -28,6 +28,7 @@ fn browse_status(files: &[CommitFile]) -> Status {
             staged: Some(file.change),
             unstaged: None,
             is_dir: false,
+            is_symlink: false,
         })
         .collect();
     Status {

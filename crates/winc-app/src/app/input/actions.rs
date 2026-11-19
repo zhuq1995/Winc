@@ -145,6 +145,7 @@ impl App {
             NextTab => self.cycle_tab(true),
             PreviousTab => self.cycle_tab(false),
             CloseFolder => self.close_folder(),
+            CloseProject => self.request_close_project(),
             // 只有一个窗口，关闭窗口就是退出，未保存的内容按退出的流程备份或询问。
             CloseWindow => self.request_close_window(),
             CopyPath | CopyRelativePath | RevealInFinder => match self.shortcut_target() {
@@ -472,6 +473,14 @@ impl App {
     /// 命令当前是否可用：属于某个模块的命令只在模块开着时可用。
     pub(in crate::app) fn action_available(&self, action: Action) -> bool {
         match action {
+            Action::CloseProject
+                if self.link.key.is_none()
+                    || self.editor.root().is_none()
+                    || self.one_off.waiting.is_some()
+                    || one_off_launch() =>
+            {
+                return false;
+            }
             Action::RunConfiguration if self.editor.root().is_none() => return false,
             // 只有打开的目录还不是仓库时才能初始化。
             Action::GitInit if self.editor.root().is_none() || self.git.root.is_some() => {
@@ -547,5 +556,44 @@ impl App {
             SidebarView::Search => Focus::GlobalQuery,
             SidebarView::Commit => self.commit_view_focus(),
         };
+    }
+}
+
+/// 临时打开由进程启动参数决定，标准输入读完或等待结束后也保持此模式。
+fn one_off_launch() -> bool {
+    static ONE_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ONE_OFF.get_or_init(|| has_one_off_flag(std::env::args_os().skip(1)))
+}
+
+/// 参数已在启动时校验，这里只识别模式，避免再次解析路径。
+fn has_one_off_flag(mut args: impl Iterator<Item = std::ffi::OsString>) -> bool {
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("-w" | "--wait" | "-") => return true,
+            Some("--") => break,
+            Some("--wsl") => {
+                let _ = args.next();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+#[test]
+fn one_off_flags_follow_cli_option_boundaries() {
+    for (args, one_off) in [
+        (&["file", "--wait"][..], true),
+        (&["-w", "file"][..], true),
+        (&["-"][..], true),
+        (&["--new-instance", "--", "-", "--wait"][..], false),
+        (&["--wsl", "-", "file"][..], false),
+        (&["--wsl", "Ubuntu", "-"][..], true),
+    ] {
+        assert_eq!(
+            has_one_off_flag(args.iter().map(std::ffi::OsString::from)),
+            one_off
+        );
     }
 }

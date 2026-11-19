@@ -29,6 +29,7 @@ cmd-reopen-closed = 重新打开关闭的标签页
 cmd-next-tab = 下一个标签页
 cmd-previous-tab = 上一个标签页
 cmd-close-folder = 关闭目录
+cmd-close-project = 关闭项目
 cmd-close-window = 关闭窗口
 cmd-copy-path = 复制路径
 cmd-copy-relative-path = 复制相对路径

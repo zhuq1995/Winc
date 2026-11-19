@@ -98,7 +98,8 @@ impl App {
         match target {
             CommitTarget::Log => self.git_show_log(),
             CommitTarget::Refresh => {
-                self.git.commit.refreshed = Some(Instant::now());
+                let turn = Duration::from_secs_f32(1.0 / crate::theme::SPIN_SPEED);
+                self.git.commit.refreshed = Some(Clock::new(turn));
                 self.git_refresh();
             }
             CommitTarget::More => {
@@ -206,19 +207,19 @@ impl App {
                 let Some(path) = self.commit_entry(i).map(|e| e.path.clone()) else {
                     return;
                 };
-                let compare = match target {
-                    CommitTarget::FileIn(_, group) => self.commit_compare(Some(group)),
-                    _ => self.commit_compare_entry(i),
+                let group = match target {
+                    CommitTarget::FileIn(_, group) => Some(group),
+                    _ => None,
                 };
                 self.focus = Focus::CommitList;
                 // ⌘ 单击加选或取消，⇧ 单击选到这一行：只改选区，不换预览。
                 if self.command_held() {
-                    self.toggle_commit_selected(path);
+                    self.toggle_commit_members(vec![path], group);
                     self.request_redraw();
                     return;
                 }
                 if self.pointer.modifiers.shift_key() {
-                    self.select_commit_range(path);
+                    self.select_commit_range(i, group);
                     self.request_redraw();
                     return;
                 }
@@ -228,7 +229,7 @@ impl App {
                     self.open_path(&path);
                     self.focus = Focus::Editor;
                 } else {
-                    self.select_commit_file(path, compare);
+                    self.select_commit_row_file(path, group);
                 }
             }
             CommitTarget::Sticky(row, level) => {

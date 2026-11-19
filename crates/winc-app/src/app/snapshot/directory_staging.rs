@@ -5,6 +5,9 @@ use std::process::Command;
 use super::*;
 use crate::app::git::commit::CommitGroup;
 use crate::keymap::Action;
+use winit::keyboard::{Key, NamedKey};
+
+mod save_and_commit;
 
 fn git(root: &Path, args: &[&str]) -> String {
     let mut command = Command::new("git");
@@ -345,4 +348,288 @@ fn directory_buttons_reject_stale_hits_and_hide_in_checkbox_and_history_views() 
     );
     app.press_commit(CommitTarget::DirStage(row, true));
     assert_eq!(git(&root, &["diff", "--cached"]), before);
+}
+
+fn file_target(app: &App, path: &Path, group: CommitGroup) -> CommitTarget {
+    let index = app
+        .git
+        .status
+        .as_ref()
+        .unwrap()
+        .entries
+        .iter()
+        .position(|e| e.path == path && group.holds(e, true))
+        .unwrap();
+    CommitTarget::FileIn(index, group)
+}
+
+fn right_click_target(app: &mut App, target: CommitTarget) -> Vec<(MenuCommand, bool)> {
+    paint(app);
+    let rect = hit(app, target).unwrap();
+    right_click(app, (rect.x + 100.0, rect.y + rect.h / 2.0));
+    menu_commands(app)
+}
+
+fn read_file(root: &Path, path: &str) -> String {
+    std::fs::read_to_string(root.join(path)).unwrap()
+}
+
+#[test]
+fn working_row_rollback_keeps_the_staged_version_and_commit_scope() {
+    let (mut app, root) = fixture("rollback-working-row", true);
+    let a = root.join("pkg/a.txt");
+    let staged = file_target(&app, &a, CommitGroup::Staged);
+    let working = file_target(&app, &a, CommitGroup::Changes);
+    let cached = git(&root, &["ls-files", "--stage"]);
+    let menu = right_click_target(&mut app, staged);
+    assert!(menu.contains(&(MenuCommand::CommitCheck(false), true)));
+    assert!(!menu.iter().any(|(c, _)| matches!(
+        c,
+        MenuCommand::CommitCheck(true) | MenuCommand::GitRollbackFile
+    )));
+    app.overlays.context_menu = None;
+    app.commit_list_key(&Key::Named(NamedKey::Delete));
+    app.run_action(Action::ChangesRollback);
+    assert_eq!(read_file(&root, "pkg/a.txt"), "work\n");
+    let menu = right_click_target(&mut app, working);
+    assert!(menu.contains(&(MenuCommand::CommitCheck(true), true)));
+    assert!(menu.contains(&(MenuCommand::GitRollbackFile, true)));
+    assert!(
+        !menu
+            .iter()
+            .any(|(c, _)| *c == MenuCommand::CommitCheck(false))
+    );
+    app.run_menu_command(MenuCommand::GitRollbackFile);
+    assert_eq!(read_file(&root, "pkg/a.txt"), "staged\n");
+    assert_eq!(read_file(&root, "pkg/nested/b.txt"), "work\n");
+    assert_eq!(git(&root, &["ls-files", "--stage"]), cached);
+    assert_eq!(git(&root, &["show", "HEAD:pkg/a.txt"]), "base\n");
+    git(&root, &["commit", "-qm", "staged"]);
+    assert_eq!(git(&root, &["show", "HEAD:pkg/a.txt"]), "staged\n");
+}
+
+#[test]
+fn staging_selection_actions_use_the_selected_side_and_keep_unsaved_text() {
+    let (mut app, root) = fixture("staging-mixed-group-selection", true);
+    let a = root.join("pkg/a.txt");
+    let b = root.join("pkg/nested/b.txt");
+    let staged = file_target(&app, &a, CommitGroup::Staged);
+    let b_working = file_target(&app, &b, CommitGroup::Changes);
+    app.press_commit(staged);
+    app.pointer.modifiers = command_modifiers();
+    app.press_commit(b_working);
+    app.pointer.modifiers = winit::keyboard::ModifiersState::empty();
+    let menu = right_click_target(&mut app, b_working);
+    assert!(menu.contains(&(MenuCommand::CommitCheck(true), true)));
+    app.run_menu_command(MenuCommand::CommitCheck(true));
+    assert_eq!(git(&root, &["show", ":pkg/nested/b.txt"]), "work\n");
+    assert_eq!(git(&root, &["show", ":pkg/a.txt"]), "staged\n");
+
+    app.open_path(&a);
+    let doc = app.editor.active_mut().unwrap();
+    let id = doc.id;
+    doc.apply(winc_core::edit::replace_selection(
+        doc.text().rope().unwrap(),
+        winc_core::Selection::point(0),
+        "unsaved\n",
+        winc_core::EditKind::Other,
+    ));
+    paint(&mut app);
+    let staged = file_target(&app, &a, CommitGroup::Staged);
+    app.press_commit(staged);
+    app.commit_list_key(&Key::Named(NamedKey::Space));
+    assert_eq!(git(&root, &["show", ":pkg/a.txt"]), "base\n");
+    assert_eq!(read_file(&root, "pkg/a.txt"), "work\n");
+    let doc = app.editor.document(id).unwrap();
+    assert!(doc.is_dirty());
+    assert_eq!(doc.text().rope().unwrap().to_string(), "unsaved\nwork\n");
+}
+
+#[test]
+fn directory_menu_and_discard_all_limit_working_tree_scope() {
+    let (mut app, root) = fixture("rollback-directory-scope", true);
+    let row = dir_row(&app, CommitGroup::Changes);
+    app.press_commit(CommitTarget::Dir(row));
+    paint(&mut app);
+    // The directory is part of a larger selection. The menu still applies to its own members.
+    app.select_commit_files(
+        vec![
+            root.join("pkg/a.txt"),
+            root.join("pkg/nested/b.txt"),
+            root.join("pkg-extra/c.txt"),
+        ],
+        Some(CommitGroup::Changes),
+    );
+    let staged_dir = dir_row(&app, CommitGroup::Staged);
+    let menu = right_click_target(&mut app, CommitTarget::Dir(staged_dir));
+    assert!(menu.contains(&(MenuCommand::CommitCheck(false), true)));
+    assert!(!menu.iter().any(|(c, _)| matches!(
+        c,
+        MenuCommand::CommitCheck(true) | MenuCommand::GitRollbackFile
+    )));
+    app.overlays.context_menu = None;
+    app.select_commit_files(
+        vec![
+            root.join("pkg/a.txt"),
+            root.join("pkg/nested/b.txt"),
+            root.join("pkg-extra/c.txt"),
+        ],
+        Some(CommitGroup::Changes),
+    );
+    let menu = right_click_target(&mut app, CommitTarget::Dir(row));
+    assert!(menu.contains(&(MenuCommand::GitRollbackFile, true)));
+    let cached = git(&root, &["ls-files", "--stage"]);
+    app.run_menu_command(MenuCommand::GitRollbackFile);
+    assert_eq!(read_file(&root, "pkg/a.txt"), "staged\n");
+    assert_eq!(read_file(&root, "pkg/nested/b.txt"), "base\n");
+    assert_eq!(read_file(&root, "pkg-extra/c.txt"), "work\n");
+    assert_eq!(git(&root, &["ls-files", "--stage"]), cached);
+
+    git(&root, &["rm", "-f", "--", "pkg/staged.txt"]);
+    write(&root, "pkg/staged.txt", "recreated\n");
+    app.git_refresh();
+    let cached = git(&root, &["ls-files", "--stage"]);
+    app.open_context_menu(MenuTarget::CommitMore, (0.0, 0.0));
+    assert!(menu_commands(&app).contains(&(MenuCommand::CommitDiscardAll, true)));
+    app.run_menu_command(MenuCommand::CommitDiscardAll);
+    assert_eq!(git(&root, &["ls-files", "--stage"]), cached);
+    assert_eq!(read_file(&root, "pkg-extra/c.txt"), "base\n");
+    assert!(!root.join("pkg/staged.txt").exists());
+    assert_eq!(read_file(&root, "pkg/new.txt"), "new\n");
+    assert_eq!(read_file(&root, "outside.txt"), "staged\n");
+    app.open_context_menu(MenuTarget::CommitMore, (0.0, 0.0));
+    assert!(menu_commands(&app).contains(&(MenuCommand::CommitDiscardAll, false)));
+}
+
+#[test]
+fn rollback_confirmation_rejects_a_changed_repo_busy_write_or_stale_trash_candidate() {
+    let (mut app, root) = fixture("rollback-confirmation-scope", true);
+    let file = root.join("pkg/new.txt");
+    let request = app.rollback_request(vec![file.clone()]).unwrap();
+    app.prompt_rollback(request.clone());
+    assert_eq!(
+        app.overlays.alert.as_ref().unwrap().detail,
+        winc_i18n::t!("git-rollback-index-detail")
+    );
+    assert!(app.alert_key(&Key::Named(NamedKey::Escape), false));
+    assert!(file.exists());
+
+    let other_root = sample_folder("rollback-other-repo");
+    app.prompt_rollback(request.clone());
+    app.git.root = Some(other_root);
+    assert!(app.alert_key(&Key::Named(NamedKey::Enter), false));
+    assert!(app.overlays.alert.is_none());
+    assert!(file.exists());
+    app.git.root = Some(root.clone());
+
+    app.prompt_rollback(request.clone());
+    app.git.commit.busy = true;
+    assert!(app.alert_key(&Key::Named(NamedKey::Enter), false));
+    assert!(file.exists());
+    app.git.commit.busy = false;
+
+    app.open_path(&file);
+    let id = app.editor.active().unwrap().id;
+    app.disk.saves.running.insert(id);
+    app.git_rollback(request.clone());
+    assert!(file.exists());
+    assert_eq!(
+        app.status.message.as_deref(),
+        Some(winc_i18n::t!("git-rollback-saving"))
+    );
+    app.disk.saves.running.remove(&id);
+
+    git(&root, &["add", "pkg/new.txt"]);
+    app.prompt_rollback(request);
+    assert!(app.alert_key(&Key::Named(NamedKey::Enter), false));
+    assert_eq!(read_file(&root, "pkg/new.txt"), "new\n");
+    assert_eq!(git(&root, &["show", ":pkg/new.txt"]), "new\n");
+}
+
+#[test]
+fn working_group_button_restores_every_tracked_member() {
+    let (mut app, root) = fixture("rollback-working-group", true);
+    let cached = git(&root, &["ls-files", "--stage"]);
+    app.press_commit(CommitTarget::GroupRevert(CommitGroup::Changes));
+    assert_eq!(read_file(&root, "pkg/a.txt"), "staged\n");
+    assert_eq!(read_file(&root, "pkg/nested/b.txt"), "base\n");
+    assert_eq!(read_file(&root, "pkg-extra/c.txt"), "base\n");
+    assert_eq!(read_file(&root, "pkg/new.txt"), "new\n");
+    assert_eq!(git(&root, &["ls-files", "--stage"]), cached);
+
+    let target = file_target(&app, &root.join("pkg/new.txt"), CommitGroup::Untracked);
+    let menu = right_click_target(&mut app, target);
+    assert!(menu.contains(&(MenuCommand::GitRollbackFile, true)));
+    app.run_menu_command(MenuCommand::GitRollbackFile);
+    assert!(!root.join("pkg/new.txt").exists());
+    assert_eq!(git(&root, &["ls-files", "--stage"]), cached);
+}
+
+#[test]
+fn a_working_tree_rename_keeps_index_entries_when_rolled_back() {
+    let (mut app, root) = fixture("rollback-working-rename", true);
+    let source = root.join("pkg/nested/b.txt");
+    let target = root.join("renamed.txt");
+    write(&root, "pkg/nested/b.txt", "base\n");
+    std::fs::rename(&source, &target).unwrap();
+    git(&root, &["add", "-N", "renamed.txt"]);
+    app.git_refresh();
+    let change = app
+        .git
+        .status
+        .as_ref()
+        .unwrap()
+        .entries
+        .iter()
+        .find(|e| e.path == target)
+        .unwrap();
+    assert_eq!(change.from.as_deref(), Some(source.as_path()));
+    let cached = git(&root, &["ls-files", "--stage"]);
+    app.confirm_rollback(vec![target.clone()]);
+    assert_eq!(read_file(&root, "pkg/nested/b.txt"), "base\n");
+    assert!(!target.exists());
+    assert_eq!(git(&root, &["ls-files", "--stage"]), cached);
+}
+
+#[test]
+fn tree_and_tab_rollbacks_keep_staged_renames_and_new_files() {
+    let (mut app, root) = fixture("rollback-tree-and-tab", true);
+    git(&root, &["mv", "pkg/nested/b.txt", "renamed.txt"]);
+    app.editor.workspace.as_mut().unwrap().refresh();
+    git(&root, &["add", "pkg/new.txt"]);
+    write(&root, "pkg/new.txt", "later\n");
+    app.git_refresh();
+    let renamed = root.join("renamed.txt");
+    let new = root.join("pkg/new.txt");
+    let status = app.git.status.as_ref().unwrap();
+    let rename = status.entries.iter().find(|e| e.path == renamed).unwrap();
+    assert_eq!(
+        rename.from.as_deref(),
+        Some(root.join("pkg/nested/b.txt").as_path())
+    );
+    let cached = git(&root, &["ls-files", "--stage"]);
+
+    app.open_context_menu(MenuTarget::Tree(Some(renamed)), (0.0, 0.0));
+    for command in [
+        MenuCommand::CommitCheck(true),
+        MenuCommand::CommitCheck(false),
+        MenuCommand::GitRollbackFile,
+    ] {
+        let menu = menu_commands(&app);
+        assert!(menu.contains(&(command, true)), "{command:?}: {menu:?}");
+    }
+    app.run_menu_command(MenuCommand::GitRollbackFile);
+    assert_eq!(read_file(&root, "renamed.txt"), "base\n");
+    assert!(!root.join("pkg/nested/b.txt").exists());
+    assert_eq!(read_file(&root, "pkg/new.txt"), "later\n");
+
+    app.open_path(&new);
+    let id = app.editor.active().unwrap().id;
+    app.open_context_menu(MenuTarget::Tab(id), (0.0, 0.0));
+    assert!(menu_commands(&app).contains(&(MenuCommand::GitRollbackFile, true)));
+    app.run_menu_command(MenuCommand::GitRollbackFile);
+    assert_eq!(read_file(&root, "pkg/new.txt"), "new\n");
+    assert_eq!(read_file(&root, "pkg/a.txt"), "work\n");
+    assert_eq!(git(&root, &["ls-files", "--stage"]), cached);
+    assert_eq!(git(&root, &["show", "HEAD:pkg/nested/b.txt"]), "base\n");
 }

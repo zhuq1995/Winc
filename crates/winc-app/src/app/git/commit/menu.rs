@@ -86,7 +86,7 @@ impl App {
         // 更改：暂存视图中是全部暂存、全部取消暂存，变更列表中是全部勾选、全部取消勾选；放弃
         // 所有更改两种视图都有。
         let changed = status.is_some_and(|s| !s.entries.is_empty());
-        let tracked = status.is_some_and(|s| s.entries.iter().any(|e| !e.untracked()));
+        let discard = self.discard_entries().next().is_some() && !self.rollback_busy();
         let mut changes = if self.git.commit.staging() {
             vec![item(Action::GitStageAll), item(Action::GitUnstageAll)]
         } else {
@@ -97,7 +97,7 @@ impl App {
         };
         changes.extend([
             MenuEntry::Separator,
-            MenuEntry::Item(MenuCommand::CommitDiscardAll, tracked && !busy),
+            MenuEntry::Item(MenuCommand::CommitDiscardAll, discard),
         ]);
         let head = status.is_some_and(|s| s.oid.is_some());
         let tags = vec![MenuEntry::Item(MenuCommand::LogNewTag, head && !busy)];
@@ -209,28 +209,6 @@ impl App {
         self.request_redraw();
     }
 
-    /// 提交勾上的文件，成功以后继续推送。
-    pub(in crate::app) fn git_commit_and_push(&mut self) {
-        self.git_commit_then(false);
-    }
-
-    /// 提交勾上的文件，成功以后与上游同步（先拉取再推送）。
-    pub(in crate::app) fn git_commit_and_sync(&mut self) {
-        self.git_commit_then(true);
-    }
-
-    /// 提交，成功以后推送（`sync` 时同步）。
-    pub(super) fn git_commit_then(&mut self, sync: bool) {
-        self.git.commit.push_after = true;
-        self.git.commit.sync_after = sync;
-        self.git_commit();
-        // 没有真的开始提交（没写信息、没勾文件），就不留着「之后推送」。
-        if !self.git.commit.busy {
-            self.git.commit.push_after = false;
-            self.git.commit.sync_after = false;
-        }
-    }
-
     /// 在按目录排成树和平铺之间切换更改列表。
     ///
     /// 记进状态文件：以后打开的窗口、下次启动都用同一种显示方式。
@@ -274,12 +252,8 @@ impl App {
                 self.set_commit_checked(&paths, on);
             }
             MenuCommand::CommitDiscardAll => {
-                let entries = self.git.status.iter().flat_map(|s| &s.entries);
-                let tracked = entries.filter(|e| !e.untracked() && !e.conflicted());
-                let paths: Vec<PathBuf> = tracked.map(|e| e.path.clone()).collect();
-                if !paths.is_empty() {
-                    self.confirm_rollback(paths);
-                }
+                let paths = self.discard_entries().map(|e| e.path.clone()).collect();
+                self.confirm_rollback(paths);
             }
             MenuCommand::LogNewTag => {
                 let oid = self.git.status.as_ref().and_then(|s| s.oid.clone());
@@ -308,6 +282,92 @@ impl App {
         self.request_redraw();
     }
 
+    fn discard_entries(&self) -> impl Iterator<Item = &Entry> {
+        use winc_editor::git::Change;
+
+        let staging = self.git.commit.staging();
+        let entries = self.git.status.iter().flat_map(|s| &s.entries);
+        let deleted: HashSet<_> = entries
+            .clone()
+            .filter(|e| e.staged == Some(Change::Deleted))
+            .map(|e| &e.path)
+            .collect();
+        entries.filter(move |e| {
+            !e.conflicted()
+                && if staging {
+                    CommitGroup::Changes.holds(e, true)
+                        || (e.untracked() && !e.is_dir && deleted.contains(&e.path))
+                } else {
+                    !e.untracked()
+                }
+        })
+    }
+
+    pub(in crate::app) fn commit_group_change_items(
+        &self,
+        group: CommitGroup,
+    ) -> Vec<crate::app::input::context_menu::MenuEntry> {
+        use crate::app::input::context_menu::MenuEntry::Item;
+        match group {
+            CommitGroup::Staged => vec![Item(MenuCommand::CommitCheck(false), true)],
+            CommitGroup::Changes | CommitGroup::Untracked => vec![
+                Item(MenuCommand::CommitCheck(true), true),
+                Item(MenuCommand::GitRollbackFile, !self.rollback_busy()),
+            ],
+            CommitGroup::Conflicts => vec![Item(MenuCommand::CommitCheck(true), true)],
+        }
+    }
+
+    pub(in crate::app) fn run_commit_group_file_command(
+        &mut self,
+        command: MenuCommand,
+        group: CommitGroup,
+        mut paths: Vec<PathBuf>,
+        batch: bool,
+    ) {
+        if matches!(
+            command,
+            MenuCommand::CommitCheck(_) | MenuCommand::GitRollbackFile | MenuCommand::GitStashFiles
+        ) {
+            let entries = self.git.status.iter().flat_map(|s| &s.entries);
+            let held: HashSet<_> = entries
+                .filter(|e| group.holds(e, true))
+                .map(|e| &e.path)
+                .collect();
+            paths.retain(|path| held.contains(path));
+        }
+        if paths.is_empty() {
+            return;
+        }
+        match command {
+            MenuCommand::CommitCheck(on) => {
+                if on == (group != CommitGroup::Staged) {
+                    self.stage_paths(&paths, on);
+                }
+            }
+            MenuCommand::GitRollbackFile => {
+                if matches!(group, CommitGroup::Changes | CommitGroup::Untracked) {
+                    self.confirm_rollback(paths);
+                }
+            }
+            MenuCommand::GitShowDiff if !batch => {
+                self.select_commit_row_file(paths.remove(0), Some(group))
+            }
+            MenuCommand::GitStashFiles => self.ask_stash_files(paths),
+            MenuCommand::GitOpenFile => {
+                for path in paths.iter().filter(|p| winc_backend::fs::is_file(p)) {
+                    self.open_path(path);
+                }
+                self.focus = Focus::Editor;
+            }
+            MenuCommand::CopyPath | MenuCommand::CopyRelativePath if batch => {
+                self.copy_paths(&paths, command == MenuCommand::CopyRelativePath)
+            }
+            _ if !batch => self.run_commit_single_file_command(command, paths.remove(0)),
+            _ => {}
+        }
+    }
+
     /// 提交视图里一个文件的右键菜单选了 `command`。
     pub(in crate::app) fn run_commit_file_command(
         &mut self,
@@ -334,6 +394,10 @@ impl App {
             }
             return;
         }
+        self.run_commit_single_file_command(command, path);
+    }
+
+    fn run_commit_single_file_command(&mut self, command: MenuCommand, path: PathBuf) {
         match command {
             MenuCommand::GitShowDiff => {
                 let compare = self.commit_compare_for(&path);

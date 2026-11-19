@@ -51,6 +51,8 @@ fn closing_unsaved_tabs_asks_save_discard_or_cancel() {
     app.answer_save_prompt(SaveChoice::Save);
     assert!(app.closing.continuation.is_some());
     app.on_picked(Pick::SaveAs(id), None);
+    assert!(app.closing.continuation.is_some());
+    app.on_picked(Pick::SaveAsClosing(id), None);
     assert!(app.closing.continuation.is_none());
     assert_eq!(app.editor.documents.len(), 1);
 
@@ -58,7 +60,7 @@ fn closing_unsaved_tabs_asks_save_discard_or_cancel() {
     app.close_tab(0);
     app.answer_save_prompt(SaveChoice::Save);
     let draft = root.join("draft.txt");
-    app.on_picked(Pick::SaveAs(id), Some(draft.clone()));
+    app.on_picked(Pick::SaveAsClosing(id), Some(draft.clone()));
     assert_eq!(std::fs::read_to_string(&draft).unwrap(), "draft");
     assert!(app.editor.documents.is_empty());
 

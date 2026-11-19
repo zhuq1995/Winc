@@ -107,7 +107,7 @@ impl ApplicationHandler<UserEvent> for App {
             Ok(window) => Arc::new(window),
             Err(e) => {
                 eprintln!("winc: 无法创建窗口：{e}");
-                self.give_up_window(event_loop);
+                event_loop.exit();
                 return;
             }
         };
@@ -176,7 +176,7 @@ impl ApplicationHandler<UserEvent> for App {
             Ok(renderer) => renderer,
             Err(e) => {
                 eprintln!("winc: 无法初始化渲染：{e}");
-                self.give_up_window(event_loop);
+                event_loop.exit();
                 return;
             }
         };
@@ -193,7 +193,11 @@ impl ApplicationHandler<UserEvent> for App {
         window.set_ime_allowed(true);
         #[cfg(target_os = "macos")]
         {
-            let proxy = self.link.proxy.clone();
+            let proxy = self
+                .link
+                .proxy
+                .as_ref()
+                .map(crate::winc::WindowProxy::active);
             self.link.traffic_lights = crate::macos::TrafficLights::new(
                 &window,
                 // 这三个按钮在卡片顶部的顶栏里垂直居中：顶栏上方有 `ISLAND_MARGIN` 的留白，
@@ -476,7 +480,7 @@ impl App {
             | UserEvent::Wrapped) => self.finished(done),
             UserEvent::Rediffed => self.poll_rediffs(),
             UserEvent::Outline => self.poll_outline(),
-            UserEvent::GitRollback(paths) => self.git_rollback(paths),
+            UserEvent::GitRollback(rollback) => self.git_rollback(rollback),
             UserEvent::GitSkip => {
                 self.run_branch_command(crate::app::input::context_menu::MenuCommand::GitSkip);
             }
@@ -485,13 +489,12 @@ impl App {
             }
             UserEvent::GitSwitchBranch(branch, stash) => self.switch_branch(branch, stash),
             UserEvent::GitForcePush => self.run_git_sync(true),
-            UserEvent::GitCommitTodo(ok) => self.todo_confirmed(ok),
+            UserEvent::GitCommitTodo(root, ok) => self.todo_confirmed(&root, ok),
             UserEvent::GitPushConfirmed(intent, never) => self.push_confirmed(intent, never),
             UserEvent::GitShowLog => self.git_show_log(),
             UserEvent::GitOutput => self.refresh_git_output(),
-            UserEvent::GitCommitAndPush => self.git_commit_and_push(),
-            UserEvent::GitCommitAndSync => self.git_commit_and_sync(),
-            UserEvent::GitUndoCommit => self.undo_last_commit(),
+            UserEvent::GitCommitConfirmed(root, request) => self.confirmed_commit(&root, request),
+            UserEvent::GitUndoCommit(root, oid) => self.undo_last_commit(&root, &oid),
             UserEvent::ReplaceAllConfirmed(total) => self.replace_all_confirmed(total),
             UserEvent::RunApproved(config) => self.approved_run(*config),
             UserEvent::TerminalClose(id) => self.confirmed_terminal_close(id),
@@ -503,10 +506,12 @@ impl App {
             }
             UserEvent::TerminalPaste(id, text) => self.confirmed_terminal_paste(id, text),
             UserEvent::TerminalQuit(ok) => {
-                if let Some(request) = self.closing.confirming.take()
-                    && ok
-                {
-                    self.request_close(request);
+                if let Some(request) = self.closing.confirming.take() {
+                    if ok {
+                        self.request_close(request);
+                    } else {
+                        self.deferred_close = None;
+                    }
                 }
             }
             UserEvent::GitLogConfirmed(op) => self.run_log_confirmed(op),

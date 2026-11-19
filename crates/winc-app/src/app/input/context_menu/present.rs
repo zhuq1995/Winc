@@ -162,8 +162,8 @@ impl App {
             MenuTarget::SearchResult(path, m)
         } else if let Some(i) = self.stash_context_target(x, y) {
             MenuTarget::StashRow(i)
-        } else if let Some(path) = self.commit_context_target(x, y) {
-            MenuTarget::CommitFile(path)
+        } else if let Some(target) = self.commit_context_target(x, y) {
+            target
         } else if let Some((i, path)) = self.log_file_context_target(x, y) {
             MenuTarget::LogFile(i, path)
         } else if let Some(index) = self.log_branch_context_target(x, y) {
@@ -215,10 +215,8 @@ impl App {
         }
     }
 
-    /// 右键点在提交视图改动列表里的一个文件上：选中它（不打开预览），返回它的路径。
-    ///
-    /// 点击目录或组标题时选中其下的各个文件，返回第一个文件的路径。
-    fn commit_context_target(&mut self, x: f32, y: f32) -> Option<PathBuf> {
+    /// 选中右键命中的文件行或容器，保留操作时的组和范围。
+    fn commit_context_target(&mut self, x: f32, y: f32) -> Option<MenuTarget> {
         // 历史提交的文件列表只能查看：其中的文件不在工作区的状态里，不提供修改工作区的菜单。
         if !self.panels.sidebar.visible
             || self.panels.sidebar.view != SidebarView::Commit
@@ -227,49 +225,81 @@ impl App {
         {
             return None;
         }
-        let path = match hit(&self.hits.commit, x, y)? {
-            CommitTarget::File(i) | CommitTarget::FileIn(i, _) | CommitTarget::Check(i) => {
-                self.git.status.as_ref()?.entries.get(i)?.path.clone()
+        let staging = self.git.commit.staging();
+        let status = self.git.status.as_ref()?;
+        let target = hit(&self.hits.commit, x, y)?;
+        let rows = self.commit_rows();
+        let target = match target {
+            CommitTarget::Sticky(row, _) => match rows.get(row)? {
+                CommitRow::Group(group) => CommitTarget::Group(*group),
+                CommitRow::Dir { .. } => CommitTarget::Dir(row),
+                _ => return None,
+            },
+            target => target,
+        };
+        let (group, paths, container) = match target {
+            CommitTarget::File(i)
+            | CommitTarget::FileIn(i, _)
+            | CommitTarget::Check(i)
+            | CommitTarget::StageFile(i, _)
+            | CommitTarget::RevertFile(i) => {
+                let entry = status.entries.get(i)?;
+                let group = match target {
+                    CommitTarget::FileIn(_, group) => Some(group),
+                    CommitTarget::StageFile(_, false) => Some(CommitGroup::Staged),
+                    _ if staging => CommitGroup::ALL
+                        .into_iter()
+                        .find(|&g| g != CommitGroup::Staged && g.holds(entry, true)),
+                    _ => None,
+                };
+                let path = entry.path.clone();
+                if !self.commit_row_selected(&path, group) {
+                    self.git.commit.clear_selection();
+                    self.set_commit_current(path.clone(), group, true);
+                } else if staging {
+                    self.set_commit_current(path.clone(), group, false);
+                }
+                let paths = if staging {
+                    self.commit_selected_paths(group)
+                } else {
+                    vec![path]
+                };
+                (group, paths, false)
             }
-            // 目录：菜单作用于它下面的各个文件（都已在选区里时作用于整个选区）。
             CommitTarget::Dir(row)
             | CommitTarget::DirCheck(row)
             | CommitTarget::DirStage(row, _) => {
-                let files = self.commit_dir_files(row);
-                let first = files.first()?.clone();
-                if !files.iter().all(|f| self.commit_is_selected(f)) {
-                    self.select_commit_files(files);
-                }
-                self.focus = Focus::CommitList;
-                return Some(first);
+                (rows.group_of(row), self.commit_dir_files(row), true)
             }
-            // 组标题的处理方式同目录：菜单作用于组内的各个文件，组收起时同样适用。
-            CommitTarget::Group(group) | CommitTarget::GroupCheck(group) => {
-                let files: Vec<PathBuf> = self
-                    .git
-                    .status
-                    .as_ref()?
+            CommitTarget::Group(group)
+            | CommitTarget::GroupCheck(group)
+            | CommitTarget::GroupStage(group)
+            | CommitTarget::GroupRevert(group) => {
+                let paths = status
                     .entries
                     .iter()
-                    .filter(|e| group.holds(e, self.git.commit.staging()))
+                    .filter(|e| group.holds(e, staging))
                     .map(|e| e.path.clone())
                     .collect();
-                let first = files.first()?.clone();
-                if !files.iter().all(|f| self.commit_is_selected(f)) {
-                    self.select_commit_files(files);
-                }
-                self.focus = Focus::CommitList;
-                return Some(first);
+                (Some(group), paths, true)
             }
             _ => return None,
         };
-        // 点在选区里的文件上时菜单作用于选中的各个文件，否则只选这一个。
-        if !self.commit_is_selected(&path) {
-            self.git.commit.clear_selection();
-            self.git.commit.selected = Some(path.clone());
+        let first = paths.first()?.clone();
+        if container && (staging || !paths.iter().all(|p| self.commit_row_selected(p, group))) {
+            self.select_commit_files(paths.clone(), group);
         }
         self.focus = Focus::CommitList;
-        Some(path)
+        if staging {
+            Some(MenuTarget::CommitFiles {
+                root: self.git.root.clone()?,
+                group: group?,
+                batch: container || paths.len() > 1,
+                paths,
+            })
+        } else {
+            Some(MenuTarget::CommitFile(first))
+        }
     }
 
     /// 返回右键点击处所在的编辑区文档；该位置不应弹出编辑区菜单时返回 `None`。
@@ -375,6 +405,9 @@ impl App {
                     (self.remote_enabled()).then(crate::app::remote::refresh_hosts),
                     root.is_some_and(winc_backend::is_remote),
                 ));
+                if self.action_available(Action::CloseProject) {
+                    menu.push(MenuEntry::Item(MenuCommand::CloseProject, true));
+                }
                 menu
             }
             MenuTarget::Tree(Some(_))
@@ -576,23 +609,37 @@ impl App {
                 let any_exists = self.commit_selection().iter().any(winc_backend::fs::exists);
                 commit_selection_menu(any_exists)
             }
-            MenuTarget::CommitFile(path) => {
-                let mut menu = commit_file_menu(
-                    winc_backend::fs::exists(path),
-                    self.relative_path(path).is_some(),
-                    &self.ignore_kinds(path),
-                );
-                // 暂存区视图中在「回滚」之前加暂存、取消暂存，按该文件现在的状态列出。
-                let stage = self.git_change_items(path);
-                let stage = stage.into_iter().filter(|entry| {
-                    matches!(entry, MenuEntry::Item(MenuCommand::CommitCheck(_), _))
-                });
-                let at = (menu.iter())
-                    .position(|e| matches!(e, MenuEntry::Item(MenuCommand::GitRollbackFile, _)));
-                if let Some(at) = at {
-                    menu.splice(at..at, stage);
+            MenuTarget::CommitFile(path) => commit_file_menu(
+                winc_backend::fs::exists(path),
+                self.relative_path(path).is_some(),
+                &self.ignore_kinds(path),
+                vec![MenuEntry::Item(MenuCommand::GitRollbackFile, true)],
+            ),
+            MenuTarget::CommitFiles {
+                group,
+                paths,
+                batch,
+                ..
+            } => {
+                let changes = self.commit_group_change_items(*group);
+                if *batch {
+                    let any_exists = paths.iter().any(winc_backend::fs::exists);
+                    commit_batch_menu(any_exists, changes)
+                } else if let [path] = paths.as_slice() {
+                    let ignore = if *group == CommitGroup::Untracked {
+                        self.ignore_kinds(path)
+                    } else {
+                        Vec::new()
+                    };
+                    commit_file_menu(
+                        winc_backend::fs::exists(path),
+                        self.relative_path(path).is_some(),
+                        &ignore,
+                        changes,
+                    )
+                } else {
+                    Vec::new()
                 }
-                menu
             }
             MenuTarget::SearchResult(_, m) => {
                 search_result_menu(m.is_none(), self.panels.global.replace_open)
@@ -698,7 +745,7 @@ impl App {
             MenuTarget::Editor(_) | MenuTarget::Diff(..) | MenuTarget::Markdown => Context::Editor,
             MenuTarget::Terminal(_) | MenuTarget::TerminalTab(_) => Context::Terminal,
             MenuTarget::SearchResult(..) => Context::Panel,
-            MenuTarget::CommitFile(_) => Context::Changes,
+            MenuTarget::CommitFile(_) | MenuTarget::CommitFiles { .. } => Context::Changes,
             _ => Context::Other,
         };
         // 状态栏的菜单行为类似弹出式按钮：当前选中的项显示在被点击的位置上。

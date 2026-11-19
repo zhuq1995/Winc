@@ -13,7 +13,7 @@ use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winc_core::Selection;
 use winc_editor::{Command, EntryKind, segment_name};
 
-use crate::app::{App, Focus, ResultRow};
+use crate::app::{App, Drag, Focus, ResultRow};
 use crate::field::{TextField, Unit};
 use crate::keymap::{self, Action, Context, Lookup, Os, Stroke};
 use crate::theme::KEYS_ROW;
@@ -29,7 +29,7 @@ impl App {
     ///
     /// 要退出时置 `Closing::quit_requested`，由应用层结束事件循环。
     ///
-    /// 处理顺序：取消文件树拖动、关闭「⋯」菜单、设置浮层（模态）、键位表中的快捷键，
+    /// 处理顺序：取消文件树或项目拖动、关闭「⋯」菜单、设置浮层（模态）、键位表中的快捷键，
     /// 最后按焦点分发。
     pub(in crate::app) fn on_key(&mut self, event: &KeyEvent) {
         if event.state != ElementState::Pressed {
@@ -50,10 +50,7 @@ impl App {
         self.reset_blink();
         self.request_redraw();
 
-        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
-            && self.tree_dragging().is_some()
-        {
-            self.cancel_tree_drag();
+        if self.cancel_drag_on_escape(&event.logical_key) {
             return;
         }
 
@@ -151,6 +148,23 @@ impl App {
             Focus::TerminalFind => self.on_key_terminal_find(event, &base, cmd),
             Focus::TerminalRename => self.on_key_terminal_rename(event, &base, cmd),
         }
+    }
+
+    /// Esc 取消已按下的文件树或项目条目，随后松开鼠标时不执行条目操作。
+    pub(in crate::app) fn cancel_drag_on_escape(&mut self, key: &Key) -> bool {
+        if *key != Key::Named(NamedKey::Escape) {
+            return false;
+        }
+        if self.tree_dragging().is_some() {
+            self.cancel_tree_drag();
+        } else if matches!(self.pointer.drag, Drag::Project { .. }) {
+            self.pointer.drag = Drag::None;
+            self.refresh_hover();
+            self.update_cursor_icon();
+        } else {
+            return false;
+        }
+        true
     }
 
     /// 返回当前焦点对应的键位上下文，键位表按它划分适用范围。

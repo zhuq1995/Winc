@@ -155,6 +155,8 @@ impl App {
         let state = self.take_window_state();
         let window = self.window.handle.take()?;
         let renderer = self.frame.renderer.take()?;
+        let occluded = self.window.occluded && !self.window.hidden;
+        self.window.hidden = false;
         window.set_ime_allowed(false);
         Some(crate::winc::Shell {
             state,
@@ -166,7 +168,9 @@ impl App {
             display_link: self.frame.display_link.take(),
             #[cfg(windows)]
             display_link: self.frame.display_link.take(),
-            occluded: self.window.occluded,
+            #[cfg(windows)]
+            window_input: self.touch.window_input.take(),
+            occluded,
         })
     }
 
@@ -183,8 +187,9 @@ impl App {
         #[cfg(windows)]
         {
             self.frame.display_link = shell.display_link;
+            self.touch.window_input = shell.window_input;
         }
-        self.window.occluded = shell.occluded;
+        self.set_occluded(shell.occluded);
         self.window.hidden = false;
         let mut state = shell.state;
         let theme = super::appearance::forced_theme(&self.theme_choice);
@@ -234,7 +239,11 @@ impl App {
 
     /// 隐藏窗口（macOS 上关闭窗口时）：应用留在程序坞中，点击图标时由 [`App::show_window`]
     /// 重新显示。
+    #[cfg(target_os = "macos")]
     pub(super) fn hide_window(&mut self) {
+        self.blur_terminal_tab();
+        self.window.focused = false;
+        self.update_foreground(false);
         if let Some(window) = &self.window.handle {
             window.set_visible(false);
         }
@@ -336,17 +345,6 @@ impl App {
         Some((super::placement::cascaded(at, scale), scale))
     }
 
-    /// 窗口建不起来（系统窗口或渲染器）：还有别的窗口时只放弃这一个（标成关掉，应用层去掉它），
-    /// 否则结束。
-    pub(super) fn give_up_window(&mut self, event_loop: &ActiveEventLoop) {
-        if self.link.shared.others() {
-            self.window.handle = None;
-            self.window.hidden = true;
-        } else {
-            event_loop.exit();
-        }
-    }
-
     /// 窗口是否处于全屏；隐藏的窗口不算。
     pub(crate) fn is_fullscreen(&self) -> bool {
         let window = self.window.handle.as_ref().filter(|_| !self.window.hidden);
@@ -362,7 +360,7 @@ impl App {
 
     /// 重新显示隐藏的窗口，并让它成为前台窗口；窗口没有隐藏时不做任何事。
     ///
-    /// 先在隐藏的窗口上画好一帧（开始页）再显示，不会先显示关闭前的画面。
+    /// 在显示之前先绘制当前项目的一帧。
     pub(in crate::app) fn show_window(&mut self) {
         if !self.window.hidden {
             return;

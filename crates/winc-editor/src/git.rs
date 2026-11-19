@@ -369,6 +369,8 @@ pub struct Entry {
     /// 该条目是整个未被跟踪的目录（`git` 只报一项，路径以 `/` 结尾）；读状态时记下，绘制时
     /// 不再查询文件系统。
     pub is_dir: bool,
+    /// 工作区、暂存区或 `HEAD` 中该条目是符号链接。
+    pub is_symlink: bool,
 }
 
 impl Entry {
@@ -529,6 +531,44 @@ fn git_dir(root: &Path) -> Option<PathBuf> {
     Some(crate::host::resolve(root, target))
 }
 
+/// Git 从缺少 `.git` 的目录启动时会向上查找仓库。
+fn require_worktree_root(root: &Path) -> Result<(), String> {
+    git_dir(root)
+        .map(drop)
+        .ok_or_else(|| winc_i18n::t!("git-not-a-repository").to_owned())
+}
+
+/// 防止队列中的文件路径因同名目录而递归匹配无关文件。嵌套仓库由 Git 作为一个条目处理。
+fn check_index_paths(root: &Path, paths: &[PathBuf]) -> Result<(), String> {
+    require_worktree_root(root)?;
+    let metadata = winc_backend::fs::metadata_many(paths);
+    for (path, meta) in paths.iter().zip(metadata) {
+        let relative = slash_path(root, path)?;
+        match meta {
+            Ok(meta)
+                if relative.is_empty()
+                    || meta.is_dir()
+                        && !winc_backend::fs::is_symlink(path)
+                        && git_dir(path).is_none() =>
+            {
+                let name = path.display().to_string();
+                return Err(winc_i18n::t!("git-stage-directory-changed", name = name));
+            }
+            Ok(_) => {}
+            Err(error) if winc_backend::fs::is_absent(&error) => {}
+            Err(error) => {
+                let name = path.display().to_string();
+                return Err(winc_i18n::t!(
+                    "git-read-file-failed",
+                    name = name,
+                    error = error.to_string()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 仓库共用的 `git` 目录：工作树（`git worktree`）的 `.git` 文件指向它自己的目录，hooks、
 /// 各工作树的记录（`worktrees/`）在那里的 `commondir` 所指的目录里。
 fn git_common_dir(root: &Path) -> Option<PathBuf> {
@@ -664,6 +704,27 @@ impl Git {
     ///
     /// `git` 运行失败、超时、被取消或者输出读不懂时返回原因。
     pub fn status(&self, root: &Path, cancel: &Cancel) -> Result<Status, String> {
+        let mut status = self.read_status(root, cancel, STATUS_LIMIT)?;
+        // 未跟踪项没有 Git 模式。在后台读取不跟随链接的文件信息，供差异视图使用。
+        for entry in &mut status.entries {
+            if entry.untracked() && !entry.is_dir {
+                entry.is_symlink = winc_backend::fs::is_symlink(&entry.path);
+            }
+        }
+        Ok(status)
+    }
+
+    /// 读取提交使用的完整状态，不受改动列表上限影响。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`Git::status`]。
+    pub fn commit_status(&self, root: &Path, cancel: &Cancel) -> Result<Status, String> {
+        require_worktree_root(root)?;
+        self.read_status(root, cancel, usize::MAX)
+    }
+
+    fn read_status(&self, root: &Path, cancel: &Cancel, limit: usize) -> Result<Status, String> {
         self.inspect(root)?;
         let mut command = self.command(root);
         command.args([
@@ -687,7 +748,7 @@ impl Git {
         let run = || self.run(&mut command, STATUS_TIMEOUT, cancel);
         let remote = winc_backend::is_remote(root);
         let ((dir, operation), stdout) = crate::background::both(remote, marks, run);
-        let mut status = parse_status(&stdout?, root)
+        let mut status = parse::parse_status_with_limit(&stdout?, root, limit)
             .ok_or_else(|| winc_i18n::t!("git-status-unreadable").to_owned())?;
         if operation == Some(Operation::Rebase) {
             status.progress = dir.as_deref().and_then(rebase_progress);
@@ -871,6 +932,10 @@ impl Git {
     ///
     /// 同 [`Git::operate`]。
     pub fn stage(&self, root: &Path, paths: &[PathBuf]) -> Result<String, String> {
+        check_index_paths(root, paths)?;
+        if paths.is_empty() {
+            return Ok(String::new());
+        }
         let mut args: Vec<OsString> = ["add", "--all", "--"].map(OsString::from).into();
         args.extend(relative_all(root, paths));
         self.operate(root, &args)

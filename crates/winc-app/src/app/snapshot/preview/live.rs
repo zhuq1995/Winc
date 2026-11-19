@@ -598,6 +598,8 @@ fn typing_shows_the_final_layout_in_the_same_frame() {
         (text, app.preview.markdown.height, caret_screen_y(app))
     };
     let step = |app: &mut App, name: &str, act: &dyn Fn(&mut App)| {
+        // 固定解析预算的输入，测试小文档走同步解析时的首帧布局。
+        app.preview.markdown.cost = Some(std::time::Duration::ZERO);
         act(app);
         paint(app);
         let first = shown(app);

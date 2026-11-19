@@ -561,11 +561,17 @@ impl App {
             (CloseRequest::Switch(_), None) => {
                 t!("terminal-switch-folder-confirm-many", count = count)
             }
-            (CloseRequest::CloseFolder | CloseRequest::CloseProject, Some(name)) => {
+            (CloseRequest::CloseFolder, Some(name)) => {
                 t!("terminal-close-folder-confirm-one", name = name)
             }
-            (CloseRequest::CloseFolder | CloseRequest::CloseProject, None) => {
+            (CloseRequest::CloseFolder, None) => {
                 t!("terminal-close-folder-confirm-many", count = count)
+            }
+            (CloseRequest::CloseProject, Some(name)) => {
+                t!("terminal-close-project-confirm-one", name = name)
+            }
+            (CloseRequest::CloseProject, None) => {
+                t!("terminal-close-project-confirm-many", count = count)
             }
             (_, Some(name)) => t!("terminal-close-window-confirm-one", name = name),
             (_, None) => t!("terminal-close-window-confirm-many", count = count),
@@ -576,11 +582,15 @@ impl App {
                 t!("terminal-switch-folder-confirm-detail"),
                 t!("terminal-switch-folder-confirm-button"),
             ),
-            CloseRequest::CloseFolder | CloseRequest::CloseProject => (
+            CloseRequest::CloseFolder => (
                 t!("terminal-close-folder-confirm-detail"),
                 t!("cmd-close-folder"),
             ),
-            CloseRequest::CloseWindow | CloseRequest::Tabs(_) => (
+            CloseRequest::CloseProject => (
+                t!("terminal-close-project-confirm-detail"),
+                t!("cmd-close-project"),
+            ),
+            CloseRequest::Tabs(_) => (
                 t!("terminal-close-window-confirm-detail"),
                 t!("cmd-close-window"),
             ),

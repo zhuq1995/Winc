@@ -15,6 +15,7 @@ use winc_i18n::t;
 use winc_render::Image;
 
 use super::*;
+use crate::app::git::commit::CommitGroup;
 use crate::app::git::location_picker::Place;
 use crate::icons;
 use crate::keymap::{self, Action, Context, Stroke};
@@ -129,6 +130,7 @@ pub enum MenuCommand {
     /// 项目菜单：关闭打开的远端目录并断开到该主机的连接。
     RemoteDisconnect,
     CloseFolder,
+    CloseProject,
     /// 提交视图「⋯」：新建工作树（输入新分支的名字）。
     NewWorktree,
     /// 位置选择器的操作菜单：在新窗口打开这个位置。
@@ -630,6 +632,7 @@ impl MenuCommand {
             MenuCommand::RemoteOther => t!("workspace-remote-other"),
             MenuCommand::RemoteDisconnect => t!("workspace-remote-disconnect"),
             MenuCommand::CloseFolder => t!("cmd-close-folder"),
+            MenuCommand::CloseProject => Action::CloseProject.title(),
             MenuCommand::Cut => t!("cmd-cut"),
             MenuCommand::Copy => t!("cmd-copy"),
             MenuCommand::Paste => t!("cmd-paste"),
@@ -683,6 +686,7 @@ impl MenuCommand {
             MenuCommand::NewWindow => Action::NewWindow,
             MenuCommand::OpenFolder => Action::OpenFolder,
             MenuCommand::CloseFolder => Action::CloseFolder,
+            MenuCommand::CloseProject => Action::CloseProject,
             MenuCommand::Cut => Action::Cut,
             MenuCommand::Copy => Action::Copy,
             MenuCommand::Paste => Action::Paste,
@@ -809,6 +813,17 @@ pub enum MenuTarget {
     TerminalShells,
     /// 提交视图改动列表里的一个文件。
     CommitFile(PathBuf),
+    /// 暂存区视图菜单，记录弹出时的仓库、组和操作范围。
+    CommitFiles {
+        /// 发起操作的仓库。
+        root: PathBuf,
+        /// 右键所在的组。
+        group: CommitGroup,
+        /// 本组的目标文件。
+        paths: Vec<PathBuf>,
+        /// 组、目录与多项操作使用批量菜单。
+        batch: bool,
+    },
     /// 新建工作树对话框的「基于」。
     FormBase,
     /// 推送对话框的远程。

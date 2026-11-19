@@ -208,19 +208,22 @@ impl App {
         }
         let (dx, dy) = axis.keep(dx, dy);
 
-        // 项目列表自己滚动：条目不与下方部件共用滚动位置。
-        if !self.overlays.picker.open
-            && self
-                .layout
-                .projects
-                .contains(self.pointer.mouse.0, self.pointer.mouse.1)
+        let origin = self.pointer.mouse;
+        let target = self.scroll_target_at(origin.0, origin.1);
+        // 模态浮层先接收滚动，项目列表只滚动自己的条目。
+        if !matches!(
+            target,
+            ScrollTarget::Blocked
+                | ScrollTarget::Popup
+                | ScrollTarget::Dialog
+                | ScrollTarget::Settings(_)
+        ) && !self.overlays.picker.open
+            && self.layout.projects.contains(origin.0, origin.1)
         {
             self.scroll_projects(dy);
             self.pace_wheel_frame();
             return;
         }
-        let origin = self.pointer.mouse;
-        let target = self.scroll_target_at(origin.0, origin.1);
         // 滚轮和触控板由用户直接控制：该区域的跳转过渡停在屏幕上显示的位置，从该位置继续。
         self.settle_glide_of(target);
         self.scroll.fling = None;

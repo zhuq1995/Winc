@@ -243,7 +243,7 @@ pub enum UserEvent {
     /// 后台的提交、回滚已完成，或已取得上一次提交的信息。
     GitCommit,
     /// 确认框中确认回滚参数中的文件。
-    GitRollback(Vec<PathBuf>),
+    GitRollback(crate::app::git::commit::Rollback),
     /// 确认框中确认中止进行中的合并、变基等操作。
     GitAbort,
     /// 确认框里选了跳过：跳过变基、拣选等操作停着的这个提交。
@@ -252,20 +252,18 @@ pub enum UserEvent {
     GitSwitchBranch(winc_editor::git::Branch, bool),
     /// 确认框中确认强制推送当前分支。
     GitForcePush,
-    /// 新增 TODO 的确认框：仍然提交（`true`）或取消。
-    GitCommitTodo(bool),
+    /// 新增 TODO 的确认框记录发起仓库和是否继续提交。
+    GitCommitTodo(PathBuf, bool),
     /// 提示框中确认发布、推送或同步当前分支；为 `true` 时勾选了「不再询问」。
     GitPushConfirmed(crate::app::git::commit::PushIntent, bool),
     /// 推送的确认框里选了「查看提交」：打开 Git 日志。
     GitShowLog,
     /// Git 输出有了新的内容：开着的输出标签接着显示。
     GitOutput,
-    /// 提示框中确认提交已勾选的文件并推送。
-    GitCommitAndPush,
-    /// 「提交并同步」的提示框确认了。
-    GitCommitAndSync,
-    /// 提示框中确认撤销上一次提交。
-    GitUndoCommit,
+    /// 确认在发起仓库提交，以及是否暂存全部、推送或同步。
+    GitCommitConfirmed(PathBuf, crate::app::git::commit::CommitRequest),
+    /// 确认撤销发起仓库的指定提交。
+    GitUndoCommit(PathBuf, String),
     /// 后台已取得某个文件在 `HEAD` 中的内容（行号栏改动标记的基准）。
     GitBase,
     /// 后台的分支操作（获取、拉取、推送、签出等）已完成。

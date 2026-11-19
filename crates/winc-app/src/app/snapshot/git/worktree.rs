@@ -239,6 +239,8 @@ fn worktrees_are_created_removed_and_pruned() {
     for dir in [trees.join(short), spare] {
         let i = at(&app, &dir);
         app.remove_worktree(i);
+        assert!(dir.exists());
+        assert!(app.alert_key(&Key::Named(NamedKey::Enter), false));
         assert!(!dir.exists());
     }
     assert_eq!(app.git.worktrees.len(), 3);
@@ -251,6 +253,16 @@ fn worktrees_are_created_removed_and_pruned() {
     assert!(menu_commands(&app).contains(&(MenuCommand::LocationRemove, true)));
     app.overlays.context_menu = None;
     app.remove_worktree(i);
+    assert!(app.window.handle.is_none());
+    assert!(app.alert_key(&Key::Named(NamedKey::Enter), false));
+    assert!(feat.join("scratch.txt").exists());
+    assert!(app.alert_key(&Key::Named(NamedKey::Escape), false));
+    assert!(app.overlays.alert.is_none());
+    assert!(feat.join("scratch.txt").exists());
+    assert!(app.git.branches.iter().any(|b| b.name == "feat/x"));
+    std::fs::remove_file(feat.join("scratch.txt")).unwrap();
+    app.remove_worktree(i);
+    assert!(app.alert_key(&Key::Named(NamedKey::Enter), false));
     assert!(!feat.exists());
     assert_eq!(app.git.worktrees.len(), 2);
     assert!(app.git.branches.iter().all(|b| b.name != "feat/x"));
