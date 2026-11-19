@@ -594,6 +594,11 @@ impl App {
                 t!("terminal-close-window-confirm-detail"),
                 t!("cmd-close-window"),
             ),
+            #[cfg(target_os = "macos")]
+            CloseRequest::CloseWindow => (
+                t!("terminal-close-window-confirm-detail"),
+                t!("cmd-close-window"),
+            ),
         };
         if self.window.handle.is_some() {
             // macOS 上关闭最后一个窗口时窗口只是隐藏，终端继续运行：先显示窗口，确认框才可见。
